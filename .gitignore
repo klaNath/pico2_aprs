@@ -53,3 +53,5 @@ desktop.ini
 # 例: src/secrets.py に SSID/パスワードを置き、secrets.example.py を共有する
 src/secrets.py
 .env
+
+claude_docs/
