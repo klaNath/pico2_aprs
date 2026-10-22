@@ -6,6 +6,7 @@
       "Bash(py tools/dev.py:*)",
       "Bash(python tools\\dev.py:*)",
       "Bash(py tools\\dev.py:*)",
+      "Bash(python tools/dev.py romfs-deploy:*)",
       "Bash(.venv/bin/python -m ruff:*)",
       "Bash(.venv/bin/python -m pyright:*)"
     ],
