@@ -24,6 +24,11 @@ def install_shims() -> None:
     mp.viper = lambda f: f  # type: ignore[attr-defined]
     mp.schedule = lambda f, a: f(a)  # type: ignore[attr-defined]
     sys.modules["micropython"] = mp
+    # viper のポインタ型: 配列をそのまま添字アクセスする(注釈の評価にも使われる)
+    import builtins
+
+    for name in ("ptr", "ptr8", "ptr16", "ptr32", "uint"):
+        setattr(builtins, name, lambda x: x)
 
     t0 = time.monotonic_ns()
     period = 1 << 30  # MicroPython rp2 の ticks の周期

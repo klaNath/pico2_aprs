@@ -47,6 +47,7 @@ python tools/dev.py run -t 15         # 3. src/main.py を実行して出力を�
 python tools/dev.py run src/xxx.py -t 10   # 個別スクリプトの実行
 python tools/dev.py exec "import app; print(app.Blinker)" -t 10   # 対話の代わりのコード片実行
 python tools/dev.py check             # lint + test --host + test をまとめて
+python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC のみ、数分かかる。モデムを変えたら回す)
 ```
 
 変更後は少なくとも `lint` と `test` を通してから完了を報告する。
@@ -78,6 +79,8 @@ python tools/dev.py check             # lint + test --host + test をまとめ�
 - 型ヒント用の import が必要なら `try: from typing import ... except ImportError: pass` で包む。
 - 例外の表示は `sys.print_exception(e)`。
 - 割り込みハンドラ(`Pin.irq` など)の中ではメモリ確保をしない。重い処理は `micropython.schedule` に逃がす。
+- `@micropython.viper` のポインタ(`ptr8/16/32`)は**境界検査をしない**。書き込み先の大きさを必ず自前で守る(溢れるとメモリ破壊)。PC では同じコードが配列の添字エラー/`array('i')` の OverflowError になるので、`test --host` で検出できる。
+- viper の `ptr16`/`ptr32` の読み出しは符号なし扱い。符号付きの値は `array('i')` に入れて `int(p[i])` で読む。
 - 標準以外のライブラリは micropython-lib にあれば `dev.py mip <名前>`(要確認)。CPython の pip パッケージは基本的に動かない。
 - ハードウェア依存部分(Pin, I2C, SPI など)はクラスの引数として渡し、テストでは偽オブジェクトに差し替えられるようにする(`src/app.py` と `tests/test_app.py` が例)。
 

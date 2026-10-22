@@ -55,7 +55,7 @@ def main(pattern="", host=False):
                 print("PASS", modname + "." + name, "(%d ms)" % dt)
     gc.collect()
     if not host:
-        print("mem_free:", gc.mem_free())  # type: ignore[attr-defined]
+        print("mem_free:", gc.mem_free())
     extra = ", %d skipped (hw)" % skipped if skipped else ""
     print(
         "RESULT: %s (%d passed, %d failed%s)"
