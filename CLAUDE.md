@@ -14,9 +14,20 @@
 ## ディレクトリ構成
 
 - `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント
-- `tests/` … デバイス上で実行するテスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー
+    - `src/aprs/` … APRS の解析と Mic-E エンコード(自作)
+    - `src/tnc/` … micro-aprs 由来のコード(**生成物。手で編集しない**、下記「micro-aprs 由来のコード」)
+- `tests/` … テスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー。実機でも PC でも動く。実機専用のテストは `test_hw_*` と名付ける(PC ではスキップ)
 - `tools/dev.py` … ビルド・実行・デバッグ用 CLI(PC 側で動く通常の Python)
+- `tools/vendor.py` … `third_party/micro-aprs/src/pico2/` から `src/tnc/` を生成する
+- `third_party/micro-aprs/` … サブモジュール(フォーク klaNath/micro-aprs、ブランチ `pico2-subset`、GPL-3.0)
 - `typings/` … MicroPython の型スタブ(自動生成、編集しない)
+
+## micro-aprs 由来のコード(出典の追跡)
+
+- 派生コードの変更は必ず `third_party/micro-aprs/src/pico2/` で行い、サブモジュール側でコミットしてから `python tools/vendor.py` で `src/tnc/` を再生成する。試行錯誤中は `--dirty` で未コミットのまま生成できる(ヘッダに `+dirty` と出る)。
+- 派生ファイルの先頭には出典(上流のファイルとコミット)と変更点を書く。
+- `lint` は `vendor.py --check` で `src/tnc/` が古くないかも確認する。
+- フォークへの push はユーザーが行う。本体より先にフォークを push しないと、サブモジュールの参照先が存在しない状態になる。
 
 ## 絶対に守ること
 
@@ -29,12 +40,13 @@
 ## 開発ループ
 
 ```
-python tools/dev.py lint              # 1. ruff + pyright(ホスト側、デバイス不要)
-python tools/dev.py test              # 2. デバイス上で tests/ を実行
+python tools/dev.py lint              # 1. vendor --check + ruff + pyright(ホスト側、デバイス不要)
+python tools/dev.py test --host       # 2a. PC(CPython)上で tests/ を実行(速い。test_hw_* はスキップ)
+python tools/dev.py test              # 2b. デバイス上で tests/ を実行
 python tools/dev.py run -t 15         # 3. src/main.py を実行して出力を見る
 python tools/dev.py run src/xxx.py -t 10   # 個別スクリプトの実行
 python tools/dev.py exec "import app; print(app.Blinker)" -t 10   # 対話の代わりのコード片実行
-python tools/dev.py check             # lint + test をまとめて
+python tools/dev.py check             # lint + test --host + test をまとめて
 ```
 
 変更後は少なくとも `lint` と `test` を通してから完了を報告する。

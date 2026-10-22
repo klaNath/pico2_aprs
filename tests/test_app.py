@@ -34,6 +34,6 @@ def test_rejects_invalid_period():
     raise AssertionError("ValueError was not raised")
 
 
-def test_real_led_smoke():
+def test_hw_real_led_smoke():
     # 実機の LED を 0.3 秒だけ点滅させる(目視確認用。失敗しないことだけ検証)
     app.run(period_ms=100, duration_ms=300)

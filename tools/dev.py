@@ -9,8 +9,9 @@ Claude (Claude Code) と人間の両方が使う、非対話・タイムアウ�
     python tools/dev.py run [FILE] -t 30      src/ をマウントして FILE(既定 src/main.py)を実行
     python tools/dev.py exec "CODE" -t 10     src/ をマウントしてコード片を実行
     python tools/dev.py test [PATTERN]        tests/ をデバイス上で実行(結果で終了コードが変わる)
+    python tools/dev.py test --host [PATTERN] tests/ を PC(CPython)上で実行(test_hw_* はスキップ)
     python tools/dev.py lint                  ruff + pyright(ホスト側の静的チェック)
-    python tools/dev.py check                 lint + test
+    python tools/dev.py check                 lint + test --host + test
     python tools/dev.py deploy [--reset]      src/ の中身をデバイスのフラッシュへ書き込み
     python tools/dev.py romfs-query           ROMFS 区画の有無・サイズを表示
     python tools/dev.py romfs-build           src/ から ROMFS イメージを作る(build/app.romfs、書き込みなし)
@@ -216,15 +217,7 @@ def cmd_exec(a) -> int:
     return mpremote(["mount", rel(SRC), "exec", a.code], a.timeout)[0]
 
 
-def cmd_test(a) -> int:
-    code = (
-        "import sys\n"
-        "sys.path.insert(0, '/remote/tests')\n"
-        "sys.path.insert(0, '/remote/src')\n"
-        "import _runner\n"
-        f"_runner.main({a.pattern!r})\n"
-    )
-    rc, out = mpremote(["mount", ".", "exec", code], a.timeout)
+def _test_result(rc: int, out: str) -> int:
     if "RESULT: OK" in out:
         return 0
     if "RESULT: FAIL" in out:
@@ -233,16 +226,34 @@ def cmd_test(a) -> int:
     return rc or 1
 
 
+def cmd_test(a) -> int:
+    if a.host:
+        log("PC(CPython)上で tests/ を実行します(test_hw_* はスキップ)")
+        return _test_result(*stream([sys.executable, rel(ROOT / "tools" / "host_test.py"), a.pattern], a.timeout))
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, '/remote/tests')\n"
+        "sys.path.insert(0, '/remote/src')\n"
+        "import _runner\n"
+        f"_runner.main({a.pattern!r})\n"
+    )
+    return _test_result(*mpremote(["mount", ".", "exec", code], a.timeout))
+
+
 def cmd_lint(a) -> int:
+    rc0 = stream([sys.executable, rel(ROOT / "tools" / "vendor.py"), "--check"], 60)[0]
     rc1 = stream([sys.executable, "-m", "ruff", "check", "src", "tests", "tools"], 120)[0]
     rc2 = stream([sys.executable, "-m", "pyright"], 300)[0]
-    return rc1 or rc2
+    return rc0 or rc1 or rc2
 
 
 def cmd_check(a) -> int:
     rc = cmd_lint(a)
     a.pattern = ""
     a.timeout = 180
+    a.host = True
+    rc = cmd_test(a) or rc
+    a.host = False
     return cmd_test(a) or rc
 
 
@@ -520,7 +531,9 @@ def main() -> int:
     add("info", cmd_info, 20)
     add("run", cmd_run, 30).add_argument("file", nargs="?", default="src/main.py")
     add("exec", cmd_exec, 15).add_argument("code")
-    add("test", cmd_test, 180).add_argument("pattern", nargs="?", default="")
+    p = add("test", cmd_test, 180)
+    p.add_argument("pattern", nargs="?", default="")
+    p.add_argument("--host", action="store_true", help="PC(CPython)上で実行(デバイス不要)")
     add("lint", cmd_lint)
     add("check", cmd_check)
     p = add("deploy", cmd_deploy, 120)
