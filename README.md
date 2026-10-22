@@ -162,6 +162,8 @@ git clone <このリポジトリ> && cd <ディレクトリ>
 git config core.longpaths true
 git submodule init
 git clone --no-checkout https://github.com/klaNath/micro-aprs third_party/micro-aprs   # 既存 repo として取り込む
+git -C third_party/micro-aprs config core.longpaths true
 git -C third_party/micro-aprs sparse-checkout set src upy
-git submodule update --checkout
+git -C third_party/micro-aprs checkout pico2-subset
+git submodule absorbgitdirs                    # .git を親の .git/modules へ移す
 ```
