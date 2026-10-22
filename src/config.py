@@ -4,18 +4,19 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
 案(マイルストーン 3 時点。未配線のものは後のマイルストーンで確定する):
     GP0  UART0 TX  -> GNSS (Teseo-LIV3FL) RX
     GP1  UART0 RX  <- GNSS TX
-    GP2  GNSS 1PPS(予備)
-    GP3  ビーコン送出のトグルスイッチ(GND へ落とす、内部プルアップ)
+    GP2  GNSS 1PPS(予備。GP3 と同じ PWM スライス 1 なので PWM には使えない、GPIO 入力なら可)
+    GP3  AFSK 送信音声(PWM、slice 1 B) -> RC フィルタ -> 無線機の MIC/DATA 入力
     GP4-7  SPI0 microSD(MISO/CS/SCK/MOSI)
     GP10-15 SPI1 ST7789(SCK/MOSI/DC/CS/RST/BL)
-    GP20 AFSK 送信音声(PWM、slice 2 A) -> RC フィルタ -> 無線機の MIC/DATA 入力
+    GP22 ビーコン送出のトグルスイッチ(GND へ落とす、内部プルアップ)
     GP21 PTT(トランジスタ経由で無線機の PTT を GND へ落とす)
     GP26 ADC0 受信音声 <- 無線機の SP/DATA 出力(バイアス + HPF 経由)
 """
 
 from micropython import const
 
-PIN_AFSK_OUT = const(20)
+PIN_AFSK_OUT = const(3)
+PIN_BEACON_SW = const(22)
 PIN_PTT = const(21)
 PIN_RX_ADC = const(26)
 
