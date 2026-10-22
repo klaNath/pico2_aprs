@@ -32,4 +32,6 @@ PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND �
 CALLSIGN = "N0CALL"
 SSID = 7
 TX_PATH = ("WIDE1-1", "WIDE2-1")
+# Mic-E 以外のパケットの宛先(ソフトウェア識別子)。APZxxx は実験用に予約された範囲
+TOCALL = "APZPI2"
 SYMBOL = ("/", "[")  # シンボル表, シンボル(/[ = 人)

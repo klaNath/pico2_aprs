@@ -29,7 +29,7 @@ def frames(k):
                                 alt=40, comment=b"Pico2 APRS test %d" % k)
         f = Frame(Address(dst), src, path, info)
     else:
-        f = Frame(Address("APRS"), src, path, b">Pico2 APRS TX test %d" % k)
+        f = Frame(Address(config.TOCALL), src, path, b">Pico2 APRS TX test %d" % k)
     return f, bytes(f.encode())
 
 
