@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -323,6 +324,10 @@ def _romfs_stage(march: str | None) -> list[str]:
         shutil.rmtree(ROMFS_STAGE)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".*")
     shutil.copytree(SRC, ROMFS_STAGE, ignore=ignore)
+    # copytree は属性も複製する。OneDrive 配下の src/ には READONLY 属性が付いていることがあり、
+    # Windows では READONLY のディレクトリを rmdir できず、次回の rmtree が PermissionError になる。
+    for p in [ROMFS_STAGE, *ROMFS_STAGE.rglob("*")]:
+        p.chmod(p.stat().st_mode | stat.S_IWRITE)
     (ROMFS_STAGE / "boot.py").unlink(missing_ok=True)
     main = ROMFS_STAGE / "main.py"
     if main.exists():
