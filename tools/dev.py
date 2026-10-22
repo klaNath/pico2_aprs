@@ -320,14 +320,17 @@ def _romfs_stage(march: str | None) -> list[str]:
     フラッシュ側で削除すべき(ROMFS を隠してしまう)名前の一覧を返す。"""
     import shutil
 
+    # Windows では READONLY 属性のディレクトリを rmdir できない。src/ やコピー・移動された
+    # build/ にはこの属性が付いていることがあり(OneDrive やエクスプローラーでの移動など)、
+    # copytree は属性も複製するので、消すときに属性を外して再試行する。
+    def _force(func, path, _exc):
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+        func(path)
+
     if ROMFS_STAGE.exists():
-        shutil.rmtree(ROMFS_STAGE)
+        shutil.rmtree(ROMFS_STAGE, onerror=_force)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".*")
     shutil.copytree(SRC, ROMFS_STAGE, ignore=ignore)
-    # copytree は属性も複製する。OneDrive 配下の src/ には READONLY 属性が付いていることがあり、
-    # Windows では READONLY のディレクトリを rmdir できず、次回の rmtree が PermissionError になる。
-    for p in [ROMFS_STAGE, *ROMFS_STAGE.rglob("*")]:
-        p.chmod(p.stat().st_mode | stat.S_IWRITE)
     (ROMFS_STAGE / "boot.py").unlink(missing_ok=True)
     main = ROMFS_STAGE / "main.py"
     if main.exists():
