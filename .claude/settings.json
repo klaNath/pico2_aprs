@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/dev.py:*)",
+      "Bash(python3 tools/dev.py:*)",
+      "Bash(py tools/dev.py:*)",
+      "Bash(python tools\\dev.py:*)",
+      "Bash(py tools\\dev.py:*)",
+      "Bash(.venv/bin/python -m ruff:*)",
+      "Bash(.venv/bin/python -m pyright:*)"
+    ],
+    "ask": [
+      "Bash(python tools/dev.py deploy:*)",
+      "Bash(python3 tools/dev.py deploy:*)",
+      "Bash(py tools/dev.py deploy:*)",
+      "Bash(python tools/dev.py rm-main:*)",
+      "Bash(python3 tools/dev.py rm-main:*)",
+      "Bash(py tools/dev.py rm-main:*)",
+      "Bash(python tools/dev.py mip:*)",
+      "Bash(python3 tools/dev.py mip:*)",
+      "Bash(py tools/dev.py mip:*)"
+    ],
+    "deny": [
+      "Bash(python tools/dev.py repl:*)",
+      "Bash(python3 tools/dev.py repl:*)",
+      "Bash(py tools/dev.py repl:*)"
+    ]
+  }
+}

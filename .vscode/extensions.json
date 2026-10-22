@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "anthropic.claude-code",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff"
+  ],
+  // MicroPico はシリアルポートを常時掴むため、Claude の mpremote と衝突する。
+  // 使う場合は README の「MicroPico と併用する場合」を参照。
+  "unwantedRecommendations": []
+}

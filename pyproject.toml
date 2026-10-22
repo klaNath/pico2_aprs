@@ -1,0 +1,39 @@
+[project]
+name = "pico2-app"
+version = "0.1.0"
+description = "MicroPython application for Raspberry Pi Pico 2"
+requires-python = ">=3.9"
+
+# ------------------------------------------------------------------
+# pyright / Pylance: MicroPython のスタブ(typings/)を標準ライブラリとして使う
+# ------------------------------------------------------------------
+[tool.pyright]
+include = ["src", "tests"]
+exclude = [".*", "__*", "**/typings", "tools"]
+ignore = ["**/typings"]
+extraPaths = ["src"]
+
+typeCheckingMode = "basic"
+stubPath = "typings"
+typeshedPath = "typings"
+pythonPlatform = "Linux"
+pythonVersion = "3.8"
+
+reportMissingModuleSource = "none"
+reportUnnecessaryTypeIgnoreComment = "information"
+
+# ------------------------------------------------------------------
+# ruff: lint と format
+# ------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+extend-exclude = ["typings"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+# MicroPython ではよく使う書き方なので許可
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/*" = ["E501"]

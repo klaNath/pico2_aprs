@@ -1,0 +1,55 @@
+# =========================================================
+# Pico 2 × MicroPython × Claude Code プロジェクト用 .gitignore
+# =========================================================
+
+# --- Python 仮想環境・キャッシュ(bootstrap.py で再生成できる) ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- MicroPython スタブ(bootstrap.py で再生成できる) ---
+typings/
+
+# --- MicroPython のビルド成果物 ---
+# mpy-cross でコンパイルした .mpy やファームウェアは共有しない
+*.mpy
+*.uf2
+build/
+dist/
+
+# --- lint / 型チェックのキャッシュ ---
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.pytest_cache/
+
+# --- ログ・一時ファイル(mpremote repl --capture など) ---
+*.log
+*.capture
+tmp/
+
+# --- Claude Code の個人設定(チーム共有の .claude/settings.json は追跡する) ---
+.claude/settings.local.json
+CLAUDE.local.md
+
+# --- VSCode(共有する設定ファイル以外は除外) ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# --- OS / エディタのゴミ ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# --- 秘密情報(Pico 2 W の Wi-Fi 認証情報など) ---
+# 例: src/secrets.py に SSID/パスワードを置き、secrets.example.py を共有する
+src/secrets.py
+.env

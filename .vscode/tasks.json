@@ -1,0 +1,65 @@
+{
+  // Ctrl+Shift+P →「Tasks: Run Task」から実行(人間用のショートカット)
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Pico: info",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "info"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: run main (30s)",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "run", "-t", "30"],
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "Pico: run current file (30s)",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "run", "${relativeFile}", "-t", "30"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: test",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "test"],
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true }
+    },
+    {
+      "label": "Pico: lint",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "lint"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: deploy + reset",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "deploy", "--reset"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: monitor boot (15s)",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "monitor", "--reset", "-s", "15"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: REPL",
+      "type": "process",
+      "command": "${command:python.interpreterPath}",
+      "args": ["tools/dev.py", "repl"],
+      "problemMatcher": [],
+      "presentation": { "focus": true, "panel": "dedicated" }
+    }
+  ]
+}

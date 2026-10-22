@@ -1,0 +1,4 @@
+[submodule "third_party/micro-aprs"]
+	path = third_party/micro-aprs
+	url = https://github.com/klaNath/micro-aprs
+	branch = pico2-subset

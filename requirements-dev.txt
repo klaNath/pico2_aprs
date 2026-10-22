@@ -1,0 +1,6 @@
+# ホスト(PC)側の開発ツール。デバイスには入りません。
+mpremote>=1.28
+# .mpy のバイトコード版はファームウェアに合わせる(dev.py romfs-build / romfs-deploy が使う)
+mpy-cross==1.29.*
+ruff>=0.6
+pyright>=1.1.380

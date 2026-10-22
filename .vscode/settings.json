@@ -1,0 +1,22 @@
+{
+  // 型チェックの詳細は pyproject.toml の [tool.pyright] で設定(Pylance もそちらを優先)
+  "python.languageServer": "Pylance",
+  "python.terminal.activateEnvironment": true,
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  "search.exclude": {
+    "typings/**": true,
+    ".venv/**": true
+  },
+  "files.watcherExclude": {
+    "typings/**": true,
+    ".venv/**": true
+  }
+}
