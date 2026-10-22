@@ -6,7 +6,7 @@
 
 - ボード: Raspberry Pi Pico 2(RP2350, Arm Cortex-M33 デュアルコア, SRAM 520KB, フラッシュ 4MB)
 - ファームウェア: MicroPython(正確なバージョンは `python tools/dev.py info` で確認する)
-    - カスタムされたファームウェアを使用。ROMFSを1.5MB設定。標準のライブラリに加えてmicropython-libから `sdcard` と `datetime` を読み込みビルドしている
+    - カスタムされたファームウェアを使用。ROMFSを1MB設定。標準のライブラリに加えてmicropython-libから `sdcard` と `datetime` を読み込みビルドしている
     - ROMFS が有効であるため、必要ならばライブラリなどをROMFSへDeployし高速化を図ってください
 - オンボード LED は `Pin("LED", Pin.OUT)`
 - PC とは USB シリアルで接続。操作は全て `tools/dev.py`(mpremote のラッパー)経由
