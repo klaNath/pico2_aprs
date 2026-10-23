@@ -7,11 +7,14 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP2  PTT(トランジスタ経由で無線機の PTT を GND へ落とす)。GP3 と同じ PWM スライス 1
          だが、PTT は普通の GPIO 出力なので PWM の動作とは干渉しない
     GP3  AFSK 送信音声(PWM、slice 1 B) -> RC フィルタ -> 無線機の MIC/DATA 入力
-    GP4-7  SPI0 microSD(MISO/CS/SCK/MOSI)
-    GP10-15 SPI1 ST7789(SCK/MOSI/DC/CS/RST/BL)
+    GP6-8  空き(Display Pack の RGB LED は基板上で切り離し済み)
+    GP9-11 SPI1 microSD(CS GP9 / SCK GP10 / MOSI GP11)、MISO は GP28(SPI1 RX)
+    GP12-15 Display Pack のボタン A / B / X / Y(押すと Low、内部プルアップ)
+    GP16-20 Display Pack の LCD(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)
+    GP21 GNSS 1PPS(予備)
     GP22 ビーコン送出のトグルスイッチ(GND へ落とす、内部プルアップ)
-    GP20 GNSS 1PPS(予備)
     GP26 ADC0 受信音声 <- 無線機の SP/DATA 出力(バイアス + HPF 経由)
+    GP28 SPI1 MISO(microSD)。ADC2 は使えなくなる
 """
 
 from micropython import const
@@ -20,6 +23,27 @@ PIN_AFSK_OUT = const(3)
 PIN_BEACON_SW = const(22)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
+
+# 表示(Pimoroni Pico Display Pack、240x135 ST7789)。パネルを替えるときは LCD_PANEL を変える
+LCD_PANEL = "pico_display"  # hw.st7789.PANELS のキー。将来の 2.4 インチは "st7789_320x240"
+LCD_SPI = const(0)
+PIN_LCD_SCK = const(18)
+PIN_LCD_MOSI = const(19)
+PIN_LCD_CS = const(17)
+PIN_LCD_DC = const(16)
+PIN_LCD_BL = const(20)
+LCD_BAUD = const(62_500_000)
+PIN_BTN_A = const(12)
+PIN_BTN_B = const(13)
+PIN_BTN_X = const(14)
+PIN_BTN_Y = const(15)
+
+# microSD(SPI1)。マイルストーン 5 で使う
+PIN_SD_SCK = const(10)
+PIN_SD_MOSI = const(11)
+PIN_SD_MISO = const(28)
+PIN_SD_CS = const(9)
+PIN_GNSS_PPS = const(21)
 
 FS = const(19200)  # 送受信のサンプリング周波数(1200 baud x 16)
 PWM_TOP = const(1023)  # PWM の分解能 10 bit、搬送波 150MHz / 1024 = 146.5 kHz
