@@ -191,8 +191,14 @@ def draw_map(fb, dy, lay, stations, status, now_ms):
         r = int(geo.log_radius(km, r_max) + 0.5)
         fb.ellipse(cx, cy + dy, r, r, DARK)
         fb.text(label, cx + 2, cy - r - 8 + dy if km < 100 else cy - r + 1 + dy, GRAY)
-    fb.text("N", cx - 3, cy - r_max - 8 + dy if cy - r_max - 8 >= 0 else 0 + dy, CYAN)
-    fb.text("MAP log 0.5-100km", 0, 0 + dy, CYAN)
+    # 見出し(左上 2 行)と北の矢印(右上の隅)。円と重ならないよう隅に置く
+    fb.text("MAP log", 0, 0 + dy, CYAN)
+    fb.text("0.5-100km", 0, ROW + dy, CYAN)
+    ax = lay.w - 8
+    fb.text("N", ax - 3, 0 + dy, CYAN)
+    fb.vline(ax, ROW + dy, 14, CYAN)
+    fb.line(ax, ROW + dy, ax - 4, ROW + 5 + dy, CYAN)
+    fb.line(ax, ROW + dy, ax + 4, ROW + 5 + dy, CYAN)
     fb.hline(cx - 4, cy + dy, 9, RED)
     fb.vline(cx, cy - 4 + dy, 9, RED)
     if status.lat is None:
