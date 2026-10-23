@@ -35,7 +35,7 @@ def test_rmc_gga():
     assert near(f.lat, 48 + 7.038 / 60) and near(f.lon, 11 + 31.0 / 60)
     assert near(f.speed, 22.4 * 1.852, 0.01) and near(f.course, 84.4, 0.01)
     # 1994-03-23 12:35:19 UTC(2000 年基準の 2 桁年なので 2094 年として計算される点に注意)
-    assert f.utc_s % 86400 == 12 * 3600 + 35 * 60 + 19
+    assert f.utc_s is not None and f.utc_s % 86400 == 12 * 3600 + 35 * 60 + 19
     assert f.feed(GGA) == "GGA"
     assert f.sats == 8 and near(f.hdop, 0.9) and near(f.alt, 545.4)
     assert f.fix == 3
