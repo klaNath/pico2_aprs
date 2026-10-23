@@ -25,17 +25,19 @@ def test_hw_tx_timing_and_ptt():
         n = len(samples)
         expect_us = n * 1_000_000 // config.FS
         assert tx.ptt.value() != tx._ptt_on
+        from machine import mem32
+
+        assert mem32[tx._cc] == 0
         seen = set()
         t0 = time.ticks_us()
         tx.start(samples)
         assert tx.ptt.value() == tx._ptt_on
-        from machine import mem32
-
         while not tx.finish():
             seen.add(mem32[tx._cc] & 0xFFFF)
             time.sleep_us(300)
-        dt = time.ticks_diff(time.ticks_us(), t0)
+        dt = time.ticks_diff(time.ticks_us(), t0) - tx.settle_ms * 1000
         assert tx.ptt.value() != tx._ptt_on
+        assert mem32[tx._cc] == 0  # 待機中は PWM を止めている(受信への回り込み対策)
         print("samples %d, build %d ms, sent in %d ms (expected %d ms), %d distinct duty values"
               % (n, tb // 1000, dt // 1000, expect_us // 1000, len(seen)))
         assert abs(dt - expect_us) < expect_us // 50 + 15000  # 2% + ポーリング間隔
