@@ -17,6 +17,7 @@ GREEN = rgb(0, 220, 80)
 CYAN = rgb(0, 200, 255)
 RED = rgb(255, 40, 40)
 ORANGE = rgb(255, 140, 0)
+MAGENTA = rgb(255, 80, 255)  # 自局のエコー
 
 CH = 8  # 文字の幅・高さ
 ROW = 9  # 行の高さ(1 ピクセルの行間)
@@ -84,7 +85,7 @@ def draw_list(fb, dy, lay, stations, selected, now_ms):
             fb.fill_rect(0, y - 1, lay.list_w - 1, ROW, YELLOW if selected is not None else DARK)
             fb.text(name, 0, y, BLACK if selected is not None else WHITE)
         else:
-            fb.text(name, 0, y, GRAY if st.stale(now_ms) else WHITE)
+            fb.text(name, 0, y, MAGENTA if st.own else GRAY if st.stale(now_ms) else WHITE)
 
 
 def _wrap(text, cols, nlines):
@@ -104,7 +105,7 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols):
     age = geo.fmt_age(st.age_s(now_ms))
     head = _clip(st.call, cols - len(age) - 1)
     lines.append((head + " " * (cols - len(head) - len(age)) + age,
-                  GRAY if st.stale(now_ms) else YELLOW))
+                  MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW))
     kind = KIND_LABEL.get(p.kind, p.kind)
     if p.kind == "mice" and p.mice_msg:
         kind += " " + p.mice_msg

@@ -92,6 +92,19 @@ def test_stations_order_stale_and_map():
     assert [st.call for st in s.for_map(3)] == ["JR1C04", "JR1C03", "JR1C02"]
 
 
+def test_own_echo_flagged_and_not_on_map():
+    s = Stations(own_call="JA1ME-7")
+    s.update(P("JA1AAA>APRS:!3540.12N/13945.67E>a"), 0)
+    s.update(P("JA1ME-7>APZPI2,JA1DG-1*,WIDE2-1:!3540.00N/13945.00E>my beacon"), 10)
+    s.update(P("JA1ME>APRS:!3541.00N/13945.00E>other ssid"), 20)  # SSID 違いは別局
+    me = s.by_call["JA1ME-7"]
+    assert me.own and not s.by_call["JA1ME"].own and not s.by_call["JA1AAA"].own
+    assert s.latest() is not me  # 一覧・詳細には出る(最新ではないだけ)
+    assert me in s.order
+    assert me not in s.for_map()
+    assert [st.call for st in s.for_map()] == ["JA1ME", "JA1AAA"]
+
+
 def test_object_is_tracked_by_name():
     s = Stations()
     st = s.update(P("JA1AAA>APRS:;EVENT    *092345z3540.12N/13945.67E>x"), 0)

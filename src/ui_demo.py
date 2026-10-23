@@ -56,6 +56,9 @@ SAMPLES = [
     lambda: mice_packet("JA2STU-9", 90.0, 22, 80.0, 30, ">", b"highway"),
     lambda: pos_packet("JA0FAR", 150.0, 315, "-", "beyond 100km"),
     lambda: parse_frame(Frame.parse("JF1STA>APRS:>Status text only")),
+    # 自局のビーコンがデジピーターで中継されて戻ってきたもの(地図に出ず、一覧はマゼンタ)
+    lambda: mice_packet("%s-%d" % (config.CALLSIGN, config.SSID), 0.0, 0, 0.0, 0, "[",
+                        b"own echo"),
 ]
 
 
@@ -64,7 +67,8 @@ def main():
               mosi=Pin(config.PIN_LCD_MOSI))
     lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL, config.LCD_PANEL)
     scr = Screen(lcd)
-    stations = Stations()
+    own = config.CALLSIGN if config.SSID == 0 else "%s-%d" % (config.CALLSIGN, config.SSID)
+    stations = Stations(own_call=own)
     status = Status()
     status.fix, status.sats = 3, 9
     status.lat, status.lon = OWN

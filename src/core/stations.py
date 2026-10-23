@@ -4,6 +4,8 @@
 - 最後の受信から STALE_S(60 分)を過ぎた局は「古い」扱い(一覧では色を変える。消さない)
 - 表の上限 MAX_STATIONS を超えたら、いちばん古い局から捨てる(メモリを一定に保つ)
 - 位置を持つパケットを受けたら位置を更新する。位置の無いパケットでは前の位置を残す
+- 自局(own_call と SSID まで一致)のパケットは、デジピーターで中継されて戻ってきたもの。
+  own フラグを立て、地図には出さない(一覧では色を変えて区別する)
 時刻は time.ticks_ms() の値(ラップアラウンドするので差は ticks_diff で取る)。
 """
 
@@ -20,10 +22,11 @@ MAP_STATIONS = 6
 
 
 class Station:
-    __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon")
+    __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own")
 
-    def __init__(self, call):
+    def __init__(self, call, own=False):
         self.call = call
+        self.own = own  # 自局のパケット(デジピーターからのエコー)
         self.packet = None  # 最後に受けた aprs.packet.Packet
         self.heard_ms: "Any" = 0  # time.ticks_ms() の値(スタブでは専用の型)
         self.pos_ms: "Any" = None  # 最後に位置を受けた時刻(ticks_ms)
@@ -39,8 +42,10 @@ class Station:
 
 
 class Stations:
-    def __init__(self, max_stations=MAX_STATIONS):
+    def __init__(self, max_stations=MAX_STATIONS, own_call=None):
+        """own_call: 自局 'JA1XYZ-7'(SSID 0 なら 'JA1XYZ')。None なら自局の判定をしない"""
         self.max = max_stations
+        self.own_call = own_call
         self.order = []  # 新しい順の Station
         self.by_call = {}
         self.version = 0  # 変わるたびに増える(表示側の再描画判定用)
@@ -52,7 +57,7 @@ class Stations:
         call = packet.name if packet.kind in ("object", "item") and packet.name else packet.src
         st = self.by_call.get(call)
         if st is None:
-            st = Station(call)
+            st = Station(call, own=call == self.own_call)
             self.by_call[call] = st
         else:
             self.order.remove(st)
@@ -74,10 +79,10 @@ class Stations:
         return self.order[0] if self.order else None
 
     def for_map(self, n=MAP_STATIONS):
-        """位置を持つ局のうち新しい順に n 局"""
+        """位置を持つ局のうち新しい順に n 局(自局のエコーは除く)"""
         out = []
         for st in self.order:
-            if st.lat is not None:
+            if st.lat is not None and not st.own:
                 out.append(st)
                 if len(out) == n:
                     break
