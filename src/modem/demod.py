@@ -45,6 +45,7 @@ _MSH = const(18)  # 相関和を振幅に変換するときの右シフト
 _MID = const(19)  # 入力の中点(ADC 12 bit なら 2048)
 _ENVMIN = const(20)  # AGC の下限(Q6、無信号時に雑音で暴れないように)
 _CAP = const(21)  # 出力ビットバッファの大きさ(viper は境界検査をしないので必ず守る)
+_START = const(22)  # samp の読み始めの添字(DMA のリングバッファから直接読むため)
 _BQ = const(24)  # biquad 3 段: 各 [b0 b1 b2 a1 a2 x1 x2 y1 y2](係数 Q14、状態 Q2)
 _COS = const(56)  # cos テーブル 256 個(Q7)
 _RING = const(_COS + 256)  # 4 本のリング(各 _NMAX)
@@ -81,6 +82,7 @@ def _demod(samp: ptr16, n: int, st: ptr32, out: ptr8) -> int:
     mid = int(st[_MID])
     envmin = int(st[_ENVMIN])
     cap = int(st[_CAP])
+    start = int(st[_START])
     # biquad 1
     a0 = int(st[_BQ + 0])
     a1 = int(st[_BQ + 1])
@@ -119,7 +121,7 @@ def _demod(samp: ptr16, n: int, st: ptr32, out: ptr8) -> int:
     i = 0
     while i < n:
         # 1. 前段フィルタ(Q2)
-        x0 = (int(samp[i]) - mid) << 2
+        x0 = (int(samp[start + i]) - mid) << 2
         y = (a0 * x0 + a1 * ax1 + a2 * ax2 - a3 * ay1 - a4 * ay2) >> 14
         ax2 = ax1
         ax1 = x0
@@ -298,10 +300,14 @@ class Demodulator:
             st[_COS + k] = int(round(127 * math.cos(2 * math.pi * k / 256)))
         self.st = st
 
-    def process(self, samples, n=-1):
-        """n サンプル(省略時は全部)を処理し、得られたデータビット数を返す。"""
+    def process(self, samples, n=-1, start=0):
+        """samples[start:start+n](n 省略時は start 以降全部)を処理し、データビット数を返す。
+        コピーせずに読むので、DMA のリングバッファの一部をそのまま渡せる。"""
         if n < 0:
-            n = len(samples)
+            n = len(samples) - start
+        if start < 0 or start + n > len(samples):
+            raise ValueError("out of range")  # viper は境界検査をしないのでここで守る
+        self.st[_START] = start
         if n > self.max_block:
             raise ValueError("block too large")
         return _demod(samples, n, self.st, self.bits)  # type: ignore[arg-type]  (viper のポインタ型)
