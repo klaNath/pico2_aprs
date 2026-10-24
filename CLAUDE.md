@@ -16,18 +16,22 @@
 
 - `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント
     - `src/aprs/` … APRS の解析と Mic-E エンコード(自作)
-    - `src/tnc/` … micro-aprs 由来のコード(**生成物。手で編集しない**、下記「micro-aprs 由来のコード」)
+    - `src/tnc/` … micro-aprs 由来のコード(**生成物。手で編集しない**、下記「サブモジュール由来のコード」)
+    - `src/maxm10/`、`src/micropyGPS.py` … MAX-M10 ドライバと NMEA パーサ(**生成物。手で編集しない**)
 - `tests/` … テスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー。実機でも PC でも動く。実機専用のテストは `test_hw_*` と名付ける(PC ではスキップ)
 - `tools/dev.py` … ビルド・実行・デバッグ用 CLI(PC 側で動く通常の Python)
-- `tools/vendor.py` … `third_party/micro-aprs/src/pico2/` から `src/tnc/` を生成する
-- `third_party/micro-aprs/` … サブモジュール(フォーク klaNath/micro-aprs、ブランチ `pico2-subset`、GPL-3.0)
+- `tools/vendor.py` … サブモジュールから `src/` の生成物を作る(対応表は vendor.py の `SOURCES`)
+- `third_party/` … サブモジュール
+    - `micro-aprs/` … フォーク klaNath/micro-aprs、ブランチ `pico2-subset`、GPL-3.0 → `src/tnc/`
+    - `micropython-maxm10/` … klaNath/micropython-maxm10、ブランチ `pico2-aprs`、MIT → `src/maxm10/`
+    - `micropyGPS/` … klaNath/micropyGPS、ブランチ `pico2-aprs`、MIT → `src/micropyGPS.py`(互換性を保って改善する)
 - `typings/` … MicroPython の型スタブ(自動生成、編集しない)
 
-## micro-aprs 由来のコード(出典の追跡)
+## サブモジュール由来のコード(出典の追跡)
 
-- 派生コードの変更は必ず `third_party/micro-aprs/src/pico2/` で行い、サブモジュール側でコミットしてから `python tools/vendor.py` で `src/tnc/` を再生成する。試行錯誤中は `--dirty` で未コミットのまま生成できる(ヘッダに `+dirty` と出る)。
+- 生成物(`src/tnc/`、`src/maxm10/`、`src/micropyGPS.py`)の変更は必ず `third_party/` のサブモジュール側で行い、そこでコミットしてから `python tools/vendor.py` で再生成する。試行錯誤中は `--dirty` で未コミットのまま生成できる(ヘッダに `+dirty` と出る)。
 - 派生ファイルの先頭には出典(上流のファイルとコミット)と変更点を書く。
-- `lint` は `vendor.py --check` で `src/tnc/` が古くないかも確認する。
+- `lint` は `vendor.py --check` で生成物が古くないかも確認する。ruff/pyright は `src/maxm10`、`src/micropyGPS.py` を検査しない(各リポジトリの書式のまま)。
 - フォークへの push はユーザーが行う。本体より先にフォークを push しないと、サブモジュールの参照先が存在しない状態になる。
 
 ## 絶対に守ること
