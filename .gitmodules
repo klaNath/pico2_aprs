@@ -2,3 +2,11 @@
 	path = third_party/micro-aprs
 	url = https://github.com/klaNath/micro-aprs
 	branch = pico2-subset
+[submodule "third_party/micropython-maxm10"]
+	path = third_party/micropython-maxm10
+	url = https://github.com/klaNath/micropython-maxm10.git
+	branch = pico2-aprs
+[submodule "third_party/micropyGPS"]
+	path = third_party/micropyGPS
+	url = https://github.com/klaNath/micropyGPS.git
+	branch = pico2-aprs
