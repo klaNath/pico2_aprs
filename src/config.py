@@ -45,6 +45,13 @@ PIN_SD_MISO = const(28)
 PIN_SD_CS = const(9)
 PIN_GNSS_PPS = const(21)
 
+# GNSS(秋月 GT-505GGBL5-DR-N、MediaTek、NMEA 4.10、出荷時 115200 bps)。UART0
+# 線の色: 赤 VCC / 黒 GND / 橙 TXD(モジュール出力 -> GP1) / 緑 RXD(<- GP0) / 茶 PPS(-> GP21)
+GNSS_UART = const(0)
+PIN_GNSS_TX = const(0)  # Pico から送る(モジュールの RXD = 緑)
+PIN_GNSS_RX = const(1)  # Pico が受ける(モジュールの TXD = 橙)
+GNSS_BAUD = const(115200)
+
 FS = const(19200)  # 送受信のサンプリング周波数(1200 baud x 16)
 PWM_TOP = const(1023)  # PWM の分解能 10 bit、搬送波 150MHz / 1024 = 146.5 kHz
 TX_AMPLITUDE = 0.4  # PWM のフルスケールに対する振幅(後段の分圧で無線機のレベルに合わせる)
@@ -52,8 +59,8 @@ TX_DELAY_MS = const(300)  # PTT を入れてからデータまでのフラグ送
 TX_TAIL_MS = const(30)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
-# 自局。電波を出す前に必ず自局のコールサインに変える(N0CALL は試験用のダミー)
-CALLSIGN = "N0CALL"
+# 自局(CLAUDE.md の指定により既定は JK1BBJ)。電波を出す前に SSID・経路も含めて確認する
+CALLSIGN = "JK1BBJ"
 SSID = 7
 TX_PATH = ("WIDE1-1", "WIDE2-1")
 # Mic-E 以外のパケットの宛先(ソフトウェア識別子)。APZxxx は実験用に予約された範囲
