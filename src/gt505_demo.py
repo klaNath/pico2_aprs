@@ -1,6 +1,6 @@
-"""GNSS の動作確認: NMEA を読み、測位状態・位置・JST 時刻を表示する(画面と USB の両方)。
+"""GT-505GGBL5-DR-N(旧 GNSS モジュール)の動作確認: NMEA を読み、測位状態・位置・JST 時刻を表示する(画面と USB の両方)。
 
-    python tools/dev.py run src/gnss_demo.py -t 130
+    python tools/dev.py run src/gt505_demo.py -t 130
 
 2 分間動いて止まる。屋内では測位できないことが多いので窓際か屋外で。
 最初の数秒の生の行も表示するので、配線(115200 bps、TXD -> GP1)が合っているか確認できる。
