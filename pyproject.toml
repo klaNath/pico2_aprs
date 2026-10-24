@@ -9,7 +9,8 @@ requires-python = ">=3.9"
 # ------------------------------------------------------------------
 [tool.pyright]
 include = ["src", "tests"]
-exclude = [".*", "__*", "**/typings", "tools"]
+# src/maxm10 と src/micropyGPS.py はサブモジュールからの生成物(各リポジトリの書式のまま)
+exclude = [".*", "__*", "**/typings", "tools", "src/maxm10", "src/micropyGPS.py"]
 ignore = ["**/typings"]
 extraPaths = ["src"]
 
@@ -28,7 +29,8 @@ reportUnnecessaryTypeIgnoreComment = "information"
 [tool.ruff]
 line-length = 100
 target-version = "py38"
-extend-exclude = ["typings"]
+# サブモジュールからの生成物は各リポジトリの書式のまま(src/tnc は自分で書いたので検査する)
+extend-exclude = ["typings", "src/maxm10", "src/micropyGPS.py"]
 # MicroPython viper のポインタ型(実行時の組み込み名)
 builtins = ["ptr", "ptr8", "ptr16", "ptr32", "uint"]
 
