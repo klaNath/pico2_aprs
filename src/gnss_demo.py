@@ -29,7 +29,7 @@ def main():
     lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL, config.LCD_PANEL)
     status = Status()
     ui = Ui(Screen(lcd), Stations(), status,
-            (config.PIN_BTN_A, config.PIN_BTN_B, config.PIN_BTN_X, config.PIN_BTN_Y))
+            config.BUTTONS)
     lcd.backlight(0.8)
 
     # 最初の 3 秒は生の行をそのまま出す(配線とボーレートの確認用)

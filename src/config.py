@@ -1,31 +1,35 @@
 """ピン割り当てと動作設定(配線を変えたらここだけ直す)。
 
+基板 hw/Pico_MicroSD_M10_Board_rev1.net(開発途中の rev1)の結線に合わせてある。
 Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP24/GP25/GP29 と ADC3 は使わない。
-実際の配線は CLAUDE.md の「配線メモ」が正。未配線のものは後のマイルストーンで確定する:
-    GP0  UART0 TX  -> GNSS (Teseo-LIV3FL) RX
-    GP1  UART0 RX  <- GNSS TX
-    GP2  PTT(トランジスタ経由で無線機の PTT を GND へ落とす)。GP3 と同じ PWM スライス 1
-         だが、PTT は普通の GPIO 出力なので PWM の動作とは干渉しない
-    GP3  AFSK 送信音声(PWM、slice 1 B) -> RC フィルタ -> 無線機の MIC/DATA 入力
-    GP6-8  空き(Display Pack の RGB LED は基板上で切り離し済み)
-    GP9-11 SPI1 microSD(CS GP9 / SCK GP10 / MOSI GP11)、MISO は GP28(SPI1 RX)
-    GP12-15 Display Pack のボタン A / B / X / Y(押すと Low、内部プルアップ)
-    GP16-20 Display Pack の LCD(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)
-    GP21 GNSS 1PPS(予備)
-    GP22 ビーコン送出のトグルスイッチ(GND へ落とす、内部プルアップ)
-    GP26 ADC0 受信音声 <- 無線機の SP/DATA 出力(バイアス + HPF 経由)
-    GP28 SPI1 MISO(microSD)。ADC2 は使えなくなる
+    GP0  UART0 TX  -> GNSS (u-blox MAX-M10M) RXD
+    GP1  UART0 RX  <- GNSS TXD
+    GP2  PTT(無線機ボード J5-1 RF_TX)。GP3 と同じ PWM スライス 1 だが普通の GPIO 出力
+    GP3  AFSK 送信音声(PWM、slice 1 B)-> 0 Ω -> 無線機ボード J5-2
+    GP4/5 I2C0 SDA/SCL(無線機ボード J5。将来の Si5351 用)
+    GP6  GNSS RESET_N(BBR を消すので通常は駆動しない)
+    GP7  状態表示 LED(赤、D2)
+    GP9  microSD カード検出
+    GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
+    GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
+         LCD の RESET は Pico の RUN と共通(ソフトからは SWRESET で代用)
+    GP21 外部スイッチ(J1)。0 V = ビーコン送出オン
+    GP22 GNSS TIMEPULSE(PPS)。黄 LED(D2)も点く。SAFEBOOT_N と兼用なので駆動しない
+    GP26 ADC0 受信音声(rev1 では周辺光センサの位置。次の改版で音声入力になる予定)
+    GP27 ADC1 電源電圧の監視(rev1 では分圧抵抗が未実装)
 """
 
 from micropython import const
 
 PIN_AFSK_OUT = const(3)
-PIN_BEACON_SW = const(22)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
+PIN_BEACON_SW = const(21)  # 0 V でビーコン送出オン
+BEACON_SW_ON = 0
+PIN_STATUS_LED = const(7)
 
-# 表示(Pimoroni Pico Display Pack、240x135 ST7789)。パネルを替えるときは LCD_PANEL を変える
-LCD_PANEL = "pico_display"  # hw.st7789.PANELS のキー。将来の 2.4 インチは "st7789_320x240"
+# 表示(ST7789 2.4 インチ 240x320、横長 320x240 で使う)。パネルを替えるときは LCD_PANEL を変える
+LCD_PANEL = "st7789_320x240"  # hw.st7789.PANELS のキー(Pico Display Pack は "pico_display")
 LCD_SPI = const(0)
 PIN_LCD_SCK = const(18)
 PIN_LCD_MOSI = const(19)
@@ -33,23 +37,21 @@ PIN_LCD_CS = const(17)
 PIN_LCD_DC = const(16)
 PIN_LCD_BL = const(20)
 LCD_BAUD = const(62_500_000)
-PIN_BTN_A = const(12)
-PIN_BTN_B = const(13)
-PIN_BTN_X = const(14)
-PIN_BTN_Y = const(15)
+BUTTONS = ()  # 画面操作のボタン(rev1 の基板には無い)。(A, B, X, Y) の GPIO 番号
 
-# microSD(SPI1)。マイルストーン 5 で使う
+# microSD(SPI1)
 PIN_SD_SCK = const(10)
 PIN_SD_MOSI = const(11)
-PIN_SD_MISO = const(28)
-PIN_SD_CS = const(9)
-PIN_GNSS_PPS = const(21)
+PIN_SD_MISO = const(12)
+PIN_SD_CS = const(15)
+PIN_SD_DET = const(9)
 
-# GNSS(秋月 GT-505GGBL5-DR-N、MediaTek、NMEA 4.10、出荷時 115200 bps)。UART0
-# 線の色: 赤 VCC / 黒 GND / 橙 TXD(モジュール出力 -> GP1) / 緑 RXD(<- GP0) / 茶 PPS(-> GP21)
+# GNSS(u-blox MAX-M10M)。UART0、ドライバは micropython-maxm10
 GNSS_UART = const(0)
-PIN_GNSS_TX = const(0)  # Pico から送る(モジュールの RXD = 緑)
-PIN_GNSS_RX = const(1)  # Pico が受ける(モジュールの TXD = 橙)
+PIN_GNSS_TX = const(0)  # Pico から送る(モジュールの RXD)
+PIN_GNSS_RX = const(1)  # Pico が受ける(モジュールの TXD)
+PIN_GNSS_RESETN = const(6)
+PIN_GNSS_PPS = const(22)
 GNSS_BAUD = const(115200)
 
 FS = const(19200)  # 送受信のサンプリング周波数(1200 baud x 16)

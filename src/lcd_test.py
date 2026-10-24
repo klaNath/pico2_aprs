@@ -6,7 +6,7 @@
     - 画面の外周に 1 ピクセルの白枠(上下左右が欠けていなければオフセットは正しい)
     - 左上に赤の四角と "TL"、右下に青の四角と "BR"(向きの確認)
     - 中央に 赤/緑/青/白/黒 の色帯(色の並び RGB/BGR と反転の確認)
-    - ボタン A/B/X/Y を押すと、押したボタン名が下に表示される(10 秒間)
+    - ボタン A/B/X/Y を押すと、押したボタン名が下に表示される(10 秒間。config.BUTTONS がある場合)
 """
 
 import time
@@ -50,9 +50,9 @@ dt = time.ticks_diff(time.ticks_us(), t0)
 lcd.backlight(0.8)
 print("LCD %dx%d drawn in %d ms" % (W, H, dt // 1000))
 
-buttons = {name: Pin(pin, Pin.IN, Pin.PULL_UP) for name, pin in
-           (("A", config.PIN_BTN_A), ("B", config.PIN_BTN_B),
-            ("X", config.PIN_BTN_X), ("Y", config.PIN_BTN_Y))}
+buttons = {name: Pin(pin, Pin.IN, Pin.PULL_UP) for name, pin in zip("ABXY", config.BUTTONS)}
+if not buttons:
+    print("no buttons on this board (config.BUTTONS is empty)")
 seen = set()
 t_end = time.ticks_add(time.ticks_ms(), 10_000)
 while time.ticks_diff(t_end, time.ticks_ms()) > 0:

@@ -57,8 +57,8 @@ PANELS = {
             (0xE1, b"\x70\x03\x09\x0a\x09\x06\x2b\x34\x41\x07\x12\x14\x28\x2e"),
         ),
     },
-    # 将来の 2.4 インチ 240x320(横長 320x240 で使う)。Pimoroni Pico Display 2.0 の値。
-    # 未検証: 実際のモジュールでは RGB/BGR、反転の有無、向きが違うことがあるので要確認
+    # 2.4 インチ 240x320(横長 320x240 で使う)。Pimoroni Pico Display 2.0 の値。
+    # rev1 基板のモジュールで向き・枠・色・文字を目視確認済み(2026-10-25)
     "st7789_320x240": {
         "width": 320, "height": 240, "xoff": 0, "yoff": 0,
         "madctl": COL_ORDER | SWAP_XY | SCAN_ORDER,

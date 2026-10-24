@@ -75,7 +75,7 @@ def main():
     status.utc_s = time.time()
     status.beacon_on = True
     ui = Ui(scr, stations, status,
-            (config.PIN_BTN_A, config.PIN_BTN_B, config.PIN_BTN_X, config.PIN_BTN_Y))
+            config.BUTTONS)
     now = time.ticks_ms()
     # 古い局(61 分前と 90 分前に受信したことにする)
     stations.update(pos_packet("JA1OLD", 20.0, 120, "-", "old station"),
