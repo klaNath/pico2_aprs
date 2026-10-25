@@ -53,6 +53,8 @@ python tools/dev.py run src/xxx.py -t 10   # 個別スクリプトの実行
 python tools/dev.py exec "import app; print(app.Blinker)" -t 10   # 対話の代わりのコード片実行
 python tools/dev.py check             # lint + test --host + test をまとめて
 python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC のみ、数分かかる。モデムを変えたら回す)
+python tools/dev.py build             # check のあと、本体だけ(デモを除く)の ROMFS イメージを作る(書き込みなし)
+python tools/dev.py release           # build + ROMFS へ書き込み + 起動の確認(要確認。電源投入で動く状態にする)
 ```
 
 変更後は少なくとも `lint` と `test` を通してから完了を報告する。
@@ -60,6 +62,7 @@ python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC の
 ## 書き込み方式: deploy と romfs-deploy
 
 - `deploy`: `src/` を .py のままフラッシュのファイルシステムに書く。シンプルで、デバイス上で直接編集もできる。
+- `release`(普段はこれ): `check` → デモを除いた ROMFS イメージ → `romfs-deploy` → ソフトリセットして `[station] ... started` を待つ。除外するファイルは dev.py の `RELEASE_EXCLUDE`。書き込んだ本体を動かすときは `dev.py exec --no-mount "..."`。
 - `romfs-deploy`: `src/` を .mpy にコンパイルした読み出し専用イメージを ROMFS 区画に書き、`/rom` から実行する。import が速く RAM 消費が少ない。フラッシュには `/rom` の `_romfs_main` を呼ぶランチャー `main.py`(と `boot.py`)だけが残る。
   - 使う前に `romfs-query` で区画があるか確認する。区画が無いファームウェアでは使えない。
   - .mpy 化は dev.py が `mpy-cross -march=armv7emsp` で行う(viper/native を含むため。mpremote 任せだと失敗する)。元のパスを埋め込むので、トレースバックには `src/xxx.py`(`_romfs_main` は `src/main.py`)と出る。ソースは表示されないので、ローカルの該当行を見る。
@@ -74,6 +77,7 @@ python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC の
 - **起動時の挙動(deploy 後)**: `dev.py monitor --reset -s 15` でソフトリセットして main.py の出力を 15 秒読む。
 - **デバイス上のファイル**: `dev.py ls`, `dev.py cat boot.py`。
 - **接続できない**: 他ツール(MicroPico、Thonny、シリアルモニタ)がポートを掴んでいないかユーザーに確認。`dev.py ports` で検出状況を見る。
+- **マウント中にリセットしない**: `dev.py run/exec`(src をマウント中)で動かしたプログラムが `machine.reset()` などでリセットまで進むと、その後デバイスが応答しなくなる(USB の抜き差しで戻る)。リセットを伴う試験(`station.main()` の異常時の再起動など)は、書き込み後に `dev.py exec --no-mount` で行う。
 - **応答しない / 起動ループ**: まず `dev.py rm-main`(要確認)。それでも駄目ならユーザーに USB の抜き差しを頼む。最終手段は BOOTSEL でファームウェア再書き込み(ユーザー作業)。
 
 ## MicroPython で書くときの注意(CPython との違い)
