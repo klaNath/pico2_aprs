@@ -388,6 +388,19 @@ def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):
         fb.text(name, tx, y - 3 + dy, col)
 
 
+def small_map_kind(stations, now_ms, sec):
+    """小さな地図に出すもの -> 'map'(局の地図)/ 'sky'(衛星の位置)。sec は経過秒(切り替えの時刻)。
+
+    局が無い: 常に SKY。古い局だけ: MAP 5 秒・SKY 5 秒。古くない局がある: MAP 10 秒・SKY 5 秒。
+    局の数え方は一覧の見出し(HEARD)と同じ。
+    """
+    if not stations.order:
+        return "sky"
+    if all(st.stale(now_ms) for st in stations.order):
+        return "map" if sec % 10 < 5 else "sky"
+    return "map" if sec % 15 < 10 else "sky"
+
+
 def draw_sky(fb, dy, w, h, signals):
     """衛星の位置(スカイプロット)。中心が天頂、外周が地平線、円は仰角 30 度と 60 度(北が上)。
 

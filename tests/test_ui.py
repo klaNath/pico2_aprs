@@ -4,7 +4,7 @@
 """
 
 from aprs.packet import parse_frame
-from core.stations import Stations
+from core.stations import STALE_S, Stations
 from tnc.ax25 import Frame
 from ui.views import (
     BLACK,
@@ -17,6 +17,7 @@ from ui.views import (
     badge_color,
     detail_lines,
     gnss_text,
+    small_map_kind,
     status_lines,
 )
 
@@ -110,3 +111,15 @@ def test_badge_color():
     assert badge_color(st) == GREEN
     st.aug = ("QZSS", "SLAS")
     assert badge_color(st) == CYAN and CYAN != BLACK
+
+
+def test_small_map_kind():
+    s = Stations()
+    kinds = lambda now: "".join(small_map_kind(s, now, t)[0] for t in range(30))  # noqa: E731
+    assert kinds(0) == "s" * 30  # 局が無ければ常に SKY
+    s.update(parse_frame(Frame.parse("JA1AAA>APRS:!3539.53N/13944.70E>test")), 0)
+    assert kinds(1000) == ("m" * 10 + "s" * 5) * 2  # 古くない局がある: MAP 10 秒・SKY 5 秒
+    old = STALE_S * 1000
+    assert kinds(old) == ("m" * 5 + "s" * 5) * 3  # 古い局だけ: 5 秒ずつ
+    s.update(parse_frame(Frame.parse("JA1BBB>APRS:>status")), old)
+    assert kinds(old) == ("m" * 10 + "s" * 5) * 2

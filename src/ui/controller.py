@@ -7,8 +7,9 @@
     Y: 選択を解除して最新局の自動表示に戻す
 ボタンが無い(pins が空)ときは選択も画面切り替えもしない。320x240 では小さな地図が常に出ている。
 poll() を Core0 のループから 50 ms 程度ごとに呼ぶ。描画は変化のあった領域だけ。
-時計・経過時間は 1 秒ごと。小さな地図は MAP_TICK_S ごとに局の地図(MAP)と衛星の位置(SKY)を
-切り替える。右上の測位状態の丸は 0.5 秒ごとに点灯・消灯する(1 Hz の点滅、丸の部分だけ描き直す)。
+時計・経過時間は 1 秒ごと。小さな地図は局の地図(MAP)と衛星の位置(SKY)を切り替え
+(周期は views.small_map_kind)、切り替えのときと MAP_TICK_S ごとに描き直す。
+右上の測位状態の丸は 0.5 秒ごとに点灯・消灯する(1 Hz の点滅、丸の部分だけ描き直す)。
 """
 
 import time
@@ -34,6 +35,7 @@ class Ui:
         self._seen_version = -1
         self._last_sec = -1
         self._blink = True
+        self._map_kind = None  # 小さな地図に最後に描いたもの
         self._dirty_all = True
 
     # ---- ボタン
@@ -80,7 +82,8 @@ class Ui:
             self.draw_all(now_ms)
         elif tick:
             self.draw_tick(now_ms)
-            if self.lay.wide and sec % MAP_TICK_S == 0:
+            if self.lay.wide and (sec % MAP_TICK_S == 0
+                                  or views.small_map_kind(self.st, now_ms, sec) != self._map_kind):
                 self._draw_small_map(now_ms)
         elif blink_changed and not (self.map_mode and not self.lay.wide):
             self._draw_badge()
@@ -127,7 +130,8 @@ class Ui:
     def _draw_small_map(self, now_ms):
         lay = self.lay
         w = lay.map_w + 2  # 左端の 2px は区切り線
-        if (time.ticks_diff(now_ms, 0) // 1000 // MAP_TICK_S) % 2:
+        self._map_kind = views.small_map_kind(self.st, now_ms, time.ticks_diff(now_ms, 0) // 1000)
+        if self._map_kind == "sky":
             draw = lambda fb, dy: views.draw_sky(fb, dy, w, lay.map_h, self.status.signals)  # noqa: E731
         else:
             draw = lambda fb, dy: views.draw_map(fb, dy, w, lay.map_h, self.st,  # noqa: E731
