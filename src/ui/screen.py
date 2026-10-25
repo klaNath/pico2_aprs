@@ -10,11 +10,12 @@ import framebuf
 
 
 class Screen:
-    def __init__(self, lcd, scratch_bytes=24 * 1024):
+    def __init__(self, lcd, scratch_bytes=24 * 1024, scratch=None):
+        """scratch: 作業用バッファ(bytearray)。None なら scratch_bytes をここで確保する"""
         self.lcd = lcd
         self.width = lcd.width
         self.height = lcd.height
-        self._scratch = bytearray(scratch_bytes)
+        self._scratch = scratch if scratch is not None else bytearray(scratch_bytes)
         self._mv = memoryview(self._scratch)
 
     def region(self, x, y, w, h, draw, bg=0):

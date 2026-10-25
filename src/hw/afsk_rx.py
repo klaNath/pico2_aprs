@@ -36,20 +36,26 @@ _ADC_CLK = const(48_000_000)
 _RING_BITS = const(13)  # 8 KB
 _RING_BYTES = const(1 << _RING_BITS)
 _RING_N = const(_RING_BYTES // 2)  # サンプル数
+RING_ALLOC_BYTES = 2 * _RING_BYTES  # リングをその大きさの境界に揃えるため 2 倍確保する
 _BLOCK = const(512)
 
 
 class AdcRing:
     """ADC0..2 を DMA でリングバッファへ連続取り込みする。"""
 
-    def __init__(self, pin=26, fs=19200):
+    def __init__(self, pin=26, fs=19200, buf=None):
+        """buf: リング用の array('H')(RING_ALLOC_BYTES バイト)。None ならここで確保する"""
         if _ADC_CLK % fs:
             raise ValueError("fs must divide 48 MHz")
         ch = pin - 26
         if not 0 <= ch <= 2:  # ADC3(GP29)は Pico 2 W で無線に使われるので使わない
             raise ValueError("ADC pin must be GP26..GP28")
         ADC(Pin(pin)).read_u16()  # パッドの初期化(デジタル入力無効・プル無し)を任せる
-        self.buf = array("H", bytes(2 * _RING_BYTES))
+        if buf is None:
+            buf = array("H", bytes(RING_ALLOC_BYTES))
+        if len(buf) * 2 != RING_ALLOC_BYTES:
+            raise ValueError("ring buffer must be %d bytes" % RING_ALLOC_BYTES)
+        self.buf = buf
         base = uctypes.addressof(self.buf)
         self.addr = (base + _RING_BYTES - 1) & ~(_RING_BYTES - 1)
         self.off = (self.addr - base) // 2  # buf の中でリングが始まる添字
@@ -95,8 +101,8 @@ class AdcRing:
 class Receiver:
     """Core1 で ADC のリングを復調し、完成したフレームを Core0 に渡す。"""
 
-    def __init__(self, pin=26, fs=19200, nslots=8):
-        self.ring = AdcRing(pin, fs)
+    def __init__(self, pin=26, fs=19200, nslots=8, ring_buf=None):
+        self.ring = AdcRing(pin, fs, ring_buf)
         self.chains = [
             (Demodulator(fs, max_block=_BLOCK, **PROFILE_NOISE), Deframer(nslots)),
             (Demodulator(fs, max_block=_BLOCK, **PROFILE_HUM), Deframer(nslots)),

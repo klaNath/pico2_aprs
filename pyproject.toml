@@ -41,3 +41,4 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tools/*" = ["E501"]
+"src/station.py" = ["E402"]  # 送信バッファをほかの import より先に確保するため

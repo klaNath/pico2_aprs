@@ -1,8 +1,15 @@
 """AFSK 送信: PWM + DMA で音声を出し、PTT を制御する。
 
-    音声サンプル(array('H')、PWM のデューティ値)を DMA で PWM の CC レジスタへ書き込む。
+    音声サンプル(16 bit、PWM のデューティ値)を DMA で PWM の CC レジスタへ書き込む。
     DMA のペーシングは DMA タイマ(システムクロック x 2/15625 = 19200 Hz ちょうど)。
     CPU は送出中ほかの処理ができる(待ちは asyncio で行う)。
+    送信波形のバッファ(max_ms 分)とレベル列のバッファは作るときに 1 回だけ確保し、使い回す。
+    長く動かしてヒープが断片化しても、送信のたびに大きな連続領域を探さずに済む
+    (ビーコン 1 回で約 26 KB。起動直後に確保すれば確実に取れる)。
+    バッファは bytearray 1 つで、変調器には uctypes の 16 bit 配列として渡す。array('H', bytes(n))
+    だと一時的な bytes と配列で同じ大きさの連続領域が 2 つ要り、断片化したヒープで
+    MemoryError になった
+    (uctypes でも書き込みの速さは同じ: 0.7 秒分で 105 ms、array は 114 ms)。
 
 PWM の搬送波(146.5 kHz)は後段の 2 次 RC LPF で取り除く。
 送信していない間は PWM のデューティを 0(ピンを Low に固定)にしてエッジを止める。
@@ -17,9 +24,9 @@ RP2350 の PWM レジスタ: ベース 0x400A8000、スライスごとに 0x14 �
 
 import asyncio
 import time
-from array import array
 
 import rp2
+import uctypes
 from machine import PWM, Pin, mem32
 from micropython import const
 
@@ -35,11 +42,20 @@ _DMA_SIZE_16 = const(1)
 
 class AfskTx:
     def __init__(self, pin_audio, pin_ptt, fs=19200, pwm_top=1023, amplitude=0.4,
-                 txdelay_ms=300, txtail_ms=30, ptt_active_high=True, settle_ms=60):
+                 txdelay_ms=300, txtail_ms=30, ptt_active_high=True, settle_ms=60, max_ms=1500,
+                 raw=None):
+        """raw: 送信波形のバッファ(bytearray、1 サンプル 2 バイト)。
+        None なら max_ms 分をここで確保する"""
         self.fs = fs
         self.top = pwm_top
         mid = (pwm_top + 1) // 2
         self.mod = Modulator(fs, mid=mid, amp=int(mid * amplitude))
+        # 送信波形(PWM のデューティ値)とレベル列のバッファ。build() はここへ書く
+        self.raw = raw if raw is not None else bytearray(2 * (fs * max_ms // 1000))  # DMA が読む
+        self.nmax = len(self.raw) // 2  # 入るサンプル数
+        self.buf = uctypes.struct(uctypes.addressof(self.raw),
+                                  {"v": (uctypes.ARRAY | 0, uctypes.UINT16 | self.nmax)}).v
+        self.lv = bytearray(self.nmax // self.mod.spb)
         self.txdelay_ms = txdelay_ms
         self.txtail_ms = txtail_ms
         self.settle_ms = settle_ms  # 中点に戻してから PTT までの待ち(C3 1uF x 約 11k の 5 倍強)
@@ -63,25 +79,33 @@ class AfskTx:
         mem32[self._cc] = v | (v << 16)
 
     def build(self, frames):
-        """フレーム(FCS 込み bytes のリスト)-> 送出する音声サンプル array('H')"""
+        """フレーム(FCS 込み bytes のリスト)の音声サンプルを self.raw に作り、サンプル数を返す。
+        メモリは確保しない。入りきらなければ ValueError、送出中なら RuntimeError"""
+        if self.busy:
+            raise RuntimeError("TX busy: the buffer is being sent")
         pre = max(1, self.txdelay_ms * 1200 // 8000)  # フラグ 1 個 = 8 ビット
         post = max(1, self.txtail_ms * 1200 // 8000)
         n = 0
         for i, f in enumerate(frames):
             n += levels_size(len(f), pre if i == 0 else 2, post if i == len(frames) - 1 else 0)
-        lv = bytearray(n)
+        if n > len(self.lv):
+            raise ValueError("frames too long for the TX buffer (%d > %d levels)"
+                             % (n, len(self.lv)))
+        lv = memoryview(self.lv)
         n = 0
         last = 0
         for i, f in enumerate(frames):
-            k, last = encode_levels(f, memoryview(lv)[n:], pre if i == 0 else 2,
+            k, last = encode_levels(f, lv[n:], pre if i == 0 else 2,
                                     post if i == len(frames) - 1 else 0, last)
             n += k
-        out = array("H", bytes(2 * self.mod.samples_size(n)))
-        self.mod.modulate(lv, n, out, 0)
-        return out
+        self.mod.modulate(self.lv, n, self.buf, 0)
+        return self.mod.samples_size(n)
 
-    def start(self, samples, n=-1):
-        """PWM を中点に戻して settle_ms 待ち、PTT を入れて DMA で送出を始める。"""
+    def start(self, samples=None, n=-1):
+        """PWM を中点に戻して settle_ms 待ち、PTT を入れて DMA で送出を始める。
+        samples を省くと self.raw(build() で作った n サンプル)を送る。"""
+        if samples is None:
+            samples = self.raw
         if n < 0:
             n = len(samples)
         self._write_cc(self._mid)
@@ -108,14 +132,12 @@ class AfskTx:
         return True
 
     async def send(self, frames):
-        samples = self.build(frames)
-        self.start(samples)
+        self.start(n=self.build(frames))
         while not self.finish():
             await asyncio.sleep_ms(10)
 
     def send_blocking(self, frames):
-        samples = self.build(frames)
-        self.start(samples)
+        self.start(n=self.build(frames))
         while not self.finish():
             time.sleep_ms(5)
 

@@ -15,19 +15,34 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
           config.TX_ENABLED = False の間は送るはずだったパケットを SD に TX(dry) と記録するだけで、
           PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
+送信波形のバッファ(config.TX_BUFFER_MS 分)は、ヒープが断片化する前に確保する
+(このモジュールの読み込みの最初)。
+dry run でも波形は作る(メモリの使い方を実際の送信と同じにする)。
 """
 
 import gc
+from array import array
+
+import config
+
+# 大きなバッファは、ほかのモジュールを読み込む前に確保する。dev.py run/exec(src をマウント)では
+# 読み込みのたびにソースをコンパイルするのでヒープが細切れになり、後からでは数十 KB の連続領域が
+# 取れない(実測: 読み込み後の最大の連続領域は 48 KB)。ROMFS からの起動では問題ないが、同じ作りにする
+gc.collect()
+_TX_RAW = bytearray(2 * (config.FS * config.TX_BUFFER_MS // 1000))  # 送信波形(1.5 秒で 57.6 KB)
+_RX_RING = array("H", bytes(2 * 8192))  # 受信のリング(hw.afsk_rx.RING_ALLOC_BYTES と同じ)
+_UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
+
 import sys
 import time
 
 import machine
 from machine import SPI, Pin
 
-import config
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
 from core.stations import Stations
+from hw import restart
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
 from hw.m10 import M10
@@ -43,10 +58,7 @@ RX_RECENT_MS = 2000  # 画面の [RX] を出しておく時間
 LED_RX_MS = 100
 REPORT_MS = 10_000  # USB に状態を出す間隔
 FAIL_WINDOW_MS = 60_000  # 起動からこの時間内の失敗は「続けて失敗」と数える
-RESTART_S = 10
-RESTART_MAX_S = 300
-_SCRATCH = 0x400D8000 + 0x0C  # RP2350 WATCHDOG SCRATCH0(SCRATCH4-7 はブート ROM が使う)
-_MAGIC = 0x5A000000
+RESTART_S = 10  # 試験で短くできるよう、ここで持つ(hw.restart.wait_s に渡す)
 
 
 def own_call():
@@ -60,6 +72,13 @@ def tnc2(f):
 
 class Station:
     def __init__(self):
+        # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
+        # PTT は送信しない側、GP3 はデューティ 0 にしておく
+        self.tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
+                         config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
+                         config.PTT_ACTIVE_HIGH, raw=_TX_RAW)
+        self.tx_enabled = config.TX_ENABLED
+        self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
         self.call = own_call()
         self.status = Status()
         self.stations = Stations(own_call=self.call)
@@ -67,7 +86,7 @@ class Station:
                   mosi=Pin(config.PIN_LCD_MOSI))
         lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL,
                      config.LCD_PANEL)
-        self.ui = Ui(Screen(lcd), self.stations, self.status, config.BUTTONS)
+        self.ui = Ui(Screen(lcd, scratch=_UI_SCRATCH), self.stations, self.status, config.BUTTONS)
         lcd.backlight(0.8)
         self.sd = SdLog(config.SD_SPI, config.PIN_SD_SCK, config.PIN_SD_MOSI, config.PIN_SD_MISO,
                         config.PIN_SD_CS, config.PIN_SD_DET, header=self.call, log=print)
@@ -76,15 +95,6 @@ class Station:
                         baud=config.GNSS_BAUD, log=print)
         self.gnss.on_nmea = self.sd.nmea
         self.gnss_ok = False
-        self.rx = Receiver(config.PIN_RX_ADC, config.FS)
-        if config.TX_ENABLED:
-            self.tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                             config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                             config.PTT_ACTIVE_HIGH)
-        else:
-            self.tx = None
-            # 送信しない側に固定(PTT の線を浮かせない)
-            Pin(config.PIN_PTT, Pin.OUT, value=0 if config.PTT_ACTIVE_HIGH else 1)
         self.sw = Pin(config.PIN_BEACON_SW, Pin.IN, Pin.PULL_UP)
         self.led = Pin(config.PIN_STATUS_LED, Pin.OUT, value=0)
         self.beacon = Beacon(config.BEACON_MOVING_S, config.BEACON_STILL_S, config.BEACON_MOVE_M)
@@ -104,7 +114,7 @@ class Station:
         gc.collect()
         self.rx.start()
         print("[station] %s started, TX %s, free %d" % (
-            self.call, "enabled" if self.tx is not None else "disabled (dry run)", gc.mem_free()))
+            self.call, "enabled" if self.tx_enabled else "disabled (dry run)", gc.mem_free()))
 
     def step(self, now):
         if self.gnss_ok:
@@ -167,18 +177,26 @@ class Station:
                        config.BEACON_COMMENT, config.BEACON_MESSAGE)
         self.beacon.sent(st.lat, st.lon, now)
         text = tnc2(f)
-        self.sd.packet(text, tx=True, utc_s=self.utc(), dry=self.tx is None)
-        if self.tx is not None:
+        try:
+            n = self.tx.build([bytes(f.encode())])
+        except ValueError as e:  # TX_BUFFER_MS に入りきらない(コメントが長すぎる)
+            print("[tx] not sent:", e)
+            self.sd.logger.note("TX skipped: %s" % e)
+            return
+        self.sd.packet(text, tx=True, utc_s=self.utc(), dry=not self.tx_enabled)
+        if self.tx_enabled:
             st.tx_active = True
             self.ui.draw_status_now()
             self.led.value(1)
             try:
-                self.tx.send_blocking([bytes(f.encode())])
+                self.tx.start(n=n)
+                while not self.tx.finish():
+                    time.sleep_ms(5)
             finally:
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
-        print("[tx%s]" % ("" if self.tx is not None else " dry"), text)
+        print("[tx%s] %d ms" % ("" if self.tx_enabled else " dry", n * 1000 // config.FS), text)
 
     def _report(self):
         st = self.status
@@ -189,8 +207,7 @@ class Station:
 
     def close(self):
         self.rx.stop()
-        if self.tx is not None:
-            self.tx.close()
+        self.tx.close()
         self.rx.close()
         self.led.value(0)
         self.sd.close()
@@ -215,20 +232,6 @@ def run(duration_ms=None):
 
 def _err_text(e):
     return "%s: %s" % (type(e).__name__, e)
-
-
-def restart_wait_s(fails):
-    """続けて fails 回失敗したときの再起動までの秒(10, 20, 40, ... 最大 300)"""
-    return min(RESTART_S << min(max(fails - 1, 0), 8), RESTART_MAX_S)
-
-
-def _fails():
-    v = machine.mem32[_SCRATCH]
-    return v & 0xFFFF if v & 0xFFFF0000 == _MAGIC else 0
-
-
-def _set_fails(n):
-    machine.mem32[_SCRATCH] = _MAGIC | n if n else 0
 
 
 def _show_fatal(e, wait_s):
@@ -263,21 +266,21 @@ def main():
     try:
         run()
     except KeyboardInterrupt:
-        _set_fails(0)
+        restart.set_fails(0)
         print("[station] stopped by Ctrl-C (no restart)")
         return
     except Exception as e:
         sys.print_exception(e)
         quick = time.ticks_diff(time.ticks_ms(), t0) < FAIL_WINDOW_MS
-        fails = _fails() + 1 if quick else 1
-        _set_fails(fails)
-        wait = restart_wait_s(fails)
+        fails = restart.fails() + 1 if quick else 1
+        restart.set_fails(fails)
+        wait = restart.wait_s(fails, RESTART_S)
         print("[station] error (%d in a row), restart in %d s" % (fails, wait))
         _show_fatal(e, wait)
         try:
             time.sleep(wait)
         except KeyboardInterrupt:
-            _set_fails(0)
+            restart.set_fails(0)
             print("[station] restart cancelled by Ctrl-C")
             return
         machine.reset()

@@ -60,6 +60,9 @@ PWM_TOP = const(1023)  # PWM の分解能 10 bit、搬送波 150MHz / 1024 = 146
 TX_AMPLITUDE = 0.4  # PWM のフルスケールに対する振幅(後段の分圧で無線機のレベルに合わせる)
 TX_DELAY_MS = const(300)  # PTT を入れてからデータまでのフラグ送出時間(無線機の立ち上がり待ち)
 TX_TAIL_MS = const(30)
+# 送信波形のバッファの長さ(起動時に 1 回だけ確保して使い回す。1 ms あたり 38.4 バイト)。
+# ビーコン(Mic-E、コメント付き)は約 0.7 秒。これより長いパケットは送れない
+TX_BUFFER_MS = const(1500)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
 # 自局(CLAUDE.md の指定により既定は JK1BBJ)。電波を出す前に SSID・経路も含めて確認する
