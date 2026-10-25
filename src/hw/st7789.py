@@ -13,6 +13,8 @@ import time
 from machine import PWM, Pin
 from micropython import const
 
+from hw.rgb565 import rgb  # noqa: F401  (lcd_test などはここから import する)
+
 _SWRESET = const(0x01)
 _SLPOUT = const(0x11)
 _INVON = const(0x21)
@@ -70,12 +72,6 @@ PANELS = {
         ),
     },
 }
-
-
-def rgb(r, g, b):
-    """8 bit の R, G, B -> framebuf にそのまま描ける(バイト入れ替え済みの)RGB565"""
-    c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-    return ((c & 0xFF) << 8) | (c >> 8)
 
 
 class ST7789:

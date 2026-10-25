@@ -6,7 +6,7 @@ draw(fb, dy) の形で、領域の左上を (0, 0) とした座標に dy を足�
 """
 
 from core import geo
-from hw.st7789 import rgb
+from hw.rgb565 import rgb
 
 BLACK = rgb(0, 0, 0)
 WHITE = rgb(255, 255, 255)
@@ -39,7 +39,9 @@ class Status:
     def __init__(self):
         # 型注釈は pyright 用(関数内の注釈は実行時に評価されない)
         self.fix = 0  # 0 = 測位なし、2 = 2D、3 = 3D
-        self.sats = 0
+        self.sats = 0  # 使用衛星数(全系の合計)
+        self.sats_view = 0  # 可視衛星数(全系の合計)
+        self.hdop: "float | None" = None
         self.lat: "float | None" = None
         self.lon: "float | None" = None
         self.utc_s: "int | None" = None  # UTC の秒(time.time() と同じ起点)/ None = 時刻不明
@@ -152,10 +154,21 @@ def draw_detail(fb, dy, lay, st, status, now_ms):
     fb.hline(0, lay.detail_h - 1 + dy, lay.right_w, DARK)
 
 
+def gnss_text(status, cols):
+    """'3D 21/38 HDOP0.7'(測位の種類 使用/可視 HDOP)。cols に収まらなければ HDOP を省く"""
+    head = ("%dD" % status.fix) if status.fix >= 2 else "NO FIX"
+    s = "%s %d/%d" % (head, status.sats, status.sats_view)
+    if status.fix >= 2 and status.hdop is not None:
+        h = " HDOP%.1f" % status.hdop
+        if len(s) + len(h) <= cols:
+            s += h
+    return s
+
+
 def status_lines(status, cols):
     lines = []
-    gps = "GPS NO FIX" if status.fix < 2 else "GPS %dD %dsat" % (status.fix, status.sats)
     t = geo.fmt_jst(status.utc_s) if status.utc_s is not None else "--:--:--"
+    gps = gnss_text(status, cols - len(t) - 1)
     lines.append((gps + " " * max(1, cols - len(gps) - len(t)) + t,
                   GREEN if status.fix >= 2 else ORANGE))
     if status.lat is not None:

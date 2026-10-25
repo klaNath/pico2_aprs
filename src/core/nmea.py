@@ -7,6 +7,8 @@ u-blox M10 のように NMEA 4.1 以降で欄が増えていても、使う欄�
 UART からのバイト列は LineReader で 1 行ずつに区切る(固定バッファ、1 行ごとの確保は最小限)。
 """
 
+from core import geo
+
 KNOT_KMH = 1.852
 
 
@@ -46,16 +48,6 @@ def _f(s):
         return float(s) if s else None
     except ValueError:
         return None
-
-
-def _days_from_civil(y, m, d):
-    """グレゴリオ暦の日付 -> 1970-01-01 からの日数(Howard Hinnant のアルゴリズム)"""
-    y -= m <= 2
-    era = (y if y >= 0 else y - 399) // 400
-    yoe = y - era * 400
-    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
-    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
-    return era * 146097 + doe - 719468
 
 
 class Fix:
@@ -110,7 +102,7 @@ class Fix:
             self.course = _f(f[8])
         t, d = f[1], f[9]
         if len(t) >= 6 and len(d) == 6:
-            days = _days_from_civil(2000 + int(d[4:6]), int(d[2:4]), int(d[0:2]))
+            days = geo.days_from_civil(2000 + int(d[4:6]), int(d[2:4]), int(d[0:2]))
             self.utc_s = days * 86400 + int(t[0:2]) * 3600 + int(t[2:4]) * 60 + int(t[4:6])
 
     def _gga(self, f):

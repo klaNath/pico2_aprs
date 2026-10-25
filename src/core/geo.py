@@ -69,6 +69,21 @@ def map_xy(km, deg, cx, cy, r_max, d_min=0.5, d_max=100.0):
 JST_OFFSET_S = 9 * 3600
 
 
+def days_from_civil(y, m, d):
+    """グレゴリオ暦の日付 -> 1970-01-01 からの日数(Howard Hinnant のアルゴリズム)"""
+    y -= m <= 2
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def utc_seconds(year, month, day, hour, minute, second):
+    """UTC の日時 -> 1970-01-01 からの秒(MicroPython の rp2 の time.time() と同じ起点)"""
+    return days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+
+
 def fmt_jst(epoch_utc_s):
     """UTC の秒(MicroPython の time.time() と同じ起点)-> 'HH:MM:SS'(JST)"""
     t = (int(epoch_utc_s) + JST_OFFSET_S) % 86400
