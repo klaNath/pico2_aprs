@@ -37,6 +37,7 @@ class Ui:
         self._blink = True
         self._map_kind = None  # 小さな地図に最後に描いたもの
         self._dirty_all = True
+        self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
 
     # ---- ボタン
     def _pressed(self):
@@ -94,6 +95,11 @@ class Ui:
     # ---- 描画
     def draw_all(self, now_ms):
         lay = self.lay
+        if not self._cleared:
+            # 欄の間の 1px の隙間(枠線の脇)はどの欄も描かないので、LCD のメモリに残る
+            # 電源投入直後のゴミが見える。最初に一度だけ全体を黒で塗る
+            self.scr.fill(0)
+            self._cleared = True
         if self.map_mode and not lay.wide:
             self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_map(
                 fb, dy, lay.w, lay.h, self.st, self.status, now_ms))
