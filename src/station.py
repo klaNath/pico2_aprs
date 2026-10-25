@@ -1,7 +1,14 @@
 """APRS 局の本体: 受信(Core1)・ビーコン送信・GNSS・画面・microSD の記録を 1 つのループで回す。
 
-main.py が run() を呼ぶ。開発中は `python tools/dev.py run src/main.py -t 60` で、フラッシュに
+main.py が main() を呼ぶ。開発中は `python tools/dev.py run src/main.py -t 60` で、フラッシュに
 書かずに動かせる(タイムアウトで切れても、デバイス上では次の接続まで動き続ける)。
+main() は例外で止まったら内容を LCD・USB・SD に出し、待ってからハードリセットする(電源投入だけで
+使うため)。dev.py run/exec(PC の src をマウント中)で main() がリセットまで進むと、その後の接続で
+デバイスが応答しなくなることがあった(USB の抜き差しで戻る)。異常時の経路の試験は、書き込み後に
+`dev.py exec --no-mount` で行う。
+起動から FAIL_WINDOW_MS 以内の失敗が続くと待ちを 10, 20, 40 ... 300 秒と延ばす。失敗の回数は
+ウォッチドッグのスクラッチレジスタに置く(リセットでは消えず、電源を切ると消える。フラッシュに書かない)。
+USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
     送信: ビーコンスイッチ(GP21、High でオン)がオンで測位があれば、core.beacon の規則で
           Mic-E を送る。
@@ -14,6 +21,7 @@ import gc
 import sys
 import time
 
+import machine
 from machine import SPI, Pin
 
 import config
@@ -34,6 +42,11 @@ LOOP_MS = 20
 RX_RECENT_MS = 2000  # 画面の [RX] を出しておく時間
 LED_RX_MS = 100
 REPORT_MS = 10_000  # USB に状態を出す間隔
+FAIL_WINDOW_MS = 60_000  # 起動からこの時間内の失敗は「続けて失敗」と数える
+RESTART_S = 10
+RESTART_MAX_S = 300
+_SCRATCH = 0x400D8000 + 0x0C  # RP2350 WATCHDOG SCRATCH0(SCRATCH4-7 はブート ROM が使う)
+_MAGIC = 0x5A000000
 
 
 def own_call():
@@ -186,12 +199,85 @@ class Station:
 def run(duration_ms=None):
     """局を動かす。duration_ms を渡すとその時間で止まる(試験用)"""
     station = Station()
-    station.start()
-    t0 = time.ticks_ms()
     try:
+        station.start()
+        t0 = time.ticks_ms()
         while duration_ms is None or time.ticks_diff(time.ticks_ms(), t0) < duration_ms:
             station.step(time.ticks_ms())
             time.sleep_ms(LOOP_MS)
+    except Exception as e:
+        station.sd.logger.note("ERROR %s" % _err_text(e))  # close() で SD に書かれる
+        raise
     finally:
         station.close()
         print("[station] stopped")
+
+
+def _err_text(e):
+    return "%s: %s" % (type(e).__name__, e)
+
+
+def restart_wait_s(fails):
+    """続けて fails 回失敗したときの再起動までの秒(10, 20, 40, ... 最大 300)"""
+    return min(RESTART_S << min(max(fails - 1, 0), 8), RESTART_MAX_S)
+
+
+def _fails():
+    v = machine.mem32[_SCRATCH]
+    return v & 0xFFFF if v & 0xFFFF0000 == _MAGIC else 0
+
+
+def _set_fails(n):
+    machine.mem32[_SCRATCH] = _MAGIC | n if n else 0
+
+
+def _show_fatal(e, wait_s):
+    """例外の内容を LCD に出す(LCD を作り直す。失敗しても無視)"""
+    try:
+        from ui.views import BLACK, CH, RED, ROW, WHITE
+
+        gc.collect()
+        spi = SPI(config.LCD_SPI, baudrate=config.LCD_BAUD, sck=Pin(config.PIN_LCD_SCK),
+                  mosi=Pin(config.PIN_LCD_MOSI))
+        lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL,
+                     config.LCD_PANEL)
+        cols = lcd.width // CH
+        text = _err_text(e)
+        lines = ["STATION ERROR", ""] + [text[i:i + cols] for i in range(0, len(text), cols)][:8]
+        lines += ["", "restart in %d s" % wait_s]
+
+        def draw(fb, dy):
+            for i, s in enumerate(lines):
+                fb.text(s, 0, 1 + i * ROW + dy, RED if i == 0 else WHITE)
+
+        # 作業領域は小さく(メモリ不足で止まった直後でも描けるように)
+        Screen(lcd, 4096).region(0, 0, lcd.width, lcd.height, draw, BLACK)
+        lcd.backlight(0.8)
+    except Exception as e2:
+        sys.print_exception(e2)
+
+
+def main():
+    """電源投入時の入口(main.py から呼ぶ)。例外で止まったら表示して再起動する"""
+    t0 = time.ticks_ms()
+    try:
+        run()
+    except KeyboardInterrupt:
+        _set_fails(0)
+        print("[station] stopped by Ctrl-C (no restart)")
+        return
+    except Exception as e:
+        sys.print_exception(e)
+        quick = time.ticks_diff(time.ticks_ms(), t0) < FAIL_WINDOW_MS
+        fails = _fails() + 1 if quick else 1
+        _set_fails(fails)
+        wait = restart_wait_s(fails)
+        print("[station] error (%d in a row), restart in %d s" % (fails, wait))
+        _show_fatal(e, wait)
+        try:
+            time.sleep(wait)
+        except KeyboardInterrupt:
+            _set_fails(0)
+            print("[station] restart cancelled by Ctrl-C")
+            return
+        machine.reset()

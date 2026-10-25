@@ -68,6 +68,10 @@ class Logger:
         tag = (b"TX(dry) " if dry else b"TX ") if tx else b""
         self._add(0, b"%s %s%s\n" % (stamp.encode(), tag, text.rstrip(b"\r\n")))
 
+    def note(self, text):
+        """受信ログに '#' で始まる注記の行を足す(例外の記録など)"""
+        self._add(0, b"# %s\n" % (text.encode() if isinstance(text, str) else text))
+
     def nmea(self, line):
         """NMEA の 1 文(bytes、CR LF 付き)。RMC と GGA だけ残す"""
         if line[3:6] in NMEA_KEEP:

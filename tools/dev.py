@@ -7,7 +7,7 @@ Claude (Claude Code) と人間の両方が使う、非対話・タイムアウ�
     python tools/dev.py ports                 接続中の Pico を列挙
     python tools/dev.py info                  ファームウェア/メモリ/ストレージ情報
     python tools/dev.py run [FILE] -t 30      src/ をマウントして FILE(既定 src/main.py)を実行
-    python tools/dev.py exec "CODE" -t 10     src/ をマウントしてコード片を実行
+    python tools/dev.py exec "CODE" -t 10     src/ をマウントしてコード片を実行(--no-mount で書き込んだ本体を使う)
     python tools/dev.py test [PATTERN]        tests/ をデバイス上で実行(結果で終了コードが変わる)
     python tools/dev.py test --host [PATTERN] tests/ を PC(CPython)上で実行(test_hw_* はスキップ)
     python tools/dev.py lint                  ruff + pyright(ホスト側の静的チェック)
@@ -16,6 +16,8 @@ Claude (Claude Code) と人間の両方が使う、非対話・タイムアウ�
     python tools/dev.py romfs-query           ROMFS 区画の有無・サイズを表示
     python tools/dev.py romfs-build           src/ から ROMFS イメージを作る(build/app.romfs、書き込みなし)
     python tools/dev.py romfs-deploy [--reset] src/ を .mpy 化して ROMFS へ書き込み、ランチャー main.py を配置
+    python tools/dev.py build [--skip-check]  検査(check)のあと、本体だけ(デモを除く)の ROMFS イメージを作る
+    python tools/dev.py release [--skip-check] build + ROMFS へ書き込み + 起動の確認(電源投入で動く状態にする)
     python tools/dev.py monitor -s 10 [--reset] シリアル出力を一定時間だけ読む(起動時の挙動確認)
     python tools/dev.py ls [PATH] / cat PATH  デバイス上のファイル操作
     python tools/dev.py rm-main               デバイス上の main.py を削除(自動起動を止める)
@@ -214,6 +216,8 @@ def cmd_run(a) -> int:
 
 
 def cmd_exec(a) -> int:
+    if a.no_mount:  # 書き込んだ本体(フラッシュ / ROMFS)をそのまま使う
+        return mpremote(["exec", a.code], a.timeout)[0]
     return mpremote(["mount", rel(SRC), "exec", a.code], a.timeout)[0]
 
 
@@ -291,6 +295,17 @@ def cmd_deploy(a) -> int:
 #                   boot.py(src にあれば。起動直後に必要なのでフラッシュに置く)
 # フラッシュ側に同名モジュールが残っていると ROMFS より優先されてしまうため削除する。
 ROMFS_STAGE = ROOT / "build" / "romfs"
+ROMFS_IMAGE = ROOT / "build" / "app.romfs"
+ROMFS_SIZE = 1024 * 1024  # このファームウェアの ROMFS 区画(romfs-query で確認できる)
+# build / release で実機に載せないもの(src/ からの相対パス)。デモ・試験用スクリプトと、
+# テンプレートの app.py、旧 GNSS(GT-505)用のドライバ。dev.py run では今までどおり使える
+RELEASE_EXCLUDE = (
+    "app.py", "gnss_demo.py", "gt505_demo.py", "lcd_test.py", "m10_check.py", "rx_loopback.py",
+    "sdlog_demo.py", "tx_demo.py", "ui_demo.py", "core/nmea.py", "hw/gnss.py",
+)
+# release で起動を確かめるとき、この文字列が出れば成功(station.Station.start の表示)
+RELEASE_BOOT_OK = "[station] "
+RELEASE_BOOT_OK_END = " started,"
 ROMFS_ENTRY = "_romfs_main"
 ROMFS_MARCH = "armv7emsp"  # RP2350 Arm (Cortex-M33 + 単精度 FPU)。RISC-V ビルドなら rv32imc
 # sys.implementation._mpy >> 10 の値 → -march 名(py/persistentcode.h の MP_NATIVE_ARCH_*)
@@ -325,8 +340,9 @@ for _n in %r:
 """
 
 
-def _romfs_stage(march: str | None) -> list[str]:
+def _romfs_stage(march: str | None, exclude: tuple[str, ...] = ()) -> list[str]:
     """src/ を build/romfs/ に複製し、main.py を ROMFS_ENTRY に改名する。
+    exclude(src/ からの相対パス)は入れない。
     march が指定されていれば .py を .mpy にコンパイルして .py を消す(失敗したら中止)。
     フラッシュ側で削除すべき(ROMFS を隠してしまう)名前の一覧を返す。"""
     import shutil
@@ -343,6 +359,16 @@ def _romfs_stage(march: str | None) -> list[str]:
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".*")
     shutil.copytree(SRC, ROMFS_STAGE, ignore=ignore)
     (ROMFS_STAGE / "boot.py").unlink(missing_ok=True)
+    for name in exclude:
+        p = ROMFS_STAGE / name
+        if not p.exists():
+            die(f"除外の指定 src/{name} がありません(dev.py の RELEASE_EXCLUDE を確認)")
+        if p.is_dir():
+            shutil.rmtree(p, onerror=_force)
+        else:
+            p.unlink()
+    if exclude:
+        log(f"{len(exclude)} 個を除外しました: {', '.join(exclude)}")
     main = ROMFS_STAGE / "main.py"
     if main.exists():
         main.rename(ROMFS_STAGE / f"{ROMFS_ENTRY}.py")
@@ -402,7 +428,7 @@ def cmd_romfs_query(a) -> int:
 
 
 def cmd_romfs_build(a) -> int:
-    _romfs_stage(_romfs_march(a))
+    _romfs_stage(_romfs_march(a), getattr(a, "exclude", ()))
     out = Path(a.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     # .mpy 化は済んでいるので mpremote には --no-mpy で詰めるだけをさせる
@@ -434,7 +460,7 @@ def cmd_romfs_deploy(a) -> int:
             die(f"デバイスの .mpy アーキテクチャ({MPY_ARCH.get(arch, arch)})が -march={march} と一致しません")
 
     # 3. イメージを作ってデプロイ(.mpy 化は dev.py、容量チェックと書き込みは mpremote)
-    shadow = _romfs_stage(march)
+    shadow = _romfs_stage(march, getattr(a, "exclude", ()))
     log(f"ROMFS 区画 {a.partition} へ {rel(ROMFS_STAGE)} をデプロイします")
     rc, _ = mpremote(
         ["romfs", "-p", str(a.partition), "--no-mpy", "deploy", rel(ROMFS_STAGE)],
@@ -461,6 +487,80 @@ def cmd_romfs_deploy(a) -> int:
     if rc == 0:
         log("ROMFS デプロイ完了。起動時の動作は `dev.py monitor --reset -s 15` で確認できます")
     return rc
+
+
+def _release_args(a) -> None:
+    """build / release で共通の romfs-build / romfs-deploy の引数"""
+    a.exclude = RELEASE_EXCLUDE
+    a.no_mpy = False
+    a.march = ROMFS_MARCH
+    a.output = rel(ROMFS_IMAGE)
+
+
+def cmd_build(a) -> int:
+    if not a.skip_check:
+        log("検査: lint + test --host + test(実機)。失敗したらイメージを作りません")
+        if cmd_check(a) != 0:
+            log("検査に失敗したので中止しました(--skip-check で省略できます)")
+            return 1
+    _release_args(a)
+    rc = cmd_romfs_build(a)
+    if rc != 0:
+        return rc
+    size = ROMFS_IMAGE.stat().st_size
+    log(f"ROMFS 区画 {ROMFS_SIZE // 1024} KB の {size * 100 // ROMFS_SIZE}% を使います")
+    if size > ROMFS_SIZE:
+        log("イメージが ROMFS 区画より大きいので書き込めません")
+        return 1
+    return 0
+
+
+def cmd_release(a) -> int:
+    rc = cmd_build(a)
+    if rc != 0:
+        return rc
+    log("ROMFS へ書き込みます(フラッシュの main.py は ROMFS を呼ぶランチャーになります)")
+    a.partition = 0
+    a.reset = False
+    a.timeout = 180
+    rc = cmd_romfs_deploy(a)
+    if rc != 0:
+        return rc
+    log(f"ソフトリセットして、電源投入時と同じ経路(main.py)で起動を {a.boot_seconds:g} 秒確かめます")
+    out = _boot_watch(a.boot_seconds)
+    ok = any(RELEASE_BOOT_OK in line and RELEASE_BOOT_OK_END in line for line in out.splitlines())
+    if not ok:
+        log("起動の表示が見つかりませんでした。上の出力を確認してください")
+        return 1
+    log("書き込み完了。電源を入れるだけで動きます(プログラムは動かしたままにしています)")
+    return 0
+
+
+def _boot_watch(seconds: float) -> str:
+    """Ctrl-C で止めてソフトリセットし、main.py の出力を seconds 秒読む(読んだ文字列を返す)"""
+    import serial
+
+    port = find_port()
+    try:
+        ser = serial.Serial(port, 115200, timeout=0.1)
+    except serial.SerialException as e:
+        die(f"ポートを開けません: {e}(他のツールがポートを使用中かもしれません)")
+    got = []
+    with ser:
+        ser.write(b"\r\x03\x03")
+        time.sleep(0.2)
+        ser.reset_input_buffer()
+        ser.write(b"\x04")
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            data = ser.read(512)
+            if data:
+                s = data.decode("utf-8", "replace")
+                got.append(s)
+                sys.stdout.write(s)
+                sys.stdout.flush()
+    print()
+    return "".join(got)
 
 
 def cmd_monitor(a) -> int:
@@ -530,7 +630,10 @@ def main() -> int:
     add("ports", cmd_ports)
     add("info", cmd_info, 20)
     add("run", cmd_run, 30).add_argument("file", nargs="?", default="src/main.py")
-    add("exec", cmd_exec, 15).add_argument("code")
+    p = add("exec", cmd_exec, 15)
+    p.add_argument("code")
+    p.add_argument("--no-mount", action="store_true",
+                   help="src/ をマウントしない(書き込んだ本体で動かす)")
     p = add("test", cmd_test, 180)
     p.add_argument("pattern", nargs="?", default="")
     p.add_argument("--host", action="store_true", help="PC(CPython)上で実行(デバイス不要)")
@@ -548,6 +651,11 @@ def main() -> int:
     p.add_argument("--no-mpy", action="store_true", help=".mpy にコンパイルせず .py のまま格納")
     p.add_argument("--march", default=ROMFS_MARCH, help=f"mpy-cross の -march(既定 {ROMFS_MARCH})")
     p.add_argument("--reset", action="store_true", help="ソフトリセットの代わりにハードリセット")
+    p = add("build", cmd_build)
+    p.add_argument("--skip-check", action="store_true", help="lint とテストを省く")
+    p = add("release", cmd_release)
+    p.add_argument("--skip-check", action="store_true", help="lint とテストを省く")
+    p.add_argument("--boot-seconds", type=float, default=25, help="起動を確かめる秒(既定 25)")
     p = add("monitor", cmd_monitor)
     p.add_argument("-s", "--seconds", type=float, default=10)
     p.add_argument("--reset", action="store_true", help="ソフトリセットして main.py から観察")
