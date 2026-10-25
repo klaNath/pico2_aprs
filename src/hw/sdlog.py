@@ -34,7 +34,8 @@ class SdLog:
         self.logger = Logger(header)
         self.log = log or (lambda *a: None)
         self.mounted = False
-        self.state = "no card"  # 表示用: 'no card' / 'log 0001' / 'error'
+        # 表示用: 'no card' / 'wait'(挿入済みで開く前)/ 'log 0001' / 'error'(やり直し待ち)
+        self.state = "no card"
         self._det_since = None  # 挿入を検出し始めた ticks_ms
         self._retry_at = None
 
@@ -62,6 +63,8 @@ class SdLog:
         if self._det_since is None:
             self._det_since = now
         if not self.mounted:
+            if self.state != "error":
+                self.state = "wait"
             if time.ticks_diff(now, self._det_since) < DEBOUNCE_MS:
                 return
             if self._retry_at is not None and time.ticks_diff(now, self._retry_at) < 0:

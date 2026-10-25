@@ -69,6 +69,7 @@ class Status:
         # 衛星 (gnssId, C/N0, 使用中か, 仰角 / None, 方位角)。C/N0 が 0 なら捕捉していない
         self.signals: "Sequence[tuple[int, int, bool, int | None, int]]" = []
         self.grid: "str | None" = None  # Grid Locator 8 文字
+        self.sd: "str | None" = None  # hw.sdlog.SdLog.state / None = SD を使わない(表示しない)
         self.lat: "float | None" = None
         self.lon: "float | None" = None
         self.utc_s: "int | None" = None  # UTC の秒(time.time() と同じ起点)/ None = 時刻不明
@@ -268,7 +269,9 @@ def status_lines(status, cols, rows=4):
     bcn_color = GREEN if status.beacon_on else GRAY
     if cols >= 24:
         lines.append((gnss_text(status, cols), gps_color))
-        lines.append((_two(t + " JST", grid, cols), WHITE if status.utc_s is not None else GRAY))
+        # SD の状態を出すときは JST を外して時刻と Grid の間を空ける(draw_status が描く)
+        tl = t if status.sd is not None else t + " JST"
+        lines.append((_two(tl, grid, cols), WHITE if status.utc_s is not None else GRAY))
         lines.append((pos, pos_color))
         lines.append((_two(bcn, "RX %d TX %d" % (status.rx_count, status.tx_count), cols),
                       bcn_color))
@@ -283,6 +286,27 @@ def status_lines(status, cols, rows=4):
     return lines
 
 
+def sd_tag(state):
+    """SdLog.state -> (表示, 色)。最長 7 文字"""
+    if state is None or state == "no card":
+        return "SD:---", GRAY
+    if state.startswith("log"):
+        return "SD:LOG", GREEN
+    if state == "error":
+        return "SD:ERR", RED
+    return "SD:WAIT", YELLOW  # 挿入済みで開く前・閉じた後
+
+
+def sd_tag_pos(lay):
+    """SD の状態を描く (列, 行) / 置けなければ None。320x240 は時刻の後ろ、240x135 はビーコンの行
+    (最長 'BCN ON 59:59' の 12 文字)の右"""
+    if lay.status_cols >= 24:
+        return 9, 1
+    if lay.status_cols >= 20:
+        return lay.status_cols - 7, 2
+    return None
+
+
 def draw_status(fb, dy, lay, status):
     lines = status_lines(status, lay.status_cols, lay.status_rows)
     for i, (s, c) in enumerate(lines):
@@ -293,6 +317,10 @@ def draw_status(fb, dy, lay, status):
         _right(fb, "[TX]", lay.status_w, y, RED)
     elif status.rx_recent:
         _right(fb, "[RX]", lay.status_w, y, GREEN)
+    pos = sd_tag_pos(lay)
+    if status.sd is not None and pos is not None:
+        s, c = sd_tag(status.sd)
+        fb.text(s, pos[0] * CH, 1 + pos[1] * ROW + dy, c)
     if lay.wide:
         draw_signals(fb, lay.sats_y + dy, lay.status_w, lay.status_h - lay.sats_y, status.signals)
 

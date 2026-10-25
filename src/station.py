@@ -99,6 +99,7 @@ class Station:
         self._receive(now)
         self._beacon(now)
         self.sd.poll(self.utc(), now)
+        self.status.sd = self.sd.state
         if self._rx_ms is not None:
             age = time.ticks_diff(now, self._rx_ms)
             if age >= LED_RX_MS:
@@ -140,7 +141,8 @@ class Station:
         if on != st.beacon_on:
             st.beacon_on = on
             self.beacon.reset()  # 次にオンにしたらすぐ送る
-        if not on or st.fix < 2 or st.lat is None:
+        # 時刻も待つ: RMC より先に GLL/GSA を受けると、RTC を合わせる前に測位有効になることがある
+        if not on or st.fix < 2 or st.lat is None or not self.gnss.rtc.synced:
             st.next_beacon_s = None
             return
         st.next_beacon_s = self.beacon.next_s(st.lat, st.lon, now)

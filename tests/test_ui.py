@@ -9,14 +9,18 @@ from tnc.ax25 import Frame
 from ui.views import (
     BLACK,
     CYAN,
+    GRAY,
     GREEN,
     ORANGE,
     RED,
+    YELLOW,
     Layout,
     Status,
     badge_color,
     detail_lines,
     gnss_text,
+    sd_tag,
+    sd_tag_pos,
     small_map_kind,
     status_lines,
 )
@@ -123,3 +127,27 @@ def test_small_map_kind():
     assert kinds(old) == ("m" * 5 + "s" * 5) * 3  # 古い局だけ: 5 秒ずつ
     s.update(parse_frame(Frame.parse("JA1BBB>APRS:>status")), old)
     assert kinds(old) == ("m" * 10 + "s" * 5) * 2
+
+
+def test_sd_tag():
+    assert sd_tag(None) == ("SD:---", GRAY) and sd_tag("no card") == ("SD:---", GRAY)
+    assert sd_tag("wait") == ("SD:WAIT", YELLOW)
+    assert sd_tag("log 0003") == ("SD:LOG", GREEN)
+    assert sd_tag("error") == ("SD:ERR", RED)
+    # 320x240: 時刻の後ろ(JST を外す)。'08:48:33 SD:WAIT PM95SM00' が 25 文字に収まる
+    st = full_status()
+    st.sd = "wait"
+    lay = Layout(320, 240)
+    line = status_lines(st, lay.status_cols, lay.status_rows)[1][0]
+    pos = sd_tag_pos(lay)
+    assert pos is not None
+    col, row = pos
+    assert row == 1 and line == "08:48:33" + " " * 9 + "PM95SM00"
+    assert line[col - 1] == " " and line[col:col + 7] == " " * 7  # SD の表示を置く 7 文字は空き
+    lay = Layout(240, 135)
+    pos = sd_tag_pos(lay)
+    assert pos is not None
+    col, row = pos
+    st.next_beacon_s = 59 * 60 + 59
+    line = status_lines(st, lay.status_cols, lay.status_rows)[row][0]
+    assert line == "BCN ON 59:59" and len(line) < col  # ビーコンの行の右の空き
