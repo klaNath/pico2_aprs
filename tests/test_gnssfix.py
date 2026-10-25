@@ -84,21 +84,25 @@ def test_gridlocator():
     assert geo.gridlocator(-90.0, -180.0) == "AA00AA00"
 
 
-def sat_block(gnss, sv, cno, flags):
-    return bytes((gnss, sv, cno, 30, 0, 0, 0, 0)) + flags.to_bytes(4, "little")
+def sat_block(gnss, sv, cno, flags, elev=30, azim=0):
+    return (bytes((gnss, sv, cno, elev & 0xFF)) + azim.to_bytes(2, "little") + bytes(2)
+            + flags.to_bytes(4, "little"))
 
 
 def test_nav_sat():
     used = 0x08
-    blocks = [sat_block(GNSS_QZSS, 2, 32, used | 0x40000),  # QZSS 使用中、SLAS 補正を使用
-              sat_block(GNSS_GPS, 5, 17, used),
-              sat_block(GNSS_GPS, 20, 10, 0),
-              sat_block(GNSS_GPS, 30, 0, 0)]  # 捕捉していない
+    blocks = [sat_block(GNSS_QZSS, 2, 32, used | 0x40000, 75, 190),  # 使用中、SLAS 補正を使用
+              sat_block(GNSS_GPS, 5, 17, used, 20, 300),
+              sat_block(GNSS_GPS, 20, 10, 0, 5, 45),
+              sat_block(GNSS_GPS, 30, 0, 0, 12, 270),  # 捕捉していないが位置は分かる
+              sat_block(GNSS_GPS, 31, 0, 0, -5, 90),  # 地平線より下
+              sat_block(GNSS_GPS, 32, 0, 0, -91, 0)]  # 位置が不明
     p = bytes((0, 0, 0, 0, 1, len(blocks), 0, 0)) + b"".join(blocks)
     signals, aug = nav_sat(p)
-    assert signals == [(GNSS_GPS, 17, True), (GNSS_GPS, 10, False), (GNSS_QZSS, 32, True)]
+    assert signals == [(GNSS_GPS, 17, True, 20, 300), (GNSS_GPS, 10, False, 5, 45),
+                       (GNSS_GPS, 0, False, 12, 270), (GNSS_QZSS, 32, True, 75, 190)]
     assert aug == ("QZSS", "SLAS")
     blocks[1] = sat_block(GNSS_GPS, 5, 17, used | 0x10000)  # SBAS 補正を使用
     p = bytes((0, 0, 0, 0, 1, 2, 0, 0)) + b"".join(blocks[1:3])
-    assert nav_sat(p) == ([(GNSS_GPS, 17, True), (GNSS_GPS, 10, False)], ("SBAS",))
+    assert nav_sat(p) == ([(GNSS_GPS, 17, True, 30, 0), (GNSS_GPS, 10, False, 5, 45)], ("SBAS",))
     assert nav_sat(b"") == ([], ())

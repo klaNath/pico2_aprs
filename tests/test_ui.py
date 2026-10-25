@@ -6,7 +6,19 @@
 from aprs.packet import parse_frame
 from core.stations import Stations
 from tnc.ax25 import Frame
-from ui.views import Layout, Status, detail_lines, gnss_text, status_lines
+from ui.views import (
+    BLACK,
+    CYAN,
+    GREEN,
+    ORANGE,
+    RED,
+    Layout,
+    Status,
+    badge_color,
+    detail_lines,
+    gnss_text,
+    status_lines,
+)
 
 TOKYO = (35.681236, 139.767125)
 
@@ -26,11 +38,11 @@ def test_layout_320x240():
     assert lay.wide and lay.list_w == 72
     # 上段: 一覧(見出し + 12 局)と詳細(30 文字 x 13 行)が同じ高さ
     assert lay.list_h == lay.detail_h == 122 and lay.list_rows == 12
-    assert (lay.right_x, lay.right_w, lay.cols) == (74, 246, 30)
+    assert (lay.right_x, lay.right_w, lay.cols) == (75, 245, 30)  # 区切り線 2px + 隙間 1px
     # 下段: 左端から自局の状態(25 文字)、右下に正方形の地図
     assert (lay.status_x, lay.status_y, lay.status_cols) == (0, 123, 25)
     assert lay.map_w == lay.map_h == 117 and lay.map_x + lay.map_w == 320
-    assert lay.status_x + lay.status_w < lay.map_x
+    assert lay.status_x + lay.status_w + 3 == lay.map_x
     # 棒グラフは状態 4 行の下
     assert lay.sats_y == 1 + 4 * 9 + 1 and lay.status_h - lay.sats_y >= 70
 
@@ -82,3 +94,19 @@ def test_detail_distance_line():
     assert lines[1] == "DIST 3.2km  DIR SW"  # 自局からの距離と 16 方位はコールサインのすぐ下
     lines = [t for t, _ in detail_lines(st, None, None, 1000, 30)]
     assert lines[1] == "own position unknown"
+    # 右上の丸を避けるとき(1・2 行目の幅を詰める)
+    lines = [t for t, _ in detail_lines(st, TOKYO[0], TOKYO[1], 1000, 30, 27)]
+    assert len(lines[0]) == 27 and lines[1] == "DIST 3.2km  DIR SW" and len(lines[2]) <= 30
+
+
+def test_badge_color():
+    st = Status()
+    assert badge_color(st) == RED
+    st.fix = 2
+    assert badge_color(st) == ORANGE
+    st.fix = 3
+    assert badge_color(st) == GREEN
+    st.aug = ("QZSS",)  # QZSS だけは補正ではないので緑のまま
+    assert badge_color(st) == GREEN
+    st.aug = ("QZSS", "SLAS")
+    assert badge_color(st) == CYAN and CYAN != BLACK

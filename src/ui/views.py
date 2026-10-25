@@ -7,8 +7,15 @@
 draw(fb, dy) の形で、領域の左上を (0, 0) とした座標に dy を足して描く。
 """
 
+import math
+
 from core import geo
 from hw.rgb565 import rgb
+
+try:
+    from typing import Sequence  # noqa: F401  (型注釈用。MicroPython には無い)
+except ImportError:
+    pass
 
 BLACK = rgb(0, 0, 0)
 WHITE = rgb(255, 255, 255)
@@ -20,6 +27,7 @@ CYAN = rgb(0, 200, 255)
 RED = rgb(255, 40, 40)
 ORANGE = rgb(255, 140, 0)
 MAGENTA = rgb(255, 80, 255)  # 自局のエコー
+BORDER = rgb(70, 110, 190)  # 欄の区切り線(2px)。地図の円や目盛り(DARK、1px)と区別する
 
 CH = 8  # 文字の幅・高さ
 ROW = 9  # 行の高さ(1 ピクセルの行間)
@@ -35,6 +43,7 @@ SYSTEMS = {
     6: ("R", ORANGE),  # GLONASS
 }
 CNO_MAX = 50  # 棒グラフの上端の C/N0(dBHz)
+BADGE = 2 * CH  # 右上の測位状態の丸の大きさ
 
 KIND_LABEL = {
     "position": "Position",
@@ -57,7 +66,8 @@ class Status:
         self.sats_view = 0  # 可視衛星数(全系の合計)
         self.hdop: "float | None" = None
         self.aug: "tuple[str, ...]" = ()  # 使えている補強('QZSS', 'SBAS', 'SLAS')
-        self.signals: "list[tuple[int, int, bool]]" = []  # 捕捉中の衛星 (gnssId, C/N0, 使用中か)
+        # 衛星 (gnssId, C/N0, 使用中か, 仰角 / None, 方位角)。C/N0 が 0 なら捕捉していない
+        self.signals: "Sequence[tuple[int, int, bool, int | None, int]]" = []
         self.grid: "str | None" = None  # Grid Locator 8 文字
         self.lat: "float | None" = None
         self.lon: "float | None" = None
@@ -74,8 +84,8 @@ class Layout:
     def __init__(self, width, height):
         self.w = width
         self.h = height
-        self.list_w = 9 * CH  # コールサイン 9 文字
-        self.right_x = self.list_w + 2
+        self.list_w = 9 * CH  # コールサイン 9 文字。その右に 2px の区切り線と 1px の隙間
+        self.right_x = self.list_w + 3
         self.right_w = width - self.right_x
         self.cols = self.right_w // CH
         # 下段に自局の状態・衛星の棒グラフ・小さな地図を出すか(320x240 など)
@@ -89,7 +99,7 @@ class Layout:
             self.map_x = width - self.map_w
             self.map_y = self.status_y
             self.status_x = 0
-            self.status_w = self.map_x - 2
+            self.status_w = self.map_x - 3  # 地図の左に 2px の区切り線と 1px の隙間
             self.sats_y = 1 + STATUS_LINES_WIDE * ROW + 1  # 状態の欄の中の棒グラフの上端
         else:
             self.detail_h = (height * 64) // 100  # 上 64% を詳細、残りを自局の状態
@@ -116,9 +126,9 @@ def _right(fb, s, x_right, y, color):
 def draw_list(fb, dy, lay, stations, selected, now_ms):
     """左: コールサインの一覧(新しい順)。selected は選択中の Station(None = 最新を自動表示)"""
     fb.text("HEARD %d" % len(stations), 0, 0 + dy, CYAN)
-    fb.vline(lay.list_w, dy, lay.list_h, DARK)
+    fb.fill_rect(lay.list_w, dy, 2, lay.list_h, BORDER)
     if lay.wide:
-        fb.hline(0, lay.list_h - 1 + dy, lay.list_w + 1, DARK)
+        fb.fill_rect(0, lay.list_h - 2 + dy, lay.list_w + 2, 2, BORDER)
     shown = selected if selected is not None else stations.latest()
     for i, st in enumerate(stations.order[: lay.list_rows]):
         y = ROW * (i + 1) + dy
@@ -138,15 +148,19 @@ def _wrap(text, cols, nlines):
     return out
 
 
-def detail_lines(st, own_lat, own_lon, now_ms, cols):
-    """最新局(または選択局)の詳細 -> [(文字列, 色), ...]。テストしやすいよう描画と分けてある。"""
+def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None):
+    """最新局(または選択局)の詳細 -> [(文字列, 色), ...]。テストしやすいよう描画と分けてある。
+
+    head_cols: 1・2 行目の幅(右上の丸を避ける)。None なら cols。
+    """
     if st is None:
         return [("no station heard", GRAY)]
+    hc = cols if head_cols is None else head_cols
     p = st.packet
     lines = []
     age = geo.fmt_age(st.age_s(now_ms))
-    head = _clip(st.call, cols - len(age) - 1)
-    lines.append((head + " " * (cols - len(head) - len(age)) + age,
+    head = _clip(st.call, hc - len(age) - 1)
+    lines.append((head + " " * (hc - len(head) - len(age)) + age,
                   MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW))
     kind = KIND_LABEL.get(p.kind, p.kind)
     if p.kind == "mice" and p.mice_msg:
@@ -157,7 +171,7 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols):
         d = geo.fmt_distance(geo.distance_km(own_lat, own_lon, st.lat, st.lon))
         b = geo.compass16(geo.bearing_deg(own_lat, own_lon, st.lat, st.lon))
         s = "DIST %s  DIR %s" % (d, b)
-        lines.append((s if len(s) <= cols else "DIST %s DIR %s" % (d, b), GREEN))
+        lines.append((s if len(s) <= hc else _clip("DIST %s DIR %s" % (d, b), hc), GREEN))
     elif st.lat is not None:
         lines.append(("own position unknown", GRAY))
     else:
@@ -187,12 +201,30 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols):
     return lines
 
 
-def draw_detail(fb, dy, lay, st, status, now_ms):
-    lines = detail_lines(st, status.lat, status.lon, now_ms, lay.cols)
-    max_lines = (lay.detail_h + 1) // ROW
+def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True):
+    lines = detail_lines(st, status.lat, status.lon, now_ms, lay.cols,
+                         lay.cols - (BADGE + CH - 1) // CH)
+    max_lines = (lay.detail_h - 1) // ROW
     for i, (s, c) in enumerate(lines[:max_lines]):
         fb.text(s, 0, i * ROW + dy, c)
-    fb.hline(0, lay.detail_h - 1 + dy, lay.right_w, DARK)
+    fb.fill_rect(0, lay.detail_h - 2 + dy, lay.right_w, 2, BORDER)
+    draw_badge(fb, lay.right_w - BADGE, dy, status, blink_on)
+
+
+def badge_color(status):
+    """測位状態の丸の色: 赤 = 測位なし、橙 = 2D、緑 = 3D、水色 = 3D で SBAS / SLAS の補正を使用中"""
+    if status.fix < 2:
+        return RED
+    if status.fix == 2:
+        return ORANGE
+    return CYAN if "SBAS" in status.aug or "SLAS" in status.aug else GREEN
+
+
+def draw_badge(fb, x, y, status, on):
+    """右上の測位状態の丸(BADGE x BADGE)。on=False は消灯(1 Hz で点滅させる)"""
+    r = BADGE // 2 - 1
+    if on:
+        fb.ellipse(x + BADGE // 2, y + BADGE // 2, r, r, badge_color(status), True)
 
 
 def gnss_text(status, cols):
@@ -270,6 +302,7 @@ def draw_signals(fb, y0, w, h, signals):
 
     使用中は塗りつぶし、未使用は枠だけ。
     """
+    signals = [s for s in signals if s[1]]  # 捕捉中だけ
     if not signals:
         fb.text("no satellites tracked", 0, y0 + 2, GRAY)
         return
@@ -282,7 +315,7 @@ def draw_signals(fb, y0, w, h, signals):
     x = 0
     prev = None
     label_end = 0
-    for gnss, cno, used in signals:
+    for gnss, cno, used, _, _ in signals:
         sym, col = SYSTEMS.get(gnss, ("?", GRAY))
         if gnss != prev:
             if x >= label_end:
@@ -297,31 +330,42 @@ def draw_signals(fb, y0, w, h, signals):
         x += pitch
 
 
-def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):
-    """自局を中心に、直近 6 局を 0.5-100 km の対数スケールで描く(北が上)。
-
-    w, h: 描く領域の大きさ。small=True は常時表示の小さな地図(見出しなし、名前は新しい 3 局だけ、
-    左端に区切り線)。
-    """
-    cx = w // 2
-    cy = h // 2 + (1 if small else 4)
-    r_max = h // 2 - (4 if small else 8)
-    if small:
-        fb.vline(0, dy, h, DARK)
-    for km, label in ((1, "1k"), (10, "10k"), (100, "100k")):
-        r = int(geo.log_radius(km, r_max) + 0.5)
-        fb.ellipse(cx, cy + dy, r, r, DARK)
-        if not small or km > 1:
-            fb.text(label, cx + 2, cy - r - 8 + dy if km < 100 else cy - r + 1 + dy, GRAY)
-    # 見出し(左上 2 行)と北の矢印(右上の隅)。円と重ならないよう隅に置く
-    if not small:
-        fb.text("MAP log", 0, 0 + dy, CYAN)
-        fb.text("0.5-100km", 0, ROW + dy, CYAN)
+def _north(fb, dy, w):
+    """右上の隅に北の矢印"""
     ax = w - 8
     fb.text("N", ax - 3, 0 + dy, CYAN)
     fb.vline(ax, ROW + dy, 14, CYAN)
     fb.line(ax, ROW + dy, ax - 4, ROW + 5 + dy, CYAN)
     fb.line(ax, ROW + dy, ax + 4, ROW + 5 + dy, CYAN)
+
+
+def _small_frame(fb, dy, h, title):
+    """小さな地図の左端の区切り線(2px)と左上の見出し"""
+    fb.fill_rect(0, dy, 2, h, BORDER)
+    fb.text(title, 4, 0 + dy, CYAN)
+
+
+def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):
+    """自局を中心に、直近 6 局を 0.5-100 km の対数スケールで描く(北が上)。
+
+    w, h: 描く領域の大きさ。small=True は常時表示の小さな地図(見出しは 'MAP' だけ、名前は新しい
+    3 局だけ、左端に区切り線)。
+    """
+    cx = w // 2 + (1 if small else 0)
+    cy = h // 2 + (1 if small else 4)
+    r_max = h // 2 - (4 if small else 8)
+    for km, label in ((1, "1k"), (10, "10k"), (100, "100k")):
+        r = int(geo.log_radius(km, r_max) + 0.5)
+        fb.ellipse(cx, cy + dy, r, r, DARK)
+        if not small or km > 1:
+            fb.text(label, cx + 2, cy - r - 8 + dy if km < 100 else cy - r + 1 + dy, GRAY)
+    # 見出し(左上)と北の矢印(右上の隅)。円と重ならないよう隅に置く
+    if small:
+        _small_frame(fb, dy, h, "MAP")
+    else:
+        fb.text("MAP log", 0, 0 + dy, CYAN)
+        fb.text("0.5-100km", 0, ROW + dy, CYAN)
+    _north(fb, dy, w)
     fb.hline(cx - 4, cy + dy, 9, RED)
     fb.vline(cx, cy - 4 + dy, 9, RED)
     if status.lat is None:
@@ -342,3 +386,33 @@ def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):
         name = _clip(st.call, 6)
         tx = x + 4 if x + 4 + len(name) * CH <= w else x - 4 - len(name) * CH
         fb.text(name, tx, y - 3 + dy, col)
+
+
+def draw_sky(fb, dy, w, h, signals):
+    """衛星の位置(スカイプロット)。中心が天頂、外周が地平線、円は仰角 30 度と 60 度(北が上)。
+
+    系ごとの色で、使用中は塗りつぶし、捕捉中で未使用は枠、捕捉していない衛星は灰色の点。
+    """
+    cx = w // 2 + 1
+    cy = h // 2 + 1
+    r_max = h // 2 - 4
+    for el in (0, 30, 60):
+        r = r_max * (90 - el) // 90
+        fb.ellipse(cx, cy + dy, r, r, DARK)
+    _small_frame(fb, dy, h, "SKY")
+    _north(fb, dy, w)
+    n_used = 0
+    for gnss, cno, used, elev, azim in signals:
+        if elev is None or elev < 0:
+            continue
+        r = r_max * (90 - elev) / 90
+        a = math.radians(azim)
+        x = cx + int(r * math.sin(a) + 0.5)
+        y = cy - int(r * math.cos(a) + 0.5) + dy
+        col = SYSTEMS.get(gnss, ("?", GRAY))[1]
+        if not cno:
+            fb.fill_rect(x - 1, y - 1, 2, 2, GRAY)
+        else:
+            fb.ellipse(x, y, 2, 2, col, used)
+            n_used += used
+    fb.text("%d" % n_used, 4, h - CH + dy, GREEN)

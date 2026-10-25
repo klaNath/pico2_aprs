@@ -23,7 +23,8 @@ GNSS_GLONASS = 6
 def nav_sat(p):
     """UBX NAV-SAT のペイロード -> (signals, aug)
 
-    signals: 捕捉中(C/N0 > 0)の衛星の [(gnssId, C/N0 dBHz, 測位に使用中か), ...](gnssId 順、強い順)
+    signals: 捕捉中(C/N0 > 0)か、地平線より上で位置が分かっている衛星の
+        [(gnssId, C/N0 dBHz, 測位に使用中か, 仰角 度 / None, 方位角 度), ...](gnssId 順、強い順)
     aug: 使えている補強の名前のタプル。'QZSS'(QZSS の衛星を測位に使用)、'SBAS'、'SLAS'(補正を使用)
     """
     signals = []
@@ -31,10 +32,13 @@ def nav_sat(p):
     n = p[5] if len(p) >= 8 else 0
     for i in range(8, min(len(p), 8 + n * 12) - 11, 12):
         gnss, cno = p[i], p[i + 2]
+        elev = p[i + 3] - 256 if p[i + 3] > 127 else p[i + 3]
+        if not -90 <= elev <= 90:
+            elev = None  # 範囲外は「不明」(方位角も不明)
         flags = p[i + 8] | (p[i + 9] << 8) | (p[i + 10] << 16)
         used = bool(flags & 0x08)
-        if cno:
-            signals.append((gnss, cno, used))
+        if cno or (elev is not None and elev >= 0):
+            signals.append((gnss, cno, used, elev, p[i + 4] | (p[i + 5] << 8)))
         qzss |= used and gnss == GNSS_QZSS
         sbas |= bool(flags & 0x10000)
         slas |= bool(flags & 0x40000)

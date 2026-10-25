@@ -76,10 +76,13 @@ def main():
     status.grid = geo.gridlocator(*OWN)
     status.aug = ("QZSS", "SBAS")
     # 棒グラフ用の架空の衛星(gnssId, C/N0, 使用中か)。G 10、S 1、E 9、J 3、R 5 機
-    status.signals = ([(0, 12 + 3 * k, k % 4 != 3) for k in range(10)] + [(1, 35, False)]
-                      + [(2, 15 + 3 * k, k % 3 != 2) for k in range(9)]
-                      + [(5, 30 + 4 * k, True) for k in range(3)]
-                      + [(6, 10 + 5 * k, k > 1) for k in range(5)])
+    # 仰角・方位角は系ごとにずらして散らす。C/N0 が 0 は捕捉していない衛星(SKY の灰色の点)
+    status.signals = ([(0, 12 + 3 * k, k % 4 != 3, 10 + 8 * k, 36 * k) for k in range(10)]
+                      + [(1, 35, False, 48, 200)]
+                      + [(2, 15 + 3 * k, k % 3 != 2, 15 + 8 * k, 20 + 40 * k) for k in range(9)]
+                      + [(5, 30 + 4 * k, True, 40 + 15 * k, 170 + 15 * k) for k in range(3)]
+                      + [(6, 10 + 5 * k, k > 1, 20 + 12 * k, 300 - 25 * k) for k in range(5)]
+                      + [(0, 0, False, 5 + 7 * k, 100 + 50 * k) for k in range(3)])
     status.utc_s = time.time()
     status.beacon_on = True
     ui = Ui(scr, stations, status,
