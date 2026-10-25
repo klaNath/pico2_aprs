@@ -44,6 +44,8 @@ SYSTEMS = {
 }
 CNO_MAX = 50  # 棒グラフの上端の C/N0(dBHz)
 BADGE = 2 * CH  # 右上の測位状態の丸の大きさ
+BIG = 3  # 320x240 の詳細欄のコールサインの拡大率(24x24 ドット)
+BIG_ROW = CH * BIG + 3  # 大きなコールサインの行の高さ
 
 KIND_LABEL = {
     "position": "Position",
@@ -149,10 +151,12 @@ def _wrap(text, cols, nlines):
     return out
 
 
-def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None):
+def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0):
     """最新局(または選択局)の詳細 -> [(文字列, 色), ...]。テストしやすいよう描画と分けてある。
 
     head_cols: 1・2 行目の幅(右上の丸を避ける)。None なら cols。
+    big_cols > 0: 1 行目はコールサインだけ(大きな文字で big_cols 文字まで)。経過時間は 2 行目
+    (距離と方位の行)の右端に置き、2 行目は大きな文字の下なので cols いっぱいに使う。
     """
     if st is None:
         return [("no station heard", GRAY)]
@@ -160,9 +164,13 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None):
     p = st.packet
     lines = []
     age = geo.fmt_age(st.age_s(now_ms))
-    head = _clip(st.call, hc - len(age) - 1)
-    lines.append((head + " " * (hc - len(head) - len(age)) + age,
-                  MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW))
+    call_color = MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW
+    if big_cols:
+        lines.append((_clip(st.call, big_cols), call_color))
+        hc = cols - len(age) - 1  # 2 行目の右端は経過時間
+    else:
+        head = _clip(st.call, hc - len(age) - 1)
+        lines.append((head + " " * (hc - len(head) - len(age)) + age, call_color))
     kind = KIND_LABEL.get(p.kind, p.kind)
     if p.kind == "mice" and p.mice_msg:
         kind += " " + p.mice_msg
@@ -172,11 +180,14 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None):
         d = geo.fmt_distance(geo.distance_km(own_lat, own_lon, st.lat, st.lon))
         b = geo.compass16(geo.bearing_deg(own_lat, own_lon, st.lat, st.lon))
         s = "DIST %s  DIR %s" % (d, b)
-        lines.append((s if len(s) <= hc else _clip("DIST %s DIR %s" % (d, b), hc), GREEN))
+        pos = (s if len(s) <= hc else _clip("DIST %s DIR %s" % (d, b), hc), GREEN)
     elif st.lat is not None:
-        lines.append(("own position unknown", GRAY))
+        pos = ("own position unknown", GRAY)
     else:
-        lines.append(("no position", GRAY))
+        pos = ("no position", GRAY)
+    if big_cols:
+        pos = (_two(pos[0], age, cols), pos[1])
+    lines.append(pos)
     lines.append((_clip(kind, cols), CYAN))
     if st.lat is not None:
         lines.append((geo.fmt_latlon(st.lat, st.lon), WHITE))
@@ -203,13 +214,53 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None):
 
 
 def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True):
+    big_cols = (lay.right_w - BADGE - 2) // (CH * BIG) if lay.wide else 0
     lines = detail_lines(st, status.lat, status.lon, now_ms, lay.cols,
-                         lay.cols - (BADGE + CH - 1) // CH)
-    max_lines = (lay.detail_h - 1) // ROW
+                         lay.cols - (BADGE + CH - 1) // CH, big_cols)
+    y0 = 0
+    if big_cols and st is not None:
+        s, c = lines.pop(0)
+        draw_big(fb, s, 0, dy, c)
+        y0 = BIG_ROW
+    max_lines = (lay.detail_h - 1 - y0) // ROW
     for i, (s, c) in enumerate(lines[:max_lines]):
-        fb.text(s, 0, i * ROW + dy, c)
+        fb.text(s, 0, y0 + i * ROW + dy, c)
     fb.fill_rect(0, lay.detail_h - 2 + dy, lay.right_w, 2, BORDER)
     draw_badge(fb, lay.right_w - BADGE, dy, status, blink_on)
+
+
+_big_cache = {}  # 最後に作った大きな文字 1 つ: {(文字列, 色): (1 bit の framebuf, パレット)}
+
+
+def _big_text(text, color):
+    """text を BIG 倍に拡大した 1 bit の framebuf と色のパレット。
+
+    文字列か色が変わったときだけ作り直す。
+    """
+    key = (text, color)
+    if key not in _big_cache:
+        import framebuf
+
+        _big_cache.clear()  # 1 つだけ持つ
+        w = len(text) * CH
+        small = framebuf.FrameBuffer(bytearray((w + 7) // 8 * CH), w, CH, framebuf.MONO_HLSB)
+        small.text(text, 0, 0, 1)
+        bw, bh = w * BIG, CH * BIG
+        big = framebuf.FrameBuffer(bytearray((bw + 7) // 8 * bh), bw, bh, framebuf.MONO_HLSB)
+        for y in range(CH):
+            for x in range(w):
+                if small.pixel(x, y):
+                    big.fill_rect(x * BIG, y * BIG, BIG, BIG, 1)
+        pal = framebuf.FrameBuffer(bytearray(4), 2, 1, framebuf.RGB565)
+        pal.pixel(1, 0, color)  # 0 は黒のまま(透過色)
+        _big_cache[key] = (big, pal)
+    return _big_cache[key]
+
+
+def draw_big(fb, text, x, y, color):
+    """BIG 倍の大きさの文字(8x8 のフォントを拡大)。背景は透過"""
+    big, pal = _big_text(text, color)
+    fb.blit(big, x, y, 0, pal)
 
 
 def badge_color(status):

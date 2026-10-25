@@ -151,3 +151,15 @@ def test_sd_tag():
     st.next_beacon_s = 59 * 60 + 59
     line = status_lines(st, lay.status_cols, lay.status_rows)[row][0]
     assert line == "BCN ON 59:59" and len(line) < col  # ビーコンの行の右の空き
+
+
+def test_detail_big_callsign():
+    s = Stations()
+    s.update(parse_frame(Frame.parse("JA1AAA-15>APRS:!3539.53N/13944.70E>test")), 1000)
+    st = s.latest()
+    lines = [t for t, _ in detail_lines(st, TOKYO[0], TOKYO[1], 13_000, 30, 27, 9)]
+    assert lines[0] == "JA1AAA-15"  # 1 行目はコールサインだけ(大きな文字)
+    assert lines[1] == "DIST 3.2km  DIR SW" + " " * 9 + "12s"  # 経過時間は 2 行目の右端
+    assert len(lines[1]) == 30
+    lines = [t for t, _ in detail_lines(st, None, None, 13_000, 30, 27, 9)]
+    assert lines[1].startswith("own position unknown") and lines[1].endswith("12s")
