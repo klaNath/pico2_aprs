@@ -4,7 +4,8 @@
 
 自局は東京駅付近に固定。0.8 / 3 / 12 / 45 / 90 / 150 km の局と、位置の無い局(ステータス・
 メッセージ)、60 分以上前に受信した「古い」局を入れる。8 秒ごとに 1 局ずつ新しい受信を模擬する。
-ボタン A/B: 一覧の選択、X: 地図、Y: 最新局の自動表示に戻る。60 秒で終了。
+320x240 では小さな地図が常に出る。ボタン(240x135 の Display Pack のみ)A/B: 一覧の選択、
+X: 地図、Y: 最新局の自動表示に戻る。60 秒で終了。
 """
 
 import time
@@ -70,7 +71,7 @@ def main():
     own = config.CALLSIGN if config.SSID == 0 else "%s-%d" % (config.CALLSIGN, config.SSID)
     stations = Stations(own_call=own)
     status = Status()
-    status.fix, status.sats = 3, 9
+    status.fix, status.sats, status.sats_view, status.hdop = 3, 21, 38, 0.7
     status.lat, status.lon = OWN
     status.utc_s = time.time()
     status.beacon_on = True

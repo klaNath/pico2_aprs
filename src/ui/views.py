@@ -1,6 +1,8 @@
-"""画面の描画: メイン画面(局の一覧・最新局の詳細・自局の状態)と地図画面。
+"""画面の描画: メイン画面(局の一覧・最新局の詳細・自局の状態・地図)と全画面の地図。
 
-配置は画面の大きさから決める(240x135 と、将来の 320x240 の両方で使える)。
+配置は画面の大きさから決める。
+    320x240: 左に一覧、右上に詳細、右下に自局の状態と小さな地図(常に表示)
+    240x135: 左に一覧、右上に詳細、右下に自局の状態。地図はボタンで全画面に切り替える
 文字は framebuf 標準の 8x8 フォント(ASCII のみ)。描画関数は ui.screen.Screen.region に渡す
 draw(fb, dy) の形で、領域の左上を (0, 0) とした座標に dy を足して描く。
 """
@@ -57,14 +59,28 @@ class Layout:
     def __init__(self, width, height):
         self.w = width
         self.h = height
-        self.list_w = (9 if width <= 240 else 12) * CH  # コールサイン 9 文字 + 余白
+        self.list_w = 9 * CH  # コールサイン 9 文字
         self.right_x = self.list_w + 2
         self.right_w = width - self.right_x
-        self.detail_h = (height * 64) // 100  # 上 64% を詳細、残りを自局の状態
-        self.status_y = self.detail_h + 1
-        self.status_h = height - self.status_y
         self.list_rows = (height - ROW) // ROW  # 見出し 1 行を除く
         self.cols = self.right_w // CH
+        # 小さな地図を常に出すか(320x240 など)。出さないときは map_w = 0
+        self.wide = width >= 320 and height >= 200
+        if self.wide:
+            self.detail_h = 122  # 13 行 + 区切り線
+            self.status_w = 16 * CH  # '3D 21/38 HDOP0.7' が 1 行に収まる幅
+            self.map_x = self.right_x + self.status_w + 2
+            self.map_w = width - self.map_x
+        else:
+            self.detail_h = (height * 64) // 100  # 上 64% を詳細、残りを自局の状態
+            self.status_w = self.right_w
+            self.map_x = self.map_w = 0
+        self.status_y = self.detail_h + 1
+        self.status_h = height - self.status_y
+        self.map_y = self.status_y
+        self.map_h = self.status_h if self.wide else 0
+        self.status_cols = self.status_w // CH
+        self.status_rows = self.status_h // ROW
 
 
 def _clip(s, n):
@@ -165,50 +181,71 @@ def gnss_text(status, cols):
     return s
 
 
-def status_lines(status, cols):
+def status_lines(status, cols, rows=4):
+    """自局の状態 -> [(文字列, 色), ...]。rows が 7 以上なら縦長の欄向けに、時刻と緯度・経度を分ける"""
     lines = []
+    tall = rows >= 7
     t = geo.fmt_jst(status.utc_s) if status.utc_s is not None else "--:--:--"
-    gps = gnss_text(status, cols - len(t) - 1)
-    lines.append((gps + " " * max(1, cols - len(gps) - len(t)) + t,
-                  GREEN if status.fix >= 2 else ORANGE))
+    gps_color = GREEN if status.fix >= 2 else ORANGE
+    if tall:
+        lines.append((gnss_text(status, cols), gps_color))
+        lines.append((t + " JST", WHITE if status.utc_s is not None else GRAY))
+    else:
+        gps = gnss_text(status, cols - len(t) - 1)
+        lines.append((gps + " " * max(1, cols - len(gps) - len(t)) + t, gps_color))
     if status.lat is not None:
-        lines.append((geo.fmt_latlon(status.lat, status.lon), WHITE))
+        pos = geo.fmt_latlon(status.lat, status.lon)
+        if len(pos) > cols:
+            lines.append((pos[:9], WHITE))  # 'N35 40.12'
+            lines.append((pos[10:], WHITE))  # 'E139 46.03'
+        else:
+            lines.append((pos, WHITE))
     else:
         lines.append(("position unknown", GRAY))
     if status.beacon_on:
         nb = status.next_beacon_s
-        nxt = "" if nb is None else "  next %d:%02d" % (nb // 60, nb % 60)
-        lines.append(("BCN ON" + nxt, GREEN))
+        nxt = "" if nb is None else "next %d:%02d" % (nb // 60, nb % 60)
+        sep = "  " if len(nxt) + 8 <= cols else " "
+        lines.append(("BCN ON" + (sep + nxt if nxt else ""), GREEN))
     else:
         lines.append(("BCN OFF", GRAY))
-    lines.append(("RX %d  TX %d" % (status.rx_count, status.tx_count), WHITE))
+    sep = " " if tall else "  "
+    lines.append(("RX %d%sTX %d" % (status.rx_count, sep, status.tx_count), WHITE))
     return lines
 
 
 def draw_status(fb, dy, lay, status):
-    lines = status_lines(status, lay.cols)
+    lines = status_lines(status, lay.status_cols, lay.status_rows)
     for i, (s, c) in enumerate(lines):
         fb.text(s, 0, 1 + i * ROW + dy, c)
     y = 1 + (len(lines) - 1) * ROW + dy
     if status.tx_active:
-        _right(fb, "[TX]", lay.right_w, y, RED)
+        _right(fb, "[TX]", lay.status_w, y, RED)
     elif status.rx_recent:
-        _right(fb, "[RX]", lay.right_w, y, GREEN)
+        _right(fb, "[RX]", lay.status_w, y, GREEN)
 
 
-def draw_map(fb, dy, lay, stations, status, now_ms):
-    """自局を中心に、直近 6 局を 0.5-100 km の対数スケールで描く(北が上)。"""
-    cx = lay.w // 2
-    cy = lay.h // 2 + 4
-    r_max = lay.h // 2 - 8
+def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):
+    """自局を中心に、直近 6 局を 0.5-100 km の対数スケールで描く(北が上)。
+
+    w, h: 描く領域の大きさ。small=True は常時表示の小さな地図(見出しなし、名前は新しい 3 局だけ、
+    左端に区切り線)。
+    """
+    cx = w // 2
+    cy = h // 2 + (1 if small else 4)
+    r_max = h // 2 - (4 if small else 8)
+    if small:
+        fb.vline(0, dy, h, DARK)
     for km, label in ((1, "1k"), (10, "10k"), (100, "100k")):
         r = int(geo.log_radius(km, r_max) + 0.5)
         fb.ellipse(cx, cy + dy, r, r, DARK)
-        fb.text(label, cx + 2, cy - r - 8 + dy if km < 100 else cy - r + 1 + dy, GRAY)
+        if not small or km > 1:
+            fb.text(label, cx + 2, cy - r - 8 + dy if km < 100 else cy - r + 1 + dy, GRAY)
     # 見出し(左上 2 行)と北の矢印(右上の隅)。円と重ならないよう隅に置く
-    fb.text("MAP log", 0, 0 + dy, CYAN)
-    fb.text("0.5-100km", 0, ROW + dy, CYAN)
-    ax = lay.w - 8
+    if not small:
+        fb.text("MAP log", 0, 0 + dy, CYAN)
+        fb.text("0.5-100km", 0, ROW + dy, CYAN)
+    ax = w - 8
     fb.text("N", ax - 3, 0 + dy, CYAN)
     fb.vline(ax, ROW + dy, 14, CYAN)
     fb.line(ax, ROW + dy, ax - 4, ROW + 5 + dy, CYAN)
@@ -216,8 +253,9 @@ def draw_map(fb, dy, lay, stations, status, now_ms):
     fb.hline(cx - 4, cy + dy, 9, RED)
     fb.vline(cx, cy - 4 + dy, 9, RED)
     if status.lat is None:
-        fb.text("own position unknown", 0, lay.h - CH + dy, ORANGE)
+        fb.text("no own pos" if small else "own position unknown", 2, h - CH + dy, ORANGE)
         return
+    n_names = 3 if small else len(stations.order)
     for i, st in enumerate(stations.for_map()):
         km = geo.distance_km(status.lat, status.lon, st.lat, st.lon)
         b = geo.bearing_deg(status.lat, status.lon, st.lat, st.lon)
@@ -227,6 +265,8 @@ def draw_map(fb, dy, lay, stations, status, now_ms):
             fb.ellipse(x, y + dy, 3, 3, col)  # 範囲外は外周に白抜きの印
         else:
             fb.ellipse(x, y + dy, 2, 2, col, True)
+        if i >= n_names:
+            continue
         name = _clip(st.call, 6)
-        tx = x + 4 if x + 4 + len(name) * CH <= lay.w else x - 4 - len(name) * CH
+        tx = x + 4 if x + 4 + len(name) * CH <= w else x - 4 - len(name) * CH
         fb.text(name, tx, y - 3 + dy, col)

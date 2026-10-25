@@ -45,7 +45,8 @@ def main():
         now = time.ticks_ms()
         if time.ticks_diff(now, t_print) >= 5000:
             t_print = now
-            print(" | ".join(s for s, _ in status_lines(status, ui.lay.cols)[:2]))
+            lines = status_lines(status, ui.lay.status_cols, ui.lay.status_rows)
+            print(" | ".join(s for s, _ in lines[:4]))
         time.sleep_ms(50)
     print("sentences %d, RTC now (UTC): %s" % (gnss.sentences, time.gmtime()[:6]))
 

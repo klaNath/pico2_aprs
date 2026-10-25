@@ -3,9 +3,11 @@
 ボタン(Display Pack、押すと Low):
     A: 一覧で 1 つ上(新しい側)を選ぶ
     B: 一覧で 1 つ下(古い側)を選ぶ
-    X: 地図画面 / メイン画面の切り替え
+    X: 地図画面 / メイン画面の切り替え(240x135 のとき。320x240 は地図が常に出ている)
     Y: 選択を解除して最新局の自動表示に戻す
+ボタンが無い(pins が空)ときは選択も画面切り替えもしない。320x240 では小さな地図が常に出ている。
 poll() を Core0 のループから 50 ms 程度ごとに呼ぶ。描画は変化のあった領域だけ。
+時計・経過時間は 1 秒ごと、小さな地図は MAP_TICK_S ごと(自局の移動と、古い局の色の変化のため)。
 """
 
 import time
@@ -13,6 +15,8 @@ import time
 from machine import Pin
 
 from ui import views
+
+MAP_TICK_S = 5
 
 
 class Ui:
@@ -71,6 +75,8 @@ class Ui:
             self.draw_all(now_ms)
         elif tick:
             self.draw_tick(now_ms)
+            if self.lay.wide and sec % MAP_TICK_S == 0:
+                self._draw_small_map(now_ms)
         self._seen_version = self.st.version
         self._last_sec = sec
         self._dirty_all = False
@@ -78,17 +84,19 @@ class Ui:
     # ---- 描画
     def draw_all(self, now_ms):
         lay = self.lay
-        if self.map_mode:
+        if self.map_mode and not lay.wide:
             self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_map(
-                fb, dy, lay, self.st, self.status, now_ms))
+                fb, dy, lay.w, lay.h, self.st, self.status, now_ms))
             return
         self.scr.region(0, 0, lay.list_w + 1, lay.h, lambda fb, dy: views.draw_list(
             fb, dy, lay, self.st, self.selected, now_ms))
         self._draw_detail(now_ms)
         self._draw_status()
+        if lay.wide:
+            self._draw_small_map(now_ms)
 
     def draw_tick(self, now_ms):
-        if self.map_mode:
+        if self.map_mode and not self.lay.wide:
             return
         self._draw_detail(now_ms)
         self._draw_status()
@@ -101,5 +109,11 @@ class Ui:
 
     def _draw_status(self):
         lay = self.lay
-        self.scr.region(lay.right_x, lay.status_y, lay.right_w, lay.status_h,
+        self.scr.region(lay.right_x, lay.status_y, lay.status_w, lay.status_h,
                         lambda fb, dy: views.draw_status(fb, dy, lay, self.status))
+
+    def _draw_small_map(self, now_ms):
+        lay = self.lay
+        self.scr.region(lay.map_x - 1, lay.map_y, lay.map_w + 1, lay.map_h,
+                        lambda fb, dy: views.draw_map(fb, dy, lay.map_w + 1, lay.map_h, self.st,
+                                                      self.status, now_ms, small=True))
