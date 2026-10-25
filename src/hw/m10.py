@@ -16,6 +16,11 @@ from core.gnssfix import RtcSync, nav_sat, update_status
 from maxm10 import MaxM10, ubx
 from micropyGPS import MicropyGPS
 
+try:
+    from typing import Callable  # noqa: F401  (型注釈用。MicroPython には無い)
+except ImportError:
+    pass
+
 
 def _set_rtc(utc_s):
     t = time.gmtime(utc_s)  # (年, 月, 日, 時, 分, 秒, 曜日, 年内通日)
@@ -32,6 +37,8 @@ class M10:
         self.sentences = 0  # 解析できた文の数
         self.signals = []  # 捕捉中の衛星 [(gnssId, C/N0, 使用中か), ...](NAV-SAT)
         self.aug = ()  # 使えている補強('QZSS', 'SBAS', 'SLAS')
+        # NMEA の 1 文(bytes、チェックサム確認済み)を受ける関数(ログ用)
+        self.on_nmea: "Callable[[bytes], None] | None" = None
         self._rmc = False
 
     def begin(self):
@@ -45,6 +52,8 @@ class M10:
             self.signals, self.aug = nav_sat(p)
 
     def _on_nmea(self, line):
+        if self.on_nmea is not None:
+            self.on_nmea(line)
         update = self.gps.update
         for b in line:
             r = update(chr(b))

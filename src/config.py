@@ -40,6 +40,7 @@ LCD_BAUD = const(62_500_000)
 BUTTONS = ()  # 画面操作のボタン(rev1 の基板には無い)。(A, B, X, Y) の GPIO 番号
 
 # microSD(SPI1)
+SD_SPI = const(1)
 PIN_SD_SCK = const(10)
 PIN_SD_MOSI = const(11)
 PIN_SD_MISO = const(12)
