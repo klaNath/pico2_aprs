@@ -6,9 +6,9 @@ GSA は実機の MAX-M10M から取ったもの。RMC の位置は架空(チェ�
 import time
 
 from core import geo
-from core.gnssfix import RtcSync, update_status, utc_s
+from core.gnssfix import GNSS_GPS, GNSS_QZSS, RtcSync, nav_sat, update_status, utc_s
 from micropyGPS import MicropyGPS
-from ui.views import Status, gnss_text, status_lines
+from ui.views import Status
 
 GSA = [
     "$GNGSA,A,3,20,18,05,21,24,15,13,14,12,23,,,1.30,0.68,1.10,1*07",
@@ -25,7 +25,7 @@ def with_cs(body):
     return "$%s*%02X" % (body, c)
 
 
-RMC = with_cs("GNRMC,234833.00,A,3530.00000,N,13930.00000,E,0.119,,241026,,,A,V")
+RMC = with_cs("GNRMC,234833.00,A,3530.60000,N,13930.60000,E,0.119,,241026,,,A,V")
 RMC_VOID = with_cs("GNRMC,234833.00,V,,,,,,,241026,,,N,V")
 
 
@@ -56,11 +56,12 @@ def test_update_status_fix():
     update_status(st, gps)
     assert st.fix == 3 and st.sats == 20 and st.sats_view == 38
     assert near(st.hdop, 0.68)
-    assert near(st.lat, 35.5) and near(st.lon, 139.5)
+    assert near(st.lat, 35.51) and near(st.lon, 139.51)
+    assert st.grid == "PM95SM12"
     assert utc_s(gps) == 1792885713
     feed(gps, [RMC_VOID])
     update_status(st, gps)
-    assert st.fix == 0 and st.lat is None
+    assert st.fix == 0 and st.lat is None and st.grid is None
 
 
 def test_rtc_sync_first_then_hourly():
@@ -75,13 +76,29 @@ def test_rtc_sync_first_then_hourly():
     assert sync.on_rmc(gps, now_ms=1000 + 3600_000) and len(calls) == 2
 
 
-def test_gnss_text():
-    st = Status()
-    st.fix, st.sats, st.sats_view, st.hdop = 3, 21, 38, 0.66
-    assert gnss_text(st, 30) == "3D 21/38 HDOP0.7"
-    assert gnss_text(st, 10) == "3D 21/38"  # 狭い画面では HDOP を省く
-    st.fix, st.sats = 0, 0
-    assert gnss_text(st, 30) == "NO FIX 0/38"
-    st.fix, st.sats, st.utc_s = 3, 21, 1792885713
-    line = status_lines(st, 27)[0][0]
-    assert line == "3D 21/38 HDOP0.7   08:48:33" and len(line) <= 27
+def test_gridlocator():
+    assert geo.gridlocator(41.714775, -72.727260)[:6] == "FN31PR"  # W1AW
+    assert geo.gridlocator(-33.8568, 151.2153)[:6] == "QF56OD"  # シドニー(南緯・東経)
+    assert geo.gridlocator(35.681236, 139.767125) == "PM95VQ23"  # 東京駅
+    assert geo.gridlocator(90.0, 180.0) == "RR99XX99"
+    assert geo.gridlocator(-90.0, -180.0) == "AA00AA00"
+
+
+def sat_block(gnss, sv, cno, flags):
+    return bytes((gnss, sv, cno, 30, 0, 0, 0, 0)) + flags.to_bytes(4, "little")
+
+
+def test_nav_sat():
+    used = 0x08
+    blocks = [sat_block(GNSS_QZSS, 2, 32, used | 0x40000),  # QZSS 使用中、SLAS 補正を使用
+              sat_block(GNSS_GPS, 5, 17, used),
+              sat_block(GNSS_GPS, 20, 10, 0),
+              sat_block(GNSS_GPS, 30, 0, 0)]  # 捕捉していない
+    p = bytes((0, 0, 0, 0, 1, len(blocks), 0, 0)) + b"".join(blocks)
+    signals, aug = nav_sat(p)
+    assert signals == [(GNSS_GPS, 17, True), (GNSS_GPS, 10, False), (GNSS_QZSS, 32, True)]
+    assert aug == ("QZSS", "SLAS")
+    blocks[1] = sat_block(GNSS_GPS, 5, 17, used | 0x10000)  # SBAS 補正を使用
+    p = bytes((0, 0, 0, 0, 1, 2, 0, 0)) + b"".join(blocks[1:3])
+    assert nav_sat(p) == ([(GNSS_GPS, 17, True), (GNSS_GPS, 10, False)], ("SBAS",))
+    assert nav_sat(b"") == ([], ())

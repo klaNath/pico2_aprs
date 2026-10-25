@@ -73,6 +73,13 @@ def main():
     status = Status()
     status.fix, status.sats, status.sats_view, status.hdop = 3, 21, 38, 0.7
     status.lat, status.lon = OWN
+    status.grid = geo.gridlocator(*OWN)
+    status.aug = ("QZSS", "SBAS")
+    # 棒グラフ用の架空の衛星(gnssId, C/N0, 使用中か)。G 10、S 1、E 9、J 3、R 5 機
+    status.signals = ([(0, 12 + 3 * k, k % 4 != 3) for k in range(10)] + [(1, 35, False)]
+                      + [(2, 15 + 3 * k, k % 3 != 2) for k in range(9)]
+                      + [(5, 30 + 4 * k, True) for k in range(3)]
+                      + [(6, 10 + 5 * k, k > 1) for k in range(5)])
     status.utc_s = time.time()
     status.beacon_on = True
     ui = Ui(scr, stations, status,

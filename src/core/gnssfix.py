@@ -2,6 +2,7 @@
 
 ハードウェアに依存しないので PC でもテストできる(UART と RTC は hw.m10 が扱う)。
 使用衛星数は GSA の集計(全系の合計)を使う。GGA の衛星数は NMEA の仕様で 12 が上限のため。
+衛星ごとの強度と、QZSS・SBAS・SLAS を使えているかは UBX NAV-SAT(u-blox)から読む。
 """
 
 import time
@@ -9,6 +10,37 @@ import time
 from core import geo
 
 RTC_SYNC_MS = 60 * 60 * 1000  # 最初に合わせたあと、合わせ直す間隔
+
+# UBX の gnssId
+GNSS_GPS = 0
+GNSS_SBAS = 1
+GNSS_GALILEO = 2
+GNSS_BEIDOU = 3
+GNSS_QZSS = 5
+GNSS_GLONASS = 6
+
+
+def nav_sat(p):
+    """UBX NAV-SAT のペイロード -> (signals, aug)
+
+    signals: 捕捉中(C/N0 > 0)の衛星の [(gnssId, C/N0 dBHz, 測位に使用中か), ...](gnssId 順、強い順)
+    aug: 使えている補強の名前のタプル。'QZSS'(QZSS の衛星を測位に使用)、'SBAS'、'SLAS'(補正を使用)
+    """
+    signals = []
+    qzss = sbas = slas = False
+    n = p[5] if len(p) >= 8 else 0
+    for i in range(8, min(len(p), 8 + n * 12) - 11, 12):
+        gnss, cno = p[i], p[i + 2]
+        flags = p[i + 8] | (p[i + 9] << 8) | (p[i + 10] << 16)
+        used = bool(flags & 0x08)
+        if cno:
+            signals.append((gnss, cno, used))
+        qzss |= used and gnss == GNSS_QZSS
+        sbas |= bool(flags & 0x10000)
+        slas |= bool(flags & 0x40000)
+    signals.sort(key=lambda t: (t[0], -t[1]))  # 系の順、その中は強い順(sort は安定でないので明示)
+    aug = tuple(name for name, on in (("QZSS", qzss), ("SBAS", sbas), ("SLAS", slas)) if on)
+    return signals, aug
 
 
 def utc_s(gps):
@@ -24,14 +56,16 @@ def update_status(status, gps):
     """測位・衛星・位置を status に写す(時刻は RtcSync 側で扱う)"""
     fix = gps.fix_type if gps.valid else 0
     status.fix = fix if fix >= 2 else 0
-    status.sats = len(gps.satellites_used) if gps.satellites_used_by_system else gps.satellites_in_use
+    used = gps.satellites_used_by_system
+    status.sats = len(gps.satellites_used) if used else gps.satellites_in_use
     status.sats_view = gps.satellites_in_view
     hdop = gps.hdop
     status.hdop = hdop if hdop == hdop else None  # 不明は nan
     if status.fix:
         status.lat, status.lon = gps.latitude, gps.longitude
+        status.grid = geo.gridlocator(status.lat, status.lon)
     else:
-        status.lat = status.lon = None
+        status.lat = status.lon = status.grid = None
 
 
 class RtcSync:

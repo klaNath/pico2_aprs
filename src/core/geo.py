@@ -44,6 +44,24 @@ def fmt_latlon(lat, lon):
     return fmt_dm(lat, "N", "S", 2) + " " + fmt_dm(lon, "E", "W", 3)
 
 
+def gridlocator(lat, lon):
+    """緯度・経度(十進度、南緯・西経は負)-> Maidenhead Grid Locator 8 文字('PM95VS27')"""
+    x = max((lon + 180.0) / 20.0, 0.0)
+    y = max((lat + 90.0) / 10.0, 0.0)
+    out = []
+    for base in (18, 10, 24, 10):  # field(A-R)、square(0-9)、subsquare(A-X)、extended square(0-9)
+        # 端(北緯 90 度、東経 180 度)や単精度 float の丸めで範囲を超えたら最後の区画に入れる
+        ix, iy = min(int(x), base - 1), min(int(y), base - 1)
+        if base == 10:
+            out.append(chr(48 + ix) + chr(48 + iy))
+        else:
+            out.append(chr(65 + ix) + chr(65 + iy))
+        nxt = 10 if base != 10 else 24
+        x = (x - ix) * nxt
+        y = (y - iy) * nxt
+    return "".join(out)
+
+
 def fmt_distance(km):
     if km < 10:
         return "%.1fkm" % km

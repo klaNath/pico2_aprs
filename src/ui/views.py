@@ -1,7 +1,7 @@
 """画面の描画: メイン画面(局の一覧・最新局の詳細・自局の状態・地図)と全画面の地図。
 
 配置は画面の大きさから決める。
-    320x240: 左に一覧、右上に詳細、右下に自局の状態と小さな地図(常に表示)
+    320x240: 上段に一覧と詳細、下段に自局の状態(その下に衛星の強度の棒グラフ)と小さな地図(常に表示)
     240x135: 左に一覧、右上に詳細、右下に自局の状態。地図はボタンで全画面に切り替える
 文字は framebuf 標準の 8x8 フォント(ASCII のみ)。描画関数は ui.screen.Screen.region に渡す
 draw(fb, dy) の形で、領域の左上を (0, 0) とした座標に dy を足して描く。
@@ -23,6 +23,18 @@ MAGENTA = rgb(255, 80, 255)  # 自局のエコー
 
 CH = 8  # 文字の幅・高さ
 ROW = 9  # 行の高さ(1 ピクセルの行間)
+STATUS_LINES_WIDE = 4  # 320x240 の自局の状態の行数(その下が衛星の棒グラフ)
+
+# 衛星の系(UBX の gnssId)-> (RINEX の記号, 色)
+SYSTEMS = {
+    0: ("G", GREEN),  # GPS
+    1: ("S", YELLOW),  # SBAS
+    2: ("E", CYAN),  # Galileo
+    3: ("C", RED),  # BeiDou
+    5: ("J", MAGENTA),  # QZSS
+    6: ("R", ORANGE),  # GLONASS
+}
+CNO_MAX = 50  # 棒グラフの上端の C/N0(dBHz)
 
 KIND_LABEL = {
     "position": "Position",
@@ -44,6 +56,9 @@ class Status:
         self.sats = 0  # 使用衛星数(全系の合計)
         self.sats_view = 0  # 可視衛星数(全系の合計)
         self.hdop: "float | None" = None
+        self.aug: "tuple[str, ...]" = ()  # 使えている補強('QZSS', 'SBAS', 'SLAS')
+        self.signals: "list[tuple[int, int, bool]]" = []  # 捕捉中の衛星 (gnssId, C/N0, 使用中か)
+        self.grid: "str | None" = None  # Grid Locator 8 文字
         self.lat: "float | None" = None
         self.lon: "float | None" = None
         self.utc_s: "int | None" = None  # UTC の秒(time.time() と同じ起点)/ None = 時刻不明
@@ -62,23 +77,30 @@ class Layout:
         self.list_w = 9 * CH  # コールサイン 9 文字
         self.right_x = self.list_w + 2
         self.right_w = width - self.right_x
-        self.list_rows = (height - ROW) // ROW  # 見出し 1 行を除く
         self.cols = self.right_w // CH
-        # 小さな地図を常に出すか(320x240 など)。出さないときは map_w = 0
+        # 下段に自局の状態・衛星の棒グラフ・小さな地図を出すか(320x240 など)
         self.wide = width >= 320 and height >= 200
         if self.wide:
-            self.detail_h = 122  # 13 行 + 区切り線
-            self.status_w = 16 * CH  # '3D 21/38 HDOP0.7' が 1 行に収まる幅
-            self.map_x = self.right_x + self.status_w + 2
-            self.map_w = width - self.map_x
+            self.detail_h = 122  # 13 行 + 区切り線。一覧も同じ高さ
+            self.list_h = self.detail_h
+            self.status_y = self.detail_h + 1
+            self.status_h = height - self.status_y
+            self.map_w = self.map_h = self.status_h  # 正方形
+            self.map_x = width - self.map_w
+            self.map_y = self.status_y
+            self.status_x = 0
+            self.status_w = self.map_x - 2
+            self.sats_y = 1 + STATUS_LINES_WIDE * ROW + 1  # 状態の欄の中の棒グラフの上端
         else:
             self.detail_h = (height * 64) // 100  # 上 64% を詳細、残りを自局の状態
+            self.list_h = height
+            self.status_y = self.detail_h + 1
+            self.status_h = height - self.status_y
+            self.map_x = self.map_y = self.map_w = self.map_h = 0
+            self.status_x = self.right_x
             self.status_w = self.right_w
-            self.map_x = self.map_w = 0
-        self.status_y = self.detail_h + 1
-        self.status_h = height - self.status_y
-        self.map_y = self.status_y
-        self.map_h = self.status_h if self.wide else 0
+            self.sats_y = self.status_h  # 棒グラフなし
+        self.list_rows = (self.list_h - ROW) // ROW  # 見出し 1 行を除く
         self.status_cols = self.status_w // CH
         self.status_rows = self.status_h // ROW
 
@@ -94,7 +116,9 @@ def _right(fb, s, x_right, y, color):
 def draw_list(fb, dy, lay, stations, selected, now_ms):
     """左: コールサインの一覧(新しい順)。selected は選択中の Station(None = 最新を自動表示)"""
     fb.text("HEARD %d" % len(stations), 0, 0 + dy, CYAN)
-    fb.vline(lay.list_w, dy, lay.h, DARK)
+    fb.vline(lay.list_w, dy, lay.list_h, DARK)
+    if lay.wide:
+        fb.hline(0, lay.list_h - 1 + dy, lay.list_w + 1, DARK)
     shown = selected if selected is not None else stations.latest()
     for i, st in enumerate(stations.order[: lay.list_rows]):
         y = ROW * (i + 1) + dy
@@ -129,15 +153,16 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols):
         kind += " " + p.mice_msg
     if p.table and p.code:
         kind += " " + p.table + p.code
-    lines.append((_clip(kind, cols), CYAN))
     if st.lat is not None and own_lat is not None:
-        d = geo.distance_km(own_lat, own_lon, st.lat, st.lon)
+        d = geo.fmt_distance(geo.distance_km(own_lat, own_lon, st.lat, st.lon))
         b = geo.compass16(geo.bearing_deg(own_lat, own_lon, st.lat, st.lon))
-        lines.append((geo.fmt_distance(d) + " " + b, GREEN))
+        s = "DIST %s  DIR %s" % (d, b)
+        lines.append((s if len(s) <= cols else "DIST %s DIR %s" % (d, b), GREEN))
     elif st.lat is not None:
         lines.append(("own position unknown", GRAY))
     else:
         lines.append(("no position", GRAY))
+    lines.append((_clip(kind, cols), CYAN))
     if st.lat is not None:
         lines.append((geo.fmt_latlon(st.lat, st.lon), WHITE))
     mv = []
@@ -171,46 +196,58 @@ def draw_detail(fb, dy, lay, st, status, now_ms):
 
 
 def gnss_text(status, cols):
-    """'3D 21/38 HDOP0.7'(測位の種類 使用/可視 HDOP)。cols に収まらなければ HDOP を省く"""
+    """'3D 21/38 HDOP0.7 QZSS SBAS'(測位の種類 使用/可視 HDOP 使えている補強)。
+
+    cols に収まらなければ HDOP、次に補強の名前を省く。
+    """
     head = ("%dD" % status.fix) if status.fix >= 2 else "NO FIX"
     s = "%s %d/%d" % (head, status.sats, status.sats_view)
-    if status.fix >= 2 and status.hdop is not None:
-        h = " HDOP%.1f" % status.hdop
-        if len(s) + len(h) <= cols:
-            s += h
+    h = " HDOP%.1f" % status.hdop if status.fix >= 2 and status.hdop is not None else ""
+    a = "".join(" " + name for name in status.aug)
+    for tail in (h + a, a, h):
+        if len(s) + len(tail) <= cols:
+            return s + tail
     return s
 
 
+def _two(left, right, cols):
+    """left を左寄せ、right を右寄せにした 1 行(収まらなければ間を 1 文字)"""
+    return left + " " * max(1, cols - len(left) - len(right)) + right
+
+
 def status_lines(status, cols, rows=4):
-    """自局の状態 -> [(文字列, 色), ...]。rows が 7 以上なら縦長の欄向けに、時刻と緯度・経度を分ける"""
+    """自局の状態 -> [(文字列, 色), ...]
+
+    cols が 24 以上(320x240 の下段): 4 行。
+        測位・衛星・補強 / 時刻と Grid / 位置 / ビーコンと送受信数
+    それより狭い(240x135): 測位と時刻 / 位置 / ビーコン / 送受信数(rows が 5 以上なら Grid も)
+    """
     lines = []
-    tall = rows >= 7
     t = geo.fmt_jst(status.utc_s) if status.utc_s is not None else "--:--:--"
     gps_color = GREEN if status.fix >= 2 else ORANGE
-    if tall:
-        lines.append((gnss_text(status, cols), gps_color))
-        lines.append((t + " JST", WHITE if status.utc_s is not None else GRAY))
-    else:
-        gps = gnss_text(status, cols - len(t) - 1)
-        lines.append((gps + " " * max(1, cols - len(gps) - len(t)) + t, gps_color))
-    if status.lat is not None:
-        pos = geo.fmt_latlon(status.lat, status.lon)
-        if len(pos) > cols:
-            lines.append((pos[:9], WHITE))  # 'N35 40.12'
-            lines.append((pos[10:], WHITE))  # 'E139 46.03'
-        else:
-            lines.append((pos, WHITE))
-    else:
-        lines.append(("position unknown", GRAY))
+    grid = status.grid or "--------"
+    pos = geo.fmt_latlon(status.lat, status.lon) if status.lat is not None else "position unknown"
+    pos_color = WHITE if status.lat is not None else GRAY
     if status.beacon_on:
         nb = status.next_beacon_s
-        nxt = "" if nb is None else "next %d:%02d" % (nb // 60, nb % 60)
-        sep = "  " if len(nxt) + 8 <= cols else " "
-        lines.append(("BCN ON" + (sep + nxt if nxt else ""), GREEN))
+        bcn = "BCN ON" if nb is None else "BCN ON %d:%02d" % (nb // 60, nb % 60)
     else:
-        lines.append(("BCN OFF", GRAY))
-    sep = " " if tall else "  "
-    lines.append(("RX %d%sTX %d" % (status.rx_count, sep, status.tx_count), WHITE))
+        bcn = "BCN OFF"
+    bcn_color = GREEN if status.beacon_on else GRAY
+    if cols >= 24:
+        lines.append((gnss_text(status, cols), gps_color))
+        lines.append((_two(t + " JST", grid, cols), WHITE if status.utc_s is not None else GRAY))
+        lines.append((pos, pos_color))
+        lines.append((_two(bcn, "RX %d TX %d" % (status.rx_count, status.tx_count), cols),
+                      bcn_color))
+        return lines
+    gps = gnss_text(status, cols - len(t) - 1)
+    lines.append((_two(gps, t, cols), gps_color))
+    lines.append((pos, pos_color))
+    lines.append((bcn, bcn_color))
+    lines.append(("RX %d  TX %d" % (status.rx_count, status.tx_count), WHITE))
+    if rows >= 5:
+        lines.append(("GRID " + grid, WHITE))
     return lines
 
 
@@ -218,11 +255,46 @@ def draw_status(fb, dy, lay, status):
     lines = status_lines(status, lay.status_cols, lay.status_rows)
     for i, (s, c) in enumerate(lines):
         fb.text(s, 0, 1 + i * ROW + dy, c)
-    y = 1 + (len(lines) - 1) * ROW + dy
+    # 送受信中の印: 320x240 は位置の行(20 文字)の右、240x135 は送受信数の行の右
+    y = 1 + (2 if lay.wide else 3) * ROW + dy
     if status.tx_active:
         _right(fb, "[TX]", lay.status_w, y, RED)
     elif status.rx_recent:
         _right(fb, "[RX]", lay.status_w, y, GREEN)
+    if lay.wide:
+        draw_signals(fb, lay.sats_y + dy, lay.status_w, lay.status_h - lay.sats_y, status.signals)
+
+
+def draw_signals(fb, y0, w, h, signals):
+    """捕捉中の衛星の C/N0 の棒グラフ(系ごとに並べ、下に系の記号)。
+
+    使用中は塗りつぶし、未使用は枠だけ。
+    """
+    if not signals:
+        fb.text("no satellites tracked", 0, y0 + 2, GRAY)
+        return
+    bar_h = h - ROW - 1
+    base = y0 + bar_h  # 棒の下端
+    for cno in (20, 40):  # 目盛り
+        fb.hline(0, base - cno * bar_h // CNO_MAX, w, DARK)
+    pitch = max(2, min(7, w // len(signals)))
+    bw = max(1, pitch - 1)
+    x = 0
+    prev = None
+    label_end = 0
+    for gnss, cno, used in signals:
+        sym, col = SYSTEMS.get(gnss, ("?", GRAY))
+        if gnss != prev:
+            if x >= label_end:
+                fb.text(sym, x, base + 2, col)
+                label_end = x + CH + 1
+            prev = gnss
+        bh = max(1, min(cno, CNO_MAX) * bar_h // CNO_MAX)
+        if used:
+            fb.fill_rect(x, base - bh, bw, bh, col)
+        else:
+            fb.rect(x, base - bh, bw, bh, col)
+        x += pitch
 
 
 def draw_map(fb, dy, w, h, stations, status, now_ms, small=False):

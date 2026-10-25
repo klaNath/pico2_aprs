@@ -88,7 +88,7 @@ class Ui:
             self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_map(
                 fb, dy, lay.w, lay.h, self.st, self.status, now_ms))
             return
-        self.scr.region(0, 0, lay.list_w + 1, lay.h, lambda fb, dy: views.draw_list(
+        self.scr.region(0, 0, lay.list_w + 1, lay.list_h, lambda fb, dy: views.draw_list(
             fb, dy, lay, self.st, self.selected, now_ms))
         self._draw_detail(now_ms)
         self._draw_status()
@@ -109,7 +109,7 @@ class Ui:
 
     def _draw_status(self):
         lay = self.lay
-        self.scr.region(lay.right_x, lay.status_y, lay.status_w, lay.status_h,
+        self.scr.region(lay.status_x, lay.status_y, lay.status_w, lay.status_h,
                         lambda fb, dy: views.draw_status(fb, dy, lay, self.status))
 
     def _draw_small_map(self, now_ms):

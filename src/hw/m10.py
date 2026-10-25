@@ -3,15 +3,17 @@
 begin() でボーレートを確かめ(必要なら 115200 にして BBR に保存。ハードリセットはしない)、
 あとは poll(status) を Core0 のループから呼ぶ(受信済みの分を読んで解析するだけで、待たない)。
 有効な RMC を受けたら RTC を UTC に合わせる(最初の 1 回と、その後 1 時間ごと)。
-115200 bps・1 Hz で毎秒 1.2 KB 前後。受信バッファ 2 KB なら 1 秒程度読まなくても溢れない。
+衛星ごとの強度と補強(QZSS・SBAS・SLAS)のため、UBX NAV-SAT を毎秒出させる。この設定は
+RAM 層だけに書く(BBR の保存済み設定は変えない。電源を切れば元に戻り、begin() のたびに書く)。
+115200 bps・1 Hz で毎秒 1.7 KB 前後。受信バッファ 2 KB なら 1 秒程度読まなくても溢れない。
 """
 
 import time
 
 from machine import RTC
 
-from core.gnssfix import RtcSync, update_status
-from maxm10 import MaxM10
+from core.gnssfix import RtcSync, nav_sat, update_status
+from maxm10 import MaxM10, ubx
 from micropyGPS import MicropyGPS
 
 
@@ -25,13 +27,22 @@ class M10:
         self.baud = baud
         self.gps = MicropyGPS(location_formatting="dd")
         self.rtc = RtcSync(_set_rtc)
-        self.dev = MaxM10(uart_id, tx, rx, resetn=resetn, pps=pps, on_nmea=self._on_nmea, log=log)
+        self.dev = MaxM10(uart_id, tx, rx, resetn=resetn, pps=pps, on_nmea=self._on_nmea,
+                          on_ubx=self._on_ubx, log=log)
         self.sentences = 0  # 解析できた文の数
+        self.signals = []  # 捕捉中の衛星 [(gnssId, C/N0, 使用中か), ...](NAV-SAT)
+        self.aug = ()  # 使えている補強('QZSS', 'SBAS', 'SLAS')
         self._rmc = False
 
     def begin(self):
-        """モジュールを見つけて UART を開く。MON-VER の文字列のリストを返す"""
-        return self.dev.begin(self.baud)
+        """モジュールを見つけて UART を開き、NAV-SAT を毎秒出させる。MON-VER の文字列を返す"""
+        ver = self.dev.begin(self.baud)
+        self.dev.valset([("CFG-MSGOUT-UBX_NAV_SAT_UART1", 1)], ubx.LAYER_RAM)
+        return ver
+
+    def _on_ubx(self, cls, mid, p):
+        if (cls, mid) == ubx.NAV_SAT:
+            self.signals, self.aug = nav_sat(p)
 
     def _on_nmea(self, line):
         update = self.gps.update
@@ -50,6 +61,8 @@ class M10:
         got, self._rmc = self._rmc, False
         if status is not None:
             update_status(status, self.gps)
+            status.signals = self.signals
+            status.aug = self.aug
             if self.rtc.synced:
                 status.utc_s = time.time()
         return got

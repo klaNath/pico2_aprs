@@ -1,4 +1,6 @@
-"""GT-505GGBL5-DR-N(旧 GNSS モジュール)の動作確認: NMEA を読み、測位状態・位置・JST 時刻を表示する(画面と USB の両方)。
+"""GT-505GGBL5-DR-N(旧 GNSS モジュール)の動作確認。
+
+NMEA を読み、測位状態・位置・JST 時刻を表示する(画面と USB の両方)。
 
     python tools/dev.py run src/gt505_demo.py -t 130
 
