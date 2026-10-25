@@ -1,6 +1,7 @@
 """受信ログと NMEA ログ。起動ごと(カードを挿し直したときも)に通し番号の 1 組のファイルを作る。
 
-    <root>/0001_aprs.txt   受信したパケット(TNC2 の文字列)。自局の送信は 'TX ' を付ける
+    <root>/0001_aprs.txt   受信したパケット(TNC2 の文字列)。自局の送信は 'TX '(止めているときは
+                           'TX(dry) ')を付ける
     <root>/0001_nmea.txt   NMEA の RMC と GGA(受信したまま)
 
 受信ログの 1 行: '2026-10-25T01:37:37Z JA1ABC>APRS,WIDE1-1:!3539.53N/13944.70E>'
@@ -54,8 +55,9 @@ class Logger:
         self._last_flush = self._t0
 
     # ---- 記録(バッファにためるだけ。メモリ確保は 1 行分)
-    def packet(self, text, tx=False, utc_s=None, now_ms=None):
-        """受信(tx=True なら自局の送信)したパケット。text は TNC2 の str / bytes"""
+    def packet(self, text, tx=False, utc_s=None, now_ms=None, dry=False):
+        """受信(tx=True なら自局の送信)したパケット。text は TNC2 の str / bytes。
+        dry=True は送信を止めている(config.TX_ENABLED = False)ときの送るはずだったパケット"""
         if utc_s is not None:
             stamp = iso_utc(utc_s)
         else:
@@ -63,7 +65,8 @@ class Logger:
             stamp = "T+%d.%03d" % (ms // 1000, ms % 1000)
         if isinstance(text, str):
             text = text.encode()
-        self._add(0, b"%s %s%s\n" % (stamp.encode(), b"TX " if tx else b"", text.rstrip(b"\r\n")))
+        tag = (b"TX(dry) " if dry else b"TX ") if tx else b""
+        self._add(0, b"%s %s%s\n" % (stamp.encode(), tag, text.rstrip(b"\r\n")))
 
     def nmea(self, line):
         """NMEA の 1 文(bytes、CR LF 付き)。RMC と GGA だけ残す"""

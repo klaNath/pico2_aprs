@@ -74,14 +74,16 @@ def test_files_and_lines():
     assert b"T+1.234 JA1AAA>APRS:>before start\n" in aprs.flushed  # 開いたときに書く
     lg.packet(b"JA1BBB>APRS:!3539.53N/13944.70E>\r\n", utc_s=UTC + 1)
     lg.packet("JK1BBJ-7>APZPI2:`test", tx=True, utc_s=UTC + 2)
+    lg.packet("JK1BBJ-7>APZPI2:`dry", tx=True, utc_s=UTC + 3, dry=True)
     lg.nmea(RMC)
     lg.nmea(GSV)  # RMC と GGA 以外は残さない
     assert not lg.poll(now_ms=time.ticks_add(lg._last_flush, 9_999))  # 10 秒たつまでは書かない
     assert lg.poll(now_ms=time.ticks_add(lg._last_flush, 10_000))
     assert aprs.flushed.endswith(b"2026-10-24T23:48:34Z JA1BBB>APRS:!3539.53N/13944.70E>\n"
-                                 b"2026-10-24T23:48:35Z TX JK1BBJ-7>APZPI2:`test\n")
+                                 b"2026-10-24T23:48:35Z TX JK1BBJ-7>APZPI2:`test\n"
+                                 b"2026-10-24T23:48:36Z TX(dry) JK1BBJ-7>APZPI2:`dry\n")
     assert nmea.flushed.endswith(RMC) and GSV not in nmea.flushed
-    assert lg.lines == 4
+    assert lg.lines == 5
     lg.close()
     assert aprs.closed and nmea.closed and lg.seq is None
 

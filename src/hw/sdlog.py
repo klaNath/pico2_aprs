@@ -42,8 +42,8 @@ class SdLog:
         return self.det.value() == 0
 
     # ---- 記録(Logger に渡すだけ。カードが無い間もためる)
-    def packet(self, text, tx=False, utc_s=None):
-        self.logger.packet(text, tx, utc_s)
+    def packet(self, text, tx=False, utc_s=None, dry=False):
+        self.logger.packet(text, tx, utc_s, dry=dry)
 
     def nmea(self, line):
         self.logger.nmea(line)

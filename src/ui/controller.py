@@ -117,6 +117,10 @@ class Ui:
         self.scr.region(lay.right_x, 0, lay.right_w, lay.detail_h, lambda fb, dy: views.draw_detail(
             fb, dy, lay, shown, self.status, now_ms, self._blink))
 
+    def draw_status_now(self):
+        """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)"""
+        self._draw_status()
+
     def _draw_badge(self):
         lay = self.lay
         self.scr.region(lay.w - views.BADGE, 0, views.BADGE, views.BADGE,

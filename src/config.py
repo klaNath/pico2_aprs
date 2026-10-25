@@ -13,7 +13,7 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
          LCD の RESET は Pico の RUN と共通(ソフトからは SWRESET で代用)
-    GP21 外部スイッチ(J1)。0 V = ビーコン送出オン
+    GP21 外部スイッチ(J1)。内部プルアップ、High(開放・未接続を含む)= ビーコン送出オン
     GP22 GNSS TIMEPULSE(PPS)。黄 LED(D2)も点く。SAFEBOOT_N と兼用なので駆動しない
     GP26 ADC0 受信音声(rev1 では周辺光センサの位置。次の改版で音声入力になる予定)
     GP27 ADC1 電源電圧の監視(rev1 では分圧抵抗が未実装)
@@ -24,8 +24,8 @@ from micropython import const
 PIN_AFSK_OUT = const(3)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
-PIN_BEACON_SW = const(21)  # 0 V でビーコン送出オン
-BEACON_SW_ON = 0
+PIN_BEACON_SW = const(21)  # 内部プルアップ。High でビーコン送出オン(未接続でもオン)
+BEACON_SW_ON = 1
 PIN_STATUS_LED = const(7)
 
 # 表示(ST7789 2.4 インチ 240x320、横長 320x240 で使う)。パネルを替えるときは LCD_PANEL を変える
@@ -69,3 +69,14 @@ TX_PATH = ("WIDE1-1", "WIDE2-1")
 # Mic-E 以外のパケットの宛先(ソフトウェア識別子)。APZxxx は実験用に予約された範囲
 TOCALL = "APZPI2"
 SYMBOL = ("/", "[")  # シンボル表, シンボル(/[ = 人)
+
+# ビーコン(Mic-E)。前回の位置から BEACON_MOVE_M 以上動いていれば BEACON_MOVING_S ごと、
+# 動いていなければ BEACON_STILL_S ごと。スイッチを入れて測位が取れたら最初の 1 回はすぐ送る
+BEACON_MOVING_S = 90
+BEACON_STILL_S = 600
+BEACON_MOVE_M = 10.0
+BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
+BEACON_COMMENT = b"Pico2 APRS"
+# 実際に電波を出すか。False の間はビーコンの時機の管理・画面・SD の記録(TX(dry) の印)だけ動き、
+# PTT と音声は出さない。無線機の接続を確かめてから True にする
+TX_ENABLED = False
