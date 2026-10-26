@@ -40,15 +40,16 @@ def wait(rx, got, ms):
         time.sleep_ms(10)
 
 
-def main(rounds=ROUNDS):
-    rx = IfReceiver(8)
+def main(rounds=ROUNDS, method="pll"):
+    rx = IfReceiver(8, method=method)
     tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
                 config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
                 config.PTT_ACTIVE_HIGH, max_ms=1000)
     sent = []
     got = []
     gc.collect()
-    print("free %d, %d rounds x %d frames" % (gc.mem_free(), rounds, len(TEXTS)))
+    print("method %s (M=%d), free %d, %d rounds x %d frames" % (
+        method, rx.ring.m, gc.mem_free(), rounds, len(TEXTS)))
     rx.start()
     t0 = time.ticks_ms()
     try:
@@ -77,8 +78,10 @@ def main(rounds=ROUNDS):
         100 * rx.busy_us / (dt * 1000), rx.busy_us // 1000, dt, rx.samples,
         rx.samples * 1000 / dt))
     print("lag max %d / %d windows (%.0f ms), overruns %d" % (
-        rx.lag_max, rx.ring.n, rx.lag_max * 1000 / 18958, rx.overruns))
+        rx.lag_max, rx.ring.n, rx.lag_max * 1000 * rx.ring.m / 455_000, rx.overruns))
 
 
 if __name__ == "__main__":
-    main()
+    main(method="pll")
+    gc.collect()
+    main(method="count")
