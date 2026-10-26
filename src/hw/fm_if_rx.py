@@ -278,10 +278,11 @@ class IfReceiver(Receiver):
     k: count の区間の長さ 1 クロックあたりの値の変化 x 16
        (既定 144 = 9 倍。偏移 +/-3 kHz で約 +/-540)
     kp, ki, lps: pll のループの定数と出力の低域通過(モジュールのコメント)
+    vs: pll の出力の値へのシフト(既定 7: 偏移 +/-3 kHz で約 +/-670。1 小さくすると 2 倍)
     """
 
     def __init__(self, pin=8, fs=19200, nslots=8, method="pll", k=144, kp=1, ki=16, lps=1,
-                 sm_id=0):
+                 vs=7, sm_id=0):
         self.method = method
         pll = method == "pll"
         m = M_PLL if pll else M
@@ -311,7 +312,7 @@ class IfReceiver(Receiver):
             st[_PKP] = kp
             st[_PKI] = ki
             st[_PST] = 2 * clk // fs
-            st[_PVS] = 7
+            st[_PVS] = vs
             st[_PRCP] = (1 << 26) // (2 * cyc)
             st[_PLPS] = lps
             st[_PRW] = (1 << 24) // cyc
