@@ -9,7 +9,9 @@
 
 区間の長さ(クロック数)cyc から音声の値: 周波数は M * clk / cyc なので、中心のまわりで一次近似して
     v = 2048 + (平均の cyc - cyc) * k         (割り算なし。偏移 +/-0.8% で誤差はその 0.8% 程度)
-平均の cyc はゆっくり追う(時定数 4096 区間 = 約 216 ms。搬送波のずれを打ち消す)。
+平均の cyc はゆっくり追う(時定数 4096 区間 = 約 216 ms。搬送波のずれを打ち消す)。平均は 4096 倍の
+累積値 acc で持ち acc += cyc - (acc >> 12) とする((差) >> 12 で平均を直接動かすと、切り捨てで
+下へ偏り、差が小さいと動かない不感帯ができる)。
 19.2 kHz ちょうどの間隔に線形補間で並べ直す。時刻は「前の区間の中央」からの半クロック数で持つ。
 補間の比率は、区間の中央の間隔の逆数(平均から求める。ブロックごとに 1 回だけ割り算)を掛けて出す。
 455 kHz・M = 24 で区間は毎秒約 1.9 万個、リング 4096 個は約 216 ms 分。
@@ -41,7 +43,7 @@ _DREQ_PIO0_RX0 = const(4)
 _E = const(0)  # 前の区間の中央から、その区間の終わりまで(半クロック)
 _PV = const(1)  # 前の区間の値
 _OT = const(2)  # 次に出すサンプルの時刻(前の区間の中央から、半クロック)
-_MEAN = const(3)  # 区間の長さの平均 x 16(クロック)
+_MEAN = const(3)  # 区間の長さの平均 x 4096(クロック。累積値)
 _K = const(4)  # 区間の長さ 1 クロックあたりの値の変化 x 16
 _STEP = const(5)  # 出力 1 サンプルの半クロック数(150 MHz / 19.2 kHz で 15625)
 _C0 = const(6)  # 区間の長さの定数項 4 * M + 3(edge_win のコメント)
@@ -95,8 +97,8 @@ def _if2audio(ring: ptr16, off: int, rd: int, n: int, mask: int, st: ptr32, out:
     i = 0
     while i < n:
         cyc = 2 * (0xFFFF - int(ring[off + ((rd + i) & mask)])) + c0
-        mean += (cyc * 16 - mean) >> 12
-        v = 2048 + (((mean - cyc * 16) * k) >> 8)
+        mean += cyc - (mean >> 12)
+        v = 2048 + ((((mean >> 8) - cyc * 16) * k) >> 8)
         if v < 0:  # 状態に負の値を残さない(ptr32 の読み出しは符号なし)
             v = 0
         elif v > 4095:
@@ -193,7 +195,7 @@ class IfReceiver(Receiver):
         self.st = array("i", [0] * 8)
         self.st[_E] = cyc
         self.st[_PV] = 2048
-        self.st[_MEAN] = cyc * 16
+        self.st[_MEAN] = cyc * 4096
         self.st[_K] = k
         self.st[_STEP] = 2 * clk // fs
         self.st[_C0] = 4 * m + 3
@@ -223,7 +225,7 @@ class IfReceiver(Receiver):
                     continue
                 k = min(avail, _WBLOCK)
                 t0 = time.ticks_us()
-                st[_RCP] = (1 << 26) // (st[_MEAN] >> 3)  # 中央の間隔 = 平均の 2 倍(半クロック)
+                st[_RCP] = (1 << 26) // (st[_MEAN] >> 11)  # 中央の間隔 = 平均の 2 倍(半クロック)
                 no = _if2audio(buf, off, rd, k, mask, st, out)  # type: ignore[arg-type]  (viper)
                 for dem, dfr in chains:
                     nb = dem.process(out, no, 0)
