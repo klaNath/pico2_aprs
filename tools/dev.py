@@ -301,7 +301,7 @@ ROMFS_SIZE = 1024 * 1024  # このファームウェアの ROMFS 区画(romfs-qu
 # テンプレートの app.py、旧 GNSS(GT-505)用のドライバ。dev.py run では今までどおり使える
 RELEASE_EXCLUDE = (
     "app.py", "gnss_demo.py", "gt505_demo.py", "lcd_test.py", "m10_check.py", "rx_loopback.py",
-    "sdlog_demo.py", "tx_demo.py", "ui_demo.py", "core/nmea.py", "hw/gnss.py",
+    "sdlog_demo.py", "tx_demo.py", "ui_demo.py", "fm_if_test.py", "core/nmea.py", "hw/gnss.py",
 )
 # release で起動を確かめるとき、この文字列が出れば成功(station.Station.start の表示)
 RELEASE_BOOT_OK = "[station] "
