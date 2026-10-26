@@ -221,17 +221,35 @@ def _pll(ring: ptr16, off: int, rd: int, n: int, mask: int, st: ptr32, out: ptr1
     return no
 
 
+def ring_alloc_bytes(ring_bits):
+    """リングに確保するバイト数(その大きさの境界に揃えるため 2 倍)"""
+    return 2 << ring_bits
+
+
+def ring_bits_for(method):
+    """方式ごとのリングの大きさ(バイト数の 2 のべき)。
+
+    pll は 8192 区間(14)、count は 4096 区間(13)。どちらも 150 ms 前後
+    """
+    return 14 if method == "pll" else 13
+
+
 class IfRing:
     """PIO(edge_win)+ DMA で、区間の長さを 16 bit のリングへ書き続ける。AdcRing と同じ形。
     ring_bits: リングのバイト数の 2 のべき(13 = 4096 区間、14 = 8192 区間)"""
 
-    def __init__(self, pin=8, m=M, sm_id=0, ring_bits=13):
+    def __init__(self, pin=8, m=M, sm_id=0, ring_bits=13, buf=None):
+        """buf: リング用の array('H')(ring_alloc_bytes(ring_bits) バイト)。
+        None ならここで確保する"""
         self.pin = Pin(pin, Pin.IN, Pin.PULL_DOWN)  # 未接続のとき浮かないように
         self.m = m
         self.ring_bits = ring_bits
         self.ring_bytes = 1 << ring_bits
-        # リングをその大きさの境界に揃えるため 2 倍確保する
-        self.buf = array("H", bytes(2 * self.ring_bytes))
+        if buf is None:
+            buf = array("H", bytes(ring_alloc_bytes(ring_bits)))
+        if len(buf) * 2 != ring_alloc_bytes(ring_bits):
+            raise ValueError("ring buffer must be %d bytes" % ring_alloc_bytes(ring_bits))
+        self.buf = buf
         base = uctypes.addressof(self.buf)
         self.addr = (base + self.ring_bytes - 1) & ~(self.ring_bytes - 1)
         self.off = (self.addr - base) // 2
@@ -279,16 +297,18 @@ class IfReceiver(Receiver):
        (既定 144 = 9 倍。偏移 +/-3 kHz で約 +/-540)
     kp, ki, lps: pll のループの定数と出力の低域通過(モジュールのコメント)
     vs: pll の出力の値へのシフト(既定 7: 偏移 +/-3 kHz で約 +/-670。1 小さくすると 2 倍)
+    ring_buf: リング用の array('H')(ring_alloc_bytes(ring_bits_for(method)) バイト)。
+              None なら確保する
     """
 
     def __init__(self, pin=8, fs=19200, nslots=8, method="pll", k=144, kp=1, ki=16, lps=1,
-                 vs=7, sm_id=0):
+                 vs=7, sm_id=0, ring_buf=None):
         self.method = method
         pll = method == "pll"
         m = M_PLL if pll else M
         # どちらも 1 回に約 13.5 ms 分を処理する(出力は約 260 サンプル)
         self.wblock = 768 if pll else 256
-        self.ring = IfRing(pin, m, sm_id, 14 if pll else 13)
+        self.ring = IfRing(pin, m, sm_id, ring_bits_for(method), ring_buf)
         self.chains = [
             (Demodulator(fs, max_block=_OUT_MAX, **PROFILE_NOISE), Deframer(nslots)),
             (Demodulator(fs, max_block=_OUT_MAX, **PROFILE_HUM), Deframer(nslots)),

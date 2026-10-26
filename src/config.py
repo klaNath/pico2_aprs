@@ -9,6 +9,7 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP4/5 I2C0 SDA/SCL(無線機ボード J5。将来の Si5351 用)
     GP6  GNSS RESET_N(BBR を消すので通常は駆動しない)
     GP7  状態表示 LED(赤、D2)
+    GP8  (未接続)455 kHz FM IF の入力(RX_SOURCE = "if" のとき。リミッタの 0-3.3 V の方形波)
     GP9  microSD カード検出
     GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
@@ -24,6 +25,12 @@ from micropython import const
 PIN_AFSK_OUT = const(3)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
+# 受信の入力: "adc" = GP26 の音声を ADC で取る(hw.afsk_rx)、
+#             "if"  = GP8 の 455 kHz FM IF(リミッタの方形波)を PIO でエッジの時刻から
+#                     復調する(hw.fm_if_rx)
+RX_SOURCE = "adc"
+PIN_RX_IF = const(8)
+RX_IF_METHOD = "pll"  # "pll"(DPLL。乱れたエッジに強い)/ "count"(周期の逆数計数)
 PIN_BEACON_SW = const(21)  # 内部プルアップ。High でビーコン送出オン(未接続でもオン)
 BEACON_SW_ON = 1
 PIN_STATUS_LED = const(7)

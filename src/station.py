@@ -30,7 +30,12 @@ import config
 # 取れない(実測: 読み込み後の最大の連続領域は 48 KB)。ROMFS からの起動では問題ないが、同じ作りにする
 gc.collect()
 _TX_RAW = bytearray(2 * (config.FS * config.TX_BUFFER_MS // 1000))  # 送信波形(1.5 秒で 57.6 KB)
-_RX_RING = array("H", bytes(2 * 8192))  # 受信のリング(hw.afsk_rx.RING_ALLOC_BYTES と同じ)
+# 受信のリング: ADC は hw.afsk_rx.RING_ALLOC_BYTES(16 KB)、IF は hw.fm_if_rx.ring_alloc_bytes
+# (PLL は 32 KB、周期の逆数計数は 16 KB)と同じ大きさ
+if config.RX_SOURCE == "if":
+    _RX_RING = array("H", bytes(2 << (14 if config.RX_IF_METHOD == "pll" else 13)))
+else:
+    _RX_RING = array("H", bytes(2 * 8192))
 _UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
 
 import sys
@@ -45,6 +50,7 @@ from core.stations import Stations
 from hw import restart
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
+from hw.fm_if_rx import IfReceiver
 from hw.m10 import M10
 from hw.sdlog import SdLog
 from hw.st7789 import ST7789
@@ -78,7 +84,11 @@ class Station:
                          config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
                          config.PTT_ACTIVE_HIGH, raw=_TX_RAW)
         self.tx_enabled = config.TX_ENABLED
-        self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
+        if config.RX_SOURCE == "if":
+            self.rx = IfReceiver(config.PIN_RX_IF, config.FS, method=config.RX_IF_METHOD,
+                                 ring_buf=_RX_RING)
+        else:
+            self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
         self.call = own_call()
         self.status = Status()
         self.stations = Stations(own_call=self.call)
@@ -113,8 +123,11 @@ class Station:
             print("[gnss] not available:", e)
         gc.collect()
         self.rx.start()
-        print("[station] %s started, TX %s, free %d" % (
-            self.call, "enabled" if self.tx_enabled else "disabled (dry run)", gc.mem_free()))
+        src = "ADC GP%d" % config.PIN_RX_ADC if config.RX_SOURCE != "if" else "IF GP%d %s" % (
+            config.PIN_RX_IF, config.RX_IF_METHOD)
+        print("[station] %s started, RX %s, TX %s, free %d" % (
+            self.call, src, "enabled" if self.tx_enabled else "disabled (dry run)",
+            gc.mem_free()))
 
     def step(self, now):
         if self.gnss_ok:
