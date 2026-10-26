@@ -302,6 +302,7 @@ ROMFS_SIZE = 1024 * 1024  # このファームウェアの ROMFS 区画(romfs-qu
 RELEASE_EXCLUDE = (
     "app.py", "gnss_demo.py", "gt505_demo.py", "lcd_test.py", "m10_check.py", "rx_loopback.py",
     "sdlog_demo.py", "tx_demo.py", "ui_demo.py", "fm_if_test.py", "fm_if_afsk_test.py",
+    "fm_if_rt_test.py",
     "core/nmea.py", "hw/gnss.py",
 )
 # release で起動を確かめるとき、この文字列が出れば成功(station.Station.start の表示)
