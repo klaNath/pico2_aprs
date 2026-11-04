@@ -10,6 +10,7 @@ import os
 import time
 
 import config
+from core.txgate import display_call
 from hw.m10 import M10
 from hw.sdlog import LOG_DIR, SdLog
 
@@ -17,7 +18,7 @@ DURATION_MS = 35_000
 
 
 def main():
-    own = config.CALLSIGN if config.SSID == 0 else "%s-%d" % (config.CALLSIGN, config.SSID)
+    own = display_call(config.CALLSIGN, config.SSID)
     sd = SdLog(config.SD_SPI, config.PIN_SD_SCK, config.PIN_SD_MOSI, config.PIN_SD_MISO,
                config.PIN_SD_CS, config.PIN_SD_DET, header=own, log=print)
     gnss = M10(config.GNSS_UART, config.PIN_GNSS_TX, config.PIN_GNSS_RX,

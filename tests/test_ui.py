@@ -1,6 +1,7 @@
 """ui.views の配置・自局の状態の行・詳細の行のテスト。PC と実機の両方で動く。
 
 描画そのものは実機で目視する。
+コールサインはすべて架空の例。
 """
 
 from aprs.packet import parse_frame

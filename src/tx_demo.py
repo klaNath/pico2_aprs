@@ -25,7 +25,8 @@ LAT, LON = 35.681236, 139.767125  # 試験用の固定座標(東京駅付近)
 
 
 def frames(k):
-    src = Address(config.CALLSIGN, config.SSID)
+    # 音声だけのときは架空のコールサインでよい。PTT を入れるときはゲートが未設定を拒否する
+    src = Address(config.CALLSIGN or config.TEST_CALL, config.SSID)
     path = [Address.parse(p) for p in config.TX_PATH]
     if k % 2 == 0:
         dst, info = mice.encode(LAT, LON, speed=4.0 * (k % 10), course=(k * 37) % 360 + 1,
@@ -44,6 +45,11 @@ def main():
     print("TX demo: GP%d audio, PTT %s, every %d s, %d times"
           % (config.PIN_AFSK_OUT, "stays off" if isinstance(gate, AudioOnly) else "ON",
              INTERVAL_S, MAX_SENDS))
+    why = gate.refuse_reason()
+    if why is not None:
+        print("TX demo: refused:", why)
+        tx.close()
+        return
     k = 0
     try:
         while k < MAX_SENDS:

@@ -43,7 +43,7 @@ class Station:
 
 class Stations:
     def __init__(self, max_stations=MAX_STATIONS, own_call=None):
-        """own_call: 自局 'JA1XYZ-7'(SSID 0 なら 'JA1XYZ')。None なら自局の判定をしない"""
+        """own_call: 自局 'JA1XYZ-7'(架空の例。SSID 0 なら 'JA1XYZ')。None なら自局の判定をしない"""
         self.max = max_stations
         self.own_call = own_call
         self.order = []  # 新しい順の Station

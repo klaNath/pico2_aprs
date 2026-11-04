@@ -19,10 +19,11 @@ from tnc.ax25 import Frame
 
 ROUNDS = 5
 GAP_MS = 300
+# 試験フレーム。Q1TEST は架空のコールサイン(PTT を入れない音声だけの試験)
 TEXTS = (
-    "JK1BBJ-7>APZPI2,WIDE1-1:>FM IF realtime %d-1",
-    "JK1BBJ-7>APZPI2,WIDE1-1:!3546.06N/14001.91E[FM IF realtime %d-2 0123456789",
-    "JK1BBJ-7>APZPI2:>FM IF realtime %d-3 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "Q1TEST-7>APZPI2,WIDE1-1:>FM IF realtime %d-1",
+    "Q1TEST-7>APZPI2,WIDE1-1:!3546.06N/14001.91E[FM IF realtime %d-2 0123456789",
+    "Q1TEST-7>APZPI2:>FM IF realtime %d-3 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
 )
 
 

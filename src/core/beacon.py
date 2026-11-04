@@ -56,7 +56,7 @@ class Beacon:
 
 def mice_frame(src, path, lat, lon, speed_kn=0.0, course=0.0, alt=None, symbol=("/", ">"),
                comment=b"", message=0):
-    """Mic-E の位置フレーム。src: 'JK1BBJ-7'、path: ('WIDE1-1', ...)、speed_kn: ノット、
+    """Mic-E の位置フレーム。src: 'Q1TEST-7'、path: ('WIDE1-1', ...)、speed_kn: ノット、
     course: 度(速度が 0 なら不明として送る)、alt: m / None、
     message: mice.MESSAGES の番号(0 = Off Duty、1 = En Route)"""
     c = int(course + 0.5) % 360 if speed_kn > 0 else 0

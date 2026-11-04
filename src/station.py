@@ -12,8 +12,8 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
     送信: ビーコンスイッチ(GP21、High でオン)がオンで測位があれば、core.beacon の規則で
           Mic-E を送る。
-          config.TX_ENABLED = False の間は送るはずだったパケットを SD に TX(dry) と記録するだけで、
-          PTT と音声は出さない
+          ゲート(core.txgate)が拒否する間(コールサインや周波数が未確定、config.TX_ENABLED =
+          False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
 送信波形のバッファ(config.TX_BUFFER_MS 分)は、ヒープが断片化する前に確保する
 (このモジュールの読み込みの最初)。
@@ -47,6 +47,7 @@ from machine import SPI, Pin
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
 from core.stations import Stations
+from core.txgate import display_call
 from hw import restart, txctl
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
@@ -68,10 +69,6 @@ RESTART_S = 10  # 試験で短くできるよう、ここで持つ(hw.restart.wa
 _gate = None  # main() の最後の砦で PTT を切るためのゲート(Station が作る)
 
 
-def own_call():
-    return config.CALLSIGN if config.SSID == 0 else "%s-%d" % (config.CALLSIGN, config.SSID)
-
-
 def tnc2(f):
     """Frame -> TNC2 の bytes 'SRC>DST,PATH:info'"""
     return f.header().encode() + b":" + bytes(f.info)
@@ -85,13 +82,13 @@ class Station:
         self.gate = _gate = txctl.station_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
                          config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
-        self.tx_enabled = config.TX_ENABLED
+        self._refused = None  # 最後に記録した拒否の理由(同じ理由を毎回書かない)
         if config.RX_SOURCE == "if":
             self.rx = IfReceiver(config.PIN_RX_IF, config.FS, method=config.RX_IF_METHOD,
                                  ring_buf=_RX_RING)
         else:
             self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
-        self.call = own_call()
+        self.call = display_call(config.CALLSIGN, config.SSID)
         self.status = Status()
         self.stations = Stations(own_call=self.call)
         spi = SPI(config.LCD_SPI, baudrate=config.LCD_BAUD, sck=Pin(config.PIN_LCD_SCK),
@@ -128,7 +125,7 @@ class Station:
         src = "ADC GP%d" % config.PIN_RX_ADC if config.RX_SOURCE != "if" else "IF GP%d %s" % (
             config.PIN_RX_IF, config.RX_IF_METHOD)
         print("[station] %s started, RX %s, TX %s, free %d" % (
-            self.call, src, "enabled" if self.tx_enabled else "disabled (dry run)",
+            self.call, src, self.gate.refuse_reason() or "enabled",
             gc.mem_free()))
 
     def step(self, now):
@@ -198,8 +195,14 @@ class Station:
             print("[tx] not sent:", e)
             self.sd.logger.note("TX skipped: %s" % e)
             return
-        self.sd.packet(text, tx=True, utc_s=self.utc(), dry=not self.tx_enabled)
-        if self.tx_enabled:
+        why = self.gate.refuse_reason()
+        self.sd.packet(text, tx=True, utc_s=self.utc(), dry=why is not None)
+        if why != self._refused:
+            self._refused = why
+            if why is not None:
+                print("[tx] refused:", why)
+                self.sd.logger.note("TX refused: %s" % why)
+        if why is None:
             st.tx_active = True
             self.ui.draw_status_now()
             self.led.value(1)
@@ -212,7 +215,7 @@ class Station:
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
-        print("[tx%s] %d ms" % ("" if self.tx_enabled else " dry", n * 1000 // config.FS), text)
+        print("[tx%s] %d ms" % ("" if why is None else " dry", n * 1000 // config.FS), text)
 
     def _report(self):
         st = self.status

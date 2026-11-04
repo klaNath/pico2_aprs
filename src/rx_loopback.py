@@ -40,7 +40,7 @@ def main():
     rx = Receiver(config.PIN_RX_ADC, config.FS)
     tx = AfskTx(config.PIN_AFSK_OUT, txctl.audio_only(), config.FS, config.PWM_TOP,
                 config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS)
-    src = Address(config.CALLSIGN, config.SSID)
+    src = Address(config.TEST_CALL, config.SSID)
     sent = []
     got = []
     bad = [0]

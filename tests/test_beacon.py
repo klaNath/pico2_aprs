@@ -1,4 +1,5 @@
-"""core.beacon(ビーコンの送出時機と Mic-E フレーム)のテスト。PC と実機の両方で動く。"""
+"""core.beacon(ビーコンの送出時機と Mic-E フレーム)のテスト。PC と実機の両方で動く。
+コールサインはすべて架空の例。"""
 
 from aprs import mice
 from aprs.packet import parse_frame
@@ -30,14 +31,14 @@ def test_still_and_moving_intervals():
 
 
 def test_mice_frame():
-    f = mice_frame("JK1BBJ-7", ("WIDE1-1", "WIDE2-1"), LAT, LON, speed_kn=10.0, course=0.2,
+    f = mice_frame("Q1TEST-7", ("WIDE1-1", "WIDE2-1"), LAT, LON, speed_kn=10.0, course=0.2,
                    alt=40.0, symbol=("/", "["), comment=b"Pico2 APRS", message=1)
-    assert f.header().startswith("JK1BBJ-7>") and f.header().endswith(",WIDE1-1,WIDE2-1")
+    assert f.header().startswith("Q1TEST-7>") and f.header().endswith(",WIDE1-1,WIDE2-1")
     p = parse_frame(f)
     assert p.kind == "mice" and p.mice_msg == mice.MESSAGES[1]  # En Route
     assert abs(p.lat - LAT) < 1e-4 and abs(p.lon - LON) < 1e-4
     assert p.course == 360 and abs(p.speed - 18.52) < 1.0  # 真北は 360、速度は km/h
     assert p.alt is not None and abs(p.alt - 40) <= 1
     assert p.table + p.code == "/[" and "Pico2 APRS" in (p.comment or "")
-    f = mice_frame("JK1BBJ-7", (), LAT, LON, speed_kn=0.0, course=123.0)
+    f = mice_frame("Q1TEST-7", (), LAT, LON, speed_kn=0.0, course=123.0)
     assert parse_frame(f).course in (None, 0)  # 止まっているときは進行方向を送らない

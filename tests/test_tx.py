@@ -2,12 +2,12 @@
 
 dev.py check / build / release からも走るので、本物の PTT(GP2)は駆動しない。GP2 は切った状態に
 保ち、PTT の動きは偽のピンで確かめる。音声(GP3)の PWM は本物が動く(無線機ボードが
-つながっていても、PTT が入らなければ送信はしない)。"""
+つながっていても、PTT が入らなければ送信はしない)。コールサインは架空の例。"""
 
 import time
 
 import config
-from core.txgate import TxGate
+from core.txgate import FixedFreq, TxGate
 from tnc.ax25 import Frame
 
 
@@ -27,7 +27,9 @@ def _tx(max_ms=config.TX_BUFFER_MS):
 
     txctl.audio_only()  # 本物の GP2 を切った状態にする
     pin = FakePin()
-    tx = AfskTx(config.PIN_AFSK_OUT, TxGate(pin), config.FS, config.PWM_TOP,
+    # 偽のピンなので、架空のコールサインと周波数で条件をそろえる
+    gate = TxGate(pin, callsign="Q1TEST", allowed=True, freq=FixedFreq(145_000_000))
+    tx = AfskTx(config.PIN_AFSK_OUT, gate, config.FS, config.PWM_TOP,
                 config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, max_ms=max_ms)
     return tx, pin
 

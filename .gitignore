@@ -55,3 +55,6 @@ src/secrets.py
 .env
 
 claude_docs/
+
+# このマシンだけの設定(コールサインなど)。git に入れない
+src/config_local.py

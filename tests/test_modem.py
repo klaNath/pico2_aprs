@@ -1,5 +1,6 @@
 """AFSK モデム(tnc.afsk_mod / tnc.hdlc / modem.demod)のテスト。PC と実機の両方で動く。
 
+コールサインはすべて架空の例。
 劣化条件での性能評価は tools/afsk_bench.py(PC)で行う。ここでは
 ・送受信のループバックで正しく復号できること
 ・HDLC のビットスタッフィング/デフレーマが正しいこと

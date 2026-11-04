@@ -5,7 +5,6 @@ station.py や hw.afsk_tx を PC で import して、PTT の扱いを確かめ�
 """
 
 import sys
-import types
 
 
 class Pin:
@@ -27,6 +26,9 @@ class Pin:
         Pin.state[self.id] = v
         Pin.history.setdefault(self.id, []).append(v)
         return None
+
+    def __call__(self, v=None):
+        return self.value(v)
 
     @classmethod
     def reset(cls):
@@ -87,6 +89,8 @@ def _addressof(x):
 
 
 def _struct(addr, desc):
+    import types
+
     return types.SimpleNamespace(v=memoryview(_objs[addr]).cast("H"))
 
 
@@ -96,6 +100,8 @@ def install():
         return False
     if "machine" in sys.modules:
         return True
+    import types  # MicroPython には無いので、実機で読み込まれないようにここで
+
     machine = types.ModuleType("machine")
     machine.Pin = Pin
     machine.PWM = Any

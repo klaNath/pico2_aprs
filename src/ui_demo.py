@@ -1,4 +1,5 @@
 """画面表示の確認: 試験用の局データで、メイン画面と地図画面を表示する(無線機・GNSS 不要)。
+局のコールサインはすべて架空の例。
 
     python tools/dev.py run src/ui_demo.py -t 75
 
@@ -17,6 +18,7 @@ from aprs import mice
 from aprs.packet import parse, parse_frame
 from core import geo
 from core.stations import Stations
+from core.txgate import display_call
 from hw.st7789 import ST7789
 from tnc.ax25 import Frame
 from ui.controller import Ui
@@ -58,7 +60,7 @@ SAMPLES = [
     lambda: pos_packet("JA0FAR", 150.0, 315, "-", "beyond 100km"),
     lambda: parse_frame(Frame.parse("JF1STA>APRS:>Status text only")),
     # 自局のビーコンがデジピーターで中継されて戻ってきたもの(地図に出ず、一覧はマゼンタ)
-    lambda: mice_packet("%s-%d" % (config.CALLSIGN, config.SSID), 0.0, 0, 0.0, 0, "[",
+    lambda: mice_packet(display_call(config.CALLSIGN, config.SSID), 0.0, 0, 0.0, 0, "[",
                         b"own echo"),
 ]
 
@@ -68,7 +70,7 @@ def main():
               mosi=Pin(config.PIN_LCD_MOSI))
     lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL, config.LCD_PANEL)
     scr = Screen(lcd)
-    own = config.CALLSIGN if config.SSID == 0 else "%s-%d" % (config.CALLSIGN, config.SSID)
+    own = display_call(config.CALLSIGN, config.SSID)
     stations = Stations(own_call=own)
     status = Status()
     status.fix, status.sats, status.sats_view, status.hdop = 3, 21, 38, 0.7

@@ -1,6 +1,7 @@
 """core.logger(受信ログと NMEA ログ)のテスト。PC と実機の両方で動く。
 
 ファイル操作は偽物(メモリ上)に差し替えるので、フラッシュにも SD にも書かない。
+コールサインはすべて架空の例。
 """
 
 import time
@@ -53,7 +54,7 @@ class FakeFs:
 
 
 def make(fs, **kw):
-    return Logger("JK1BBJ-7", opener=fs.open, listdir=fs.listdir, mkdir=fs.mkdir, **kw)
+    return Logger("Q1TEST-7", opener=fs.open, listdir=fs.listdir, mkdir=fs.mkdir, **kw)
 
 
 def test_iso_and_seq():
@@ -70,18 +71,18 @@ def test_files_and_lines():
     lg.packet("JA1AAA>APRS:>before start", now_ms=time.ticks_add(lg._t0, 1234))
     assert lg.start("/sd/log", UTC) == 3
     aprs, nmea = fs.files["/sd/log/0003_aprs.txt"], fs.files["/sd/log/0003_nmea.txt"]
-    assert aprs.data.startswith(b"# JK1BBJ-7 aprs log 0003 started 2026-10-24T23:48:33Z\n")
+    assert aprs.data.startswith(b"# Q1TEST-7 aprs log 0003 started 2026-10-24T23:48:33Z\n")
     assert b"T+1.234 JA1AAA>APRS:>before start\n" in aprs.flushed  # 開いたときに書く
     lg.packet(b"JA1BBB>APRS:!3539.53N/13944.70E>\r\n", utc_s=UTC + 1)
-    lg.packet("JK1BBJ-7>APZPI2:`test", tx=True, utc_s=UTC + 2)
-    lg.packet("JK1BBJ-7>APZPI2:`dry", tx=True, utc_s=UTC + 3, dry=True)
+    lg.packet("Q1TEST-7>APZPI2:`test", tx=True, utc_s=UTC + 2)
+    lg.packet("Q1TEST-7>APZPI2:`dry", tx=True, utc_s=UTC + 3, dry=True)
     lg.nmea(RMC)
     lg.nmea(GSV)  # RMC と GGA 以外は残さない
     assert not lg.poll(now_ms=time.ticks_add(lg._last_flush, 9_999))  # 10 秒たつまでは書かない
     assert lg.poll(now_ms=time.ticks_add(lg._last_flush, 10_000))
     assert aprs.flushed.endswith(b"2026-10-24T23:48:34Z JA1BBB>APRS:!3539.53N/13944.70E>\n"
-                                 b"2026-10-24T23:48:35Z TX JK1BBJ-7>APZPI2:`test\n"
-                                 b"2026-10-24T23:48:36Z TX(dry) JK1BBJ-7>APZPI2:`dry\n")
+                                 b"2026-10-24T23:48:35Z TX Q1TEST-7>APZPI2:`test\n"
+                                 b"2026-10-24T23:48:36Z TX(dry) Q1TEST-7>APZPI2:`dry\n")
     assert nmea.flushed.endswith(RMC) and GSV not in nmea.flushed
     assert lg.lines == 5
     lg.close()

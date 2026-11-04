@@ -2,6 +2,7 @@
 
 期待値のバイト列は AX.25 仕様から組み立てたもので、上流 micro-aprs の
 デコーダと CRC 実装でも同じ結果になることを確認済み。
+コールサインはすべて架空の例。
 """
 
 from tnc.ax25 import Address, DecodeError, Frame, fcs

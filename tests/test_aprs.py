@@ -2,6 +2,7 @@
 
 期待値は独立実装の aprslib 0.7.2 の解析結果と一致することを確認済み
 (位置あいまいさは範囲の中心、速度 km/h、高度 m)。
+コールサインはすべて架空の例。
 """
 
 from aprs.packet import parse, parse_frame

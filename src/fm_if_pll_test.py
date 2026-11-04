@@ -50,10 +50,11 @@ M_B = 8
 # DPLL: (KP, KI, 出力の低域通過のシフト 0 = なし, 補間 1 = する, 出力 1 = 制御の値の全体)
 CFG_B = (1, 16, 1, 1, 1)  # 周波数特性 300 Hz-3 kHz で +/-1.5 dB 以内
 GATE = 1 << 30  # 位相誤差のゲート: 1/4 周期
+# 試験フレーム。Q1TEST は架空のコールサイン(PTT を入れない音声だけの試験)
 TEXTS = (
-    "JK1BBJ-7>APZPI2,WIDE1-1:>PLL test 1",
-    "JK1BBJ-7>APZPI2,WIDE1-1:!3546.06N/14001.91E[PLL test 2 0123456789",
-    "JK1BBJ-7>APZPI2:>PLL test 3 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "Q1TEST-7>APZPI2,WIDE1-1:>PLL test 1",
+    "Q1TEST-7>APZPI2,WIDE1-1:!3546.06N/14001.91E[PLL test 2 0123456789",
+    "Q1TEST-7>APZPI2:>PLL test 3 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
 )
 # (名前, 時刻の揺らぎ ns rms, 余分なエッジの確率, 欠けたエッジの確率)
 CONDITIONS = (

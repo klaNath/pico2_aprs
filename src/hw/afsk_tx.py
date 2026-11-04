@@ -30,7 +30,7 @@ import uctypes
 from machine import PWM, Pin, mem32
 from micropython import const
 
-from core.txgate import TxTimeout
+from core.txgate import TxRefused, TxTimeout
 from tnc.afsk_mod import Modulator
 from tnc.hdlc import encode_levels, levels_size
 
@@ -109,6 +109,7 @@ class AfskTx:
             samples = self.raw
         if n < 0:
             n = len(samples)
+        self.gate.check()  # 条件がそろっていなければ TxRefused(PWM に触る前に)
         self._write_cc(self._mid)
         time.sleep_ms(self.settle_ms)
         self.dma.config(
@@ -118,7 +119,12 @@ class AfskTx:
             ctrl=self.dma.pack_ctrl(size=_DMA_SIZE_16, inc_write=False, treq_sel=self.timer),
         )
         self.busy = True
-        self.gate.key(n * 1000 // self.fs + _DONE_MARGIN_MS)
+        try:
+            self.gate.key(n * 1000 // self.fs + _DONE_MARGIN_MS)
+        except TxRefused:  # 待っている間に条件が変わった
+            self.busy = False
+            self._write_cc(0)
+            raise
         self.dma.active(1)
 
     def finish(self):

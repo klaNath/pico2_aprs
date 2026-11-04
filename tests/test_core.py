@@ -2,6 +2,7 @@
 
 距離・方位の期待値は geographiclib(WGS84 楕円体)の値。ここは球面近似なので
 0.5% 程度の差は許す(表示は 0.1 km 単位と 16 方位なので十分)。
+コールサインはすべて架空の例。
 """
 
 from aprs.packet import parse_frame

@@ -72,9 +72,13 @@ TX_TAIL_MS = const(30)
 TX_BUFFER_MS = const(1500)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
-# 自局(CLAUDE.md の指定により既定は JK1BBJ)。電波を出す前に SSID・経路も含めて確認する
-CALLSIGN = "JK1BBJ"
+# 自局。ソースに書かない(SAF-01)。None の間は core.txgate が送信を拒否する。
+# 仮: APP-05(設定の保存)ができるまでは、git 管理外の src/config_local.py で設定する
+# (下のこのファイルの最後を参照。例は tools/config_local.example.py)。
+# 電波を出す前に SSID・経路も含めて確認する
+CALLSIGN = None
 SSID = 7
+TEST_CALL = "Q1TEST"  # 架空のコールサイン。PTT を入れない音声だけのデモで使う
 TX_PATH = ("WIDE1-1", "WIDE2-1")
 # Mic-E 以外のパケットの宛先(ソフトウェア識別子)。APZxxx は実験用に予約された範囲
 TOCALL = "APZPI2"
@@ -88,9 +92,16 @@ BEACON_MOVE_M = 10.0
 BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
 BEACON_COMMENT = b"Pico2 APRS"
 # 実際に電波を出すか。False の間はビーコンの時機の管理・画面・SD の記録(TX(dry) の印)だけ動き、
-# PTT と音声は出さない。無線機の接続を確かめてから True にする
+# PTT と音声は出さない。無線機の接続を確かめてから True にする。
+# True でも、コールサインと周波数がそろわなければ core.txgate が拒否する
 TX_ENABLED = False
 # tx_demo で本物の PTT を入れるための明示フラグ(既定 None = 音声だけ)。無線機側で確定している
 # 送信周波数(Hz)を書く。電波が出るので、ダミーロードをつないでオーナーが判断したときだけ設定する。
 # tests/ はこの値を見ない(実機テストは常に偽のピンを使う)
 BENCH_TX_HZ = None
+
+# 仮: このマシンだけの設定(git 管理外)。上の値を上書きする
+try:
+    from config_local import *  # noqa: F403  # pyright: ignore
+except ImportError:
+    pass

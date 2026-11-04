@@ -34,7 +34,7 @@ def to_text(b):
 
 class Packet:
     __slots__ = (
-        "src",  # 送信局 'JA1XYZ-9'
+        "src",  # 送信局 'JA1XYZ-9'(架空の例)
         "dst",  # 宛先 'APRS'(Mic-E では緯度が入っている)
         "path",  # 経路 ['WIDE1-1*', ...]
         "kind",
