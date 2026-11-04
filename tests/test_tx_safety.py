@@ -439,3 +439,84 @@ def test_stale_fix_stops_beacon():
     st._beacon(0)
     assert st.status.tx_count == 0 and st.status.lat is None
     st.close()
+
+
+class LogFreq:
+    """周波数源の呼ばれ方を記録する偽物"""
+
+    def __init__(self, log, lock=True, fail_on=False):
+        self.log = log
+        self.lock = lock
+        self.fail_on = fail_on
+
+    def tx_hz(self):
+        return 145_000_000
+
+    def locked(self):
+        self.log.append("locked?")
+        return self.lock
+
+    def tx_on(self):
+        self.log.append("clk_on")
+        if self.fail_on:
+            raise OSError("i2c")
+
+    def tx_off(self):
+        self.log.append("clk_off")
+
+
+class LogPin:
+    def __init__(self, log):
+        self.log = log
+
+    def value(self, v=None):
+        if v is not None:
+            self.log.append("ptt_on" if v else "ptt_off")
+
+
+def test_gate_tx_clock_order():
+    from core.txgate import TxGate
+
+    log = []
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log))
+    assert log == ["ptt_off", "clk_off"]  # Pico のリセット後も出力が残らないように切る
+    del log[:]
+    gate.key()
+    assert log == ["locked?", "clk_on", "ptt_on"]
+    del log[:]
+    gate.unkey()
+    assert log == ["ptt_off", "clk_off"]
+
+
+def test_gate_refuses_when_not_locked():
+    from core.txgate import TxGate, TxRefused
+
+    log = []
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log, lock=False))
+    assert gate.refuse_reason() == "frequency source not locked"
+    del log[:]
+    try:
+        gate.key()
+        raise AssertionError("TxRefused expected")
+    except TxRefused:
+        pass
+    assert "clk_on" not in log and "ptt_on" not in log
+
+
+def test_gate_clock_failure_never_keys_ptt():
+    from core.txgate import TxGate
+
+    log = []
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log, fail_on=True))
+    try:
+        gate.key()
+        raise AssertionError("OSError expected")
+    except OSError:
+        pass
+    assert "ptt_on" not in log and not gate.keyed and log[-1] == "clk_off"
+
+
+def test_unset_freq_is_not_locked():
+    from core.txgate import UnsetFreq
+
+    assert UnsetFreq().tx_hz() is None and UnsetFreq().locked() is False

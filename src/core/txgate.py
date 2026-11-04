@@ -6,6 +6,9 @@
 送信の条件(SAF-01、RF-01):
     コールサインが設定されている / 送信が許可されている / 周波数が確定して帯域内にある
 RF-04(使用区別の表)は V-02 の完了後に、refuse_reason() に加える。
+順序(周波数源の出力は送信の間だけ有効にする):
+    開始: 条件の確認(PLL のロックを含む)-> 送受切替 -> 送信クロック有効 -> PTT
+    終了: PTT -> 送信クロック無効 -> 送受切替
 入れている時間の上限(SAF-02)もここで持つ。expired() を見て止めるのは呼び出し側(hw.afsk_tx)。
 ファームウェアが止まったときの保護ではない(それはウォッチドッグの役目)。
 """
@@ -48,10 +51,28 @@ def display_call(call, ssid=0):
 
 class UnsetFreq:
     """周波数源のスタブ(仮)。Si5351 のドライバができるまで、周波数は常に未確定とする。
-    ドライバは同じ形で、確定した送信周波数を返す(未確定なら None)"""
+
+    ドライバは同じ形にする:
+        tx_hz()   確定した送信周波数(未確定なら None)
+        locked()  送信 PLL がロックしているか(LOL_B = 0)
+        tx_on() / tx_off()  送信クロックの出力を有効 / 無効にする
+    ドライバへの注意:
+        Pico のリセットでは Si5351 は初期化されず、設定と出力が残る。TxGate は作るときに tx_off() を
+        呼ぶので、ここで I2C に書けるようにしておく
+        CBPro の一覧は CLK_OEB = 0 で、そのまま書くと送信クロックも有効になる。0x0003 をそのまま書かない
+        送信クロックの番号は固定しない(config.SI5351_TX_CLK)"""
 
     def tx_hz(self):
         return None
+
+    def locked(self):
+        return False
+
+    def tx_on(self):
+        pass
+
+    def tx_off(self):
+        pass
 
 
 class FixedFreq:
@@ -62,6 +83,15 @@ class FixedFreq:
 
     def tx_hz(self):
         return self.hz
+
+    def locked(self):
+        return True
+
+    def tx_on(self):
+        pass
+
+    def tx_off(self):
+        pass
 
 
 class TxGate:
@@ -81,6 +111,7 @@ class TxGate:
         self._t0 = 0
         self._limit = max_ms
         pin.value(1 - self._on)
+        self.freq.tx_off()  # Pico のリセットでは周波数源の出力が残っている
 
     def refuse_reason(self):
         """送信できない理由の文字列。送信できるなら None"""
@@ -93,6 +124,8 @@ class TxGate:
             return "frequency not set"
         if not TX_MIN_HZ <= hz <= TX_MAX_HZ:
             return "frequency out of band"
+        if not self.freq.locked():
+            return "frequency source not locked"
         return None
 
     def check(self):
@@ -105,9 +138,14 @@ class TxGate:
         limit_ms: 今回の送信の見込み(max_ms を超える分は切り詰める)"""
         self.check()
         self._limit = self.max_ms if limit_ms is None else min(limit_ms, self.max_ms)
-        self.keyed = True  # 切替の途中で例外になっても unkey() で戻せるように先に立てる
-        if self.tr is not None:
-            self.tr.tx()
+        self.keyed = True  # 途中で例外になっても unkey() で戻せるように先に立てる
+        try:
+            if self.tr is not None:
+                self.tr.tx()
+            self.freq.tx_on()
+        except BaseException:
+            self.unkey()
+            raise
         self._t0 = time.ticks_ms()
         self._pin.value(self._on)
 
@@ -119,8 +157,11 @@ class TxGate:
         self._pin.value(1 - self._on)
         if self.keyed:
             self.keyed = False
-            if self.tr is not None:
-                self.tr.rx()
+            try:
+                self.freq.tx_off()
+            finally:
+                if self.tr is not None:
+                    self.tr.rx()
 
 
 class _NoPin:
