@@ -30,6 +30,18 @@ def test_still_and_moving_intervals():
     assert b.due(LAT, LON, 1000)
 
 
+def test_hold_after_restart():
+    b = Beacon(90, 600, 10.0)
+    b.hold(1000, 90)
+    assert b.next_s(LAT, LON, 1000) == 90 and not b.due(LAT, LON, 1000)
+    b.reset()  # スイッチの操作では解除しない
+    assert not b.due(LAT, LON, 90_999)
+    assert b.due(LAT, LON, 91_000)  # 待ったあとは通常どおりすぐ送る
+    assert b.hold_ms is None
+    b.sent(LAT, LON, 91_000)
+    assert b.next_s(LAT, LON, 92_000) == 599
+
+
 def test_mice_frame():
     f = mice_frame("Q1TEST-7", ("WIDE1-1", "WIDE2-1"), LAT, LON, speed_kn=10.0, course=0.2,
                    alt=40.0, symbol=("/", "["), comment=b"Pico2 APRS", message=1)

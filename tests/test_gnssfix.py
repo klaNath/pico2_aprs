@@ -64,6 +64,25 @@ def test_update_status_fix():
     assert st.fix == 0 and st.lat is None and st.grid is None
 
 
+def test_update_status_stale_fix():
+    gps = MicropyGPS(location_formatting="dd")
+    st = Status()
+    feed(gps, GSA + [RMC])
+    update_status(st, gps)
+    assert st.fix == 3 and st.lat is not None
+    # GNSS の UART が止まった: RMC の V も来ないまま時間だけたつ
+    gps.time_since_fix = lambda: 5001
+    update_status(st, gps)
+    assert st.fix == 0 and st.lat is None and st.lon is None
+    gps.time_since_fix = lambda: 0  # 折り返しで新しく見えても、有効な文が来るまで戻らない
+    update_status(st, gps)
+    assert st.fix == 0 and st.lat is None
+    del gps.time_since_fix
+    feed(gps, [RMC])
+    update_status(st, gps)
+    assert st.fix == 3 and st.lat is not None
+
+
 def test_rtc_sync_first_then_hourly():
     calls = []
     sync = RtcSync(calls.append, interval_ms=3600_000)

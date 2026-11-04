@@ -14,7 +14,8 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
          LCD の RESET は Pico の RUN と共通(ソフトからは SWRESET で代用)
-    GP21 外部スイッチ(J1)。内部プルアップ、High(開放・未接続を含む)= ビーコン送出オン
+    GP21 外部スイッチ(J1)。内部プルアップ、GND に落とす = ビーコン送出オン。
+         High(開放・断線・未接続を含む)= オフ(断線で送信しないように)
     GP22 GNSS TIMEPULSE(PPS)。黄 LED(D2)も点く。SAFEBOOT_N と兼用なので駆動しない
     GP26 ADC0 受信音声(rev1 では周辺光センサの位置。次の改版で音声入力になる予定)
     GP27 ADC1 電源電圧の監視(rev1 では分圧抵抗が未実装)
@@ -31,8 +32,8 @@ PIN_RX_ADC = const(26)
 RX_SOURCE = "adc"
 PIN_RX_IF = const(8)
 RX_IF_METHOD = "pll"  # "pll"(DPLL。乱れたエッジに強い)/ "count"(周期の逆数計数)
-PIN_BEACON_SW = const(21)  # 内部プルアップ。High でビーコン送出オン(未接続でもオン)
-BEACON_SW_ON = 1
+PIN_BEACON_SW = const(21)  # 内部プルアップ。Low(GND に落とす)でビーコン送出オン(未接続はオフ)
+BEACON_SW_ON = 0
 PIN_STATUS_LED = const(7)
 
 # 表示(ST7789 2.4 インチ 240x320、横長 320x240 で使う)。パネルを替えるときは LCD_PANEL を変える
@@ -89,6 +90,8 @@ SYMBOL = ("/", "[")  # シンボル表, シンボル(/[ = 人)
 BEACON_MOVING_S = 90
 BEACON_STILL_S = 600
 BEACON_MOVE_M = 10.0
+# 異常で再起動した直後は、最初のビーコンをこの秒数だけ待つ(再起動の繰り返しで送り続けないように。仮)
+BEACON_RESTART_HOLD_S = 90
 BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
 BEACON_COMMENT = b"Pico2 APRS"
 # 実際に電波を出すか。False の間はビーコンの時機の管理・画面・SD の記録(TX(dry) の印)だけ動き、

@@ -5,6 +5,7 @@
     前回送った位置から MOVE_M 以上離れていれば、前回から MOVING_S たったら送る
     離れていなければ STILL_S ごとに送る
 スイッチをオフにすると前回の記録を消す(次にオンにしたらすぐ送る)。
+異常で再起動した直後は hold() で最初の 1 回を遅らせる(スイッチの操作でも解除しない)。
 """
 
 import time
@@ -26,10 +27,14 @@ class Beacon:
         self.move_m = move_m
         self.last_ms = None  # 前回送った ticks_ms / None = まだ
         self.last_pos = None  # 前回送った (lat, lon)
+        self.hold_ms = None  # この ticks_ms までは送らない / None = 制限なし
 
     def reset(self):
         self.last_ms = None
         self.last_pos = None
+
+    def hold(self, now_ms, seconds):
+        self.hold_ms = time.ticks_add(now_ms, seconds * 1000)
 
     def moved(self, lat, lon):
         if self.last_pos is None:
@@ -40,9 +45,14 @@ class Beacon:
         """次に送るまでの秒(0 = 今送る)。位置が分からなければ None"""
         if lat is None:
             return None
+        now = time.ticks_ms() if now_ms is None else now_ms
+        if self.hold_ms is not None:
+            left = time.ticks_diff(self.hold_ms, now)
+            if left > 0:
+                return (left + 999) // 1000
+            self.hold_ms = None
         if self.last_ms is None:
             return 0
-        now = time.ticks_ms() if now_ms is None else now_ms
         wait = self.moving_s if self.moved(lat, lon) else self.still_s
         return max(0, wait - time.ticks_diff(now, self.last_ms) // 1000)
 

@@ -378,3 +378,64 @@ def test_beacon_exception_drops_ptt():
         pass
     assert _ptt_is_off() and not st.status.tx_active
     st.close()
+
+
+def _switch(st, on):
+    import config
+
+    v = config.BEACON_SW_ON if on else 1 - config.BEACON_SW_ON
+    _fake_hw.Pin.state[config.PIN_BEACON_SW] = v
+
+
+def test_beacon_switch_open_means_off():
+    if not _fake_hw.install():
+        return
+    import config
+
+    assert config.BEACON_SW_ON == 0  # GND に落とすとオン(断線は High でオフ)
+    st = _station(gate_on=True)
+    del _fake_hw.Pin.state[config.PIN_BEACON_SW]
+    _fake_hw.Pin(config.PIN_BEACON_SW, _fake_hw.Pin.IN, _fake_hw.Pin.PULL_UP)  # 開放
+    st._beacon(0)
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == [] and st.status.tx_count == 0
+    assert not st.status.beacon_on
+    _switch(st, True)
+    st._beacon(0)
+    assert st.status.tx_count == 1 and st.status.beacon_on
+    st.close()
+
+
+def test_no_immediate_beacon_after_abnormal_restart():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+    from hw import restart
+
+    restart.set_fails(1)
+    try:
+        st = _station(gate_on=True)
+    finally:
+        restart.set_fails(0)
+    now = time.ticks_ms()
+    st._beacon(now)
+    assert st.status.tx_count == 0 and st.status.next_beacon_s > 0
+    st._beacon(time.ticks_add(now, (config.BEACON_RESTART_HOLD_S + 1) * 1000))
+    assert st.status.tx_count == 1
+    st.close()
+
+
+def test_stale_fix_stops_beacon():
+    if not _fake_hw.install():
+        return
+    from core.gnssfix import update_status
+
+    st = _station(gate_on=True)
+    gps = st.gnss.gps
+    gps.valid = True
+    gps.time_since_fix = lambda: 60_000
+    update_status(st.status, gps)
+    st._beacon(0)
+    assert st.status.tx_count == 0 and st.status.lat is None
+    st.close()

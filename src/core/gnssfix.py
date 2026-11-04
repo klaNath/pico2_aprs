@@ -10,6 +10,9 @@ import time
 from core import geo
 
 RTC_SYNC_MS = 60 * 60 * 1000  # 最初に合わせたあと、合わせ直す間隔
+# 有効な測位の文をこの時間受けなければ、測位なしとして扱う(APR-07。GNSS の UART が止まると
+# RMC の V も来ないので、gps.valid だけでは分からない)。1 Hz で 5 回分。仮
+FIX_MAX_AGE_MS = 5000
 
 # UBX の gnssId
 GNSS_GPS = 0
@@ -56,8 +59,10 @@ def utc_s(gps):
     return geo.utc_seconds(2000 + y, mo, d, h, mi, int(s))
 
 
-def update_status(status, gps):
+def update_status(status, gps, max_age_ms=FIX_MAX_AGE_MS):
     """測位・衛星・位置を status に写す(時刻は RtcSync 側で扱う)"""
+    if gps.valid and not 0 <= gps.time_since_fix() <= max_age_ms:
+        gps.valid = False  # 次に有効な文を受けるまで無効(ticks の折り返しで新しく見えないように)
     fix = gps.fix_type if gps.valid else 0
     status.fix = fix if fix >= 2 else 0
     used = gps.satellites_used_by_system

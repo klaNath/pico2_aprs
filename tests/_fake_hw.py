@@ -17,6 +17,8 @@ class Pin:
 
     def __init__(self, pin, mode=None, pull=None, value=None):
         self.id = pin
+        if pull == Pin.PULL_UP:
+            Pin.state.setdefault(pin, 1)  # 開放のときの値
         if value is not None:
             self.value(value)
 

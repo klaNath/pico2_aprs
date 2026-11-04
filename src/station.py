@@ -10,7 +10,7 @@ main() は例外で止まったら内容を LCD・USB・SD に出し、待って
 ウォッチドッグのスクラッチレジスタに置く(リセットでは消えず、電源を切ると消える。フラッシュに書かない)。
 USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
-    送信: ビーコンスイッチ(GP21、High でオン)がオンで測位があれば、core.beacon の規則で
+    送信: ビーコンスイッチ(GP21、GND に落とすとオン、開放や断線はオフ)がオンで測位があれば、core.beacon の規則で
           Mic-E を送る。
           ゲート(core.txgate)が拒否する間(コールサインや周波数が未確定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
@@ -107,6 +107,8 @@ class Station:
         self.sw = Pin(config.PIN_BEACON_SW, Pin.IN, Pin.PULL_UP)
         self.led = Pin(config.PIN_STATUS_LED, Pin.OUT, value=0)
         self.beacon = Beacon(config.BEACON_MOVING_S, config.BEACON_STILL_S, config.BEACON_MOVE_M)
+        if restart.fails():  # 異常で再起動した直後: 最初のビーコンをすぐには送らない
+            self.beacon.hold(time.ticks_ms(), config.BEACON_RESTART_HOLD_S)
         self._rx_ms = None
         self._report_ms = time.ticks_ms()
 
