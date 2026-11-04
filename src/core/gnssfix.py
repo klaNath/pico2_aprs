@@ -11,7 +11,7 @@ from core import geo
 
 RTC_SYNC_MS = 60 * 60 * 1000  # 最初に合わせたあと、合わせ直す間隔
 # 有効な測位の文をこの時間受けなければ、測位なしとして扱う(APR-07。GNSS の UART が止まると
-# RMC の V も来ないので、gps.valid だけでは分からない)。1 Hz で 5 回分。仮
+# RMC の V も来ないので、gps.valid だけでは分からない)。1 Hz で 5 回分
 FIX_MAX_AGE_MS = 5000
 
 # UBX の gnssId

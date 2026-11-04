@@ -15,7 +15,9 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
          LCD の RESET は Pico の RUN と共通(ソフトからは SWRESET で代用)
     GP21 外部スイッチ(J1)。内部プルアップ、GND に落とす = ビーコン送出オン。
-         High(開放・断線・未接続を含む)= オフ(断線で送信しないように)
+         High(開放・断線・未接続を含む)= オフ(断線で送信しないように)。
+         rev1 の J1 は 1 = 3.3V、2 = GP21、3 = GND(ネットリストは変更前のまま)。
+         スイッチの向きが以前と同じになるよう、実物の配線をつなぎ替えて使う
     GP22 GNSS TIMEPULSE(PPS)。黄 LED(D2)も点く。SAFEBOOT_N と兼用なので駆動しない
     GP26 ADC0 受信音声(rev1 では周辺光センサの位置。次の改版で音声入力になる予定)
     GP27 ADC1 電源電圧の監視(rev1 では分圧抵抗が未実装)
@@ -90,7 +92,7 @@ SYMBOL = ("/", "[")  # シンボル表, シンボル(/[ = 人)
 BEACON_MOVING_S = 90
 BEACON_STILL_S = 600
 BEACON_MOVE_M = 10.0
-# 異常で再起動した直後は、最初のビーコンをこの秒数だけ待つ(再起動の繰り返しで送り続けないように。仮)
+# 異常で再起動した直後は、最初のビーコンをこの秒数だけ待つ(再起動の繰り返しで送り続けないように)
 BEACON_RESTART_HOLD_S = 90
 BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
 BEACON_COMMENT = b"Pico2 APRS"
