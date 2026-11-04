@@ -1,8 +1,10 @@
-"""送信の動作確認: 試験ビーコンを一定間隔で GP3 から出す(PTT は GP2)。
+"""送信の動作確認: 試験ビーコンを一定間隔で GP3 から出す。
 
     python tools/dev.py run src/tx_demo.py -t 75     (5 秒おきに 12 回送って止まる)
 
-PC のライン入力につないで Dire Wolf で復号できるかを確かめる(電波は出さない)。
+PC のライン入力につないで Dire Wolf で復号できるかを確かめる。既定では PTT(GP2)を切ったままで、
+音声だけを出す。config.BENCH_TX_HZ を明示したときだけ PTT を入れる(電波が出るので、ダミーロードを
+つないでオーナーが判断したときだけ使う)。
 送るもの: Mic-E 位置(固定の試験座標)とステータスを交互に、5 秒おき。
 """
 
@@ -10,6 +12,8 @@ import time
 
 import config
 from aprs import mice
+from core.txgate import AudioOnly
+from hw import txctl
 from hw.afsk_tx import AfskTx
 from tnc.ax25 import Address, Frame
 
@@ -34,11 +38,12 @@ def frames(k):
 
 
 def main():
-    tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                config.PTT_ACTIVE_HIGH)
-    print("TX demo: GP%d audio, GP%d PTT, every %d s, %d times"
-          % (config.PIN_AFSK_OUT, config.PIN_PTT, INTERVAL_S, MAX_SENDS))
+    gate = txctl.bench_gate()
+    tx = AfskTx(config.PIN_AFSK_OUT, gate, config.FS, config.PWM_TOP,
+                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS)
+    print("TX demo: GP%d audio, PTT %s, every %d s, %d times"
+          % (config.PIN_AFSK_OUT, "stays off" if isinstance(gate, AudioOnly) else "ON",
+             INTERVAL_S, MAX_SENDS))
     k = 0
     try:
         while k < MAX_SENDS:

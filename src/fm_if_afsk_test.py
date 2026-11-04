@@ -197,6 +197,7 @@ def run_capture(n, setup_pin, during):
 
 def main(capture_s=3.8):
     """発生器をつないだ試験: GP3 から 3 フレーム送り、GP8 の FM から復号する"""
+    from hw import txctl
     from hw.afsk_tx import AfskTx
 
     clk = freq()
@@ -204,9 +205,9 @@ def main(capture_s=3.8):
     n = int(capture_s * 455_000 / M)
     print("sysclk %d Hz, capture %d windows (%.1f s, %d KB), M=%d" % (
         clk, n, capture_s, 2 * n // 1024, M))
-    tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                config.PTT_ACTIVE_HIGH, max_ms=1000)
+    # 信号発生器を変調するだけなので PTT(GP2)は切ったまま
+    tx = AfskTx(config.PIN_AFSK_OUT, txctl.audio_only(), config.FS, config.PWM_TOP,
+                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, max_ms=1000)
 
     def send_all():
         for f in sent:

@@ -252,6 +252,8 @@ def cmd_lint(a) -> int:
 
 
 def cmd_check(a) -> int:
+    # 実機テストは本物の PTT(GP2)を駆動しない(tests/test_tx.py は偽のピンを使う)。
+    # build / release もここを通るが、無線機ボードをつないでいても送信しない
     rc = cmd_lint(a)
     a.pattern = ""
     a.timeout = 180

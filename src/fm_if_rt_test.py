@@ -5,13 +5,14 @@
 
 配線は fm_if_afsk_test.py と同じ(GP3 -> LPF -> 信号発生器の外部変調入力、発生器の 455 kHz FM
 出力 -> 1 kohm -> GP8)。3 フレームを ROUNDS 周送る。受信器の重複除去(3 秒以内の同じ内容)に
-かからないよう、本文に周回の番号を入れる。
+かからないよう、本文に周回の番号を入れる。PTT(GP2)は切ったまま。
 """
 
 import gc
 import time
 
 import config
+from hw import txctl
 from hw.afsk_tx import AfskTx
 from hw.fm_if_rx import IfReceiver
 from tnc.ax25 import Frame
@@ -46,9 +47,8 @@ def main(rounds=ROUNDS, method="pll", amplitude=config.TX_AMPLITUDE, verbose=Tru
     gain: 復調器に渡す値の倍率(1, 2, 4, 8 ...。2 のべき)"""
     sh = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4}[gain]
     rx = IfReceiver(8, method=method, k=144 << sh, vs=7 - sh)
-    tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                amplitude, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                config.PTT_ACTIVE_HIGH, max_ms=1000)
+    tx = AfskTx(config.PIN_AFSK_OUT, txctl.audio_only(), config.FS, config.PWM_TOP,
+                amplitude, config.TX_DELAY_MS, config.TX_TAIL_MS, max_ms=1000)
     sent = []
     got = []
     gc.collect()

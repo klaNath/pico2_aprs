@@ -47,7 +47,7 @@ from machine import SPI, Pin
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
 from core.stations import Stations
-from hw import restart
+from hw import restart, txctl
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
 from hw.fm_if_rx import IfReceiver
@@ -80,9 +80,9 @@ class Station:
     def __init__(self):
         # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
-        self.tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                         config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                         config.PTT_ACTIVE_HIGH, raw=_TX_RAW)
+        self.gate = txctl.station_gate()
+        self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
+                         config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
         self.tx_enabled = config.TX_ENABLED
         if config.RX_SOURCE == "if":
             self.rx = IfReceiver(config.PIN_RX_IF, config.FS, method=config.RX_IF_METHOD,

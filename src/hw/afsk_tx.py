@@ -1,4 +1,4 @@
-"""AFSK 送信: PWM + DMA で音声を出し、PTT を制御する。
+"""AFSK 送信: PWM + DMA で音声を出し、ゲート(core.txgate)を通して PTT を入れる。
 
     音声サンプル(16 bit、PWM のデューティ値)を DMA で PWM の CC レジスタへ書き込む。
     DMA のペーシングは DMA タイマ(システムクロック x 2/15625 = 19200 Hz ちょうど)。
@@ -41,10 +41,10 @@ _DMA_SIZE_16 = const(1)
 
 
 class AfskTx:
-    def __init__(self, pin_audio, pin_ptt, fs=19200, pwm_top=1023, amplitude=0.4,
-                 txdelay_ms=300, txtail_ms=30, ptt_active_high=True, settle_ms=60, max_ms=1500,
-                 raw=None):
-        """raw: 送信波形のバッファ(bytearray、1 サンプル 2 バイト)。
+    def __init__(self, pin_audio, gate, fs=19200, pwm_top=1023, amplitude=0.4,
+                 txdelay_ms=300, txtail_ms=30, settle_ms=60, max_ms=1500, raw=None):
+        """gate: core.txgate のゲート(hw.txctl で作る)。音声だけなら AudioOnly。
+        raw: 送信波形のバッファ(bytearray、1 サンプル 2 バイト)。
         None なら max_ms 分をここで確保する"""
         self.fs = fs
         self.top = pwm_top
@@ -60,8 +60,7 @@ class AfskTx:
         self.txtail_ms = txtail_ms
         self.settle_ms = settle_ms  # 中点に戻してから PTT までの待ち(C3 1uF x 約 11k の 5 倍強)
         self._mid = mid
-        self._ptt_on = 1 if ptt_active_high else 0
-        self.ptt = Pin(pin_ptt, Pin.OUT, value=1 - self._ptt_on)
+        self.gate = gate
         self.pin_audio = pin_audio
         self.pwm = PWM(Pin(pin_audio), freq=150_000_000 // (pwm_top + 1), duty_u16=32768)
         self._slice = (pin_audio >> 1) & 7  # RP2350A: GPIO 0-15 / 16-29 -> slice 0-7
@@ -117,7 +116,7 @@ class AfskTx:
             ctrl=self.dma.pack_ctrl(size=_DMA_SIZE_16, inc_write=False, treq_sel=self.timer),
         )
         self.busy = True
-        self.ptt.value(self._ptt_on)
+        self.gate.key()
         self.dma.active(1)
 
     def finish(self):
@@ -126,7 +125,7 @@ class AfskTx:
             return False
         if self.busy:
             self._write_cc(self._mid)
-            self.ptt.value(1 - self._ptt_on)  # 先に PTT を切ってから
+            self.gate.unkey()  # 先に PTT を切ってから
             self._write_cc(0)  # PWM を止める(受信中にエッジを出さない)
             self.busy = False
         return True
@@ -143,7 +142,7 @@ class AfskTx:
 
     def close(self):
         self.dma.active(0)
-        self.ptt.value(1 - self._ptt_on)
+        self.gate.unkey()
         self.dma.close()
         self.timer.close()
         self.pwm.deinit()

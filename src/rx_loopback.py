@@ -4,7 +4,7 @@
 
 送信音声(GP3 → RC フィルタ)を受信側(GP26)に戻した状態で、送ったフレームが
 復号できるかを数える。何もつないでいなくても動く(その場合は 0 件になり、
-処理の遅れ・取りこぼしの統計だけを確認できる)。
+処理の遅れ・取りこぼしの統計だけを確認できる)。PTT(GP2)は切ったまま。
 """
 
 import gc
@@ -12,6 +12,7 @@ import time
 
 import config
 from aprs.packet import parse_frame
+from hw import txctl
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
 from tnc.ax25 import Address, DecodeError, Frame
@@ -37,9 +38,8 @@ def drain(rx, got, bad):
 
 def main():
     rx = Receiver(config.PIN_RX_ADC, config.FS)
-    tx = AfskTx(config.PIN_AFSK_OUT, config.PIN_PTT, config.FS, config.PWM_TOP,
-                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS,
-                config.PTT_ACTIVE_HIGH)
+    tx = AfskTx(config.PIN_AFSK_OUT, txctl.audio_only(), config.FS, config.PWM_TOP,
+                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS)
     src = Address(config.CALLSIGN, config.SSID)
     sent = []
     got = []
