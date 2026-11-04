@@ -65,6 +65,7 @@ LED_RX_MS = 100
 REPORT_MS = 10_000  # USB に状態を出す間隔
 FAIL_WINDOW_MS = 60_000  # 起動からこの時間内の失敗は「続けて失敗」と数える
 RESTART_S = 10  # 試験で短くできるよう、ここで持つ(hw.restart.wait_s に渡す)
+_gate = None  # main() の最後の砦で PTT を切るためのゲート(Station が作る)
 
 
 def own_call():
@@ -80,7 +81,8 @@ class Station:
     def __init__(self):
         # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
-        self.gate = txctl.station_gate()
+        global _gate
+        self.gate = _gate = txctl.station_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
                          config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
         self.tx_enabled = config.TX_ENABLED
@@ -206,6 +208,7 @@ class Station:
                 while not self.tx.finish():
                     time.sleep_ms(5)
             finally:
+                self.tx.abort()  # 例外や Ctrl-C で抜けても PTT を残さない(正常終了なら何も変わらない)
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
@@ -219,11 +222,15 @@ class Station:
             self.rx.lag_max))
 
     def close(self):
-        self.rx.stop()
-        self.tx.close()
-        self.rx.close()
-        self.led.value(0)
-        self.sd.close()
+        # 最初に PTT を切る。受信の停止で待たされたり、ここで Ctrl-C を受けたりしても残らないように
+        try:
+            self.tx.close()
+        finally:
+            try:
+                self.rx.close()
+            finally:
+                self.led.value(0)
+                self.sd.close()
 
 
 def run(duration_ms=None):
@@ -273,16 +280,24 @@ def _show_fatal(e, wait_s):
         sys.print_exception(e2)
 
 
+def _ptt_off():
+    """run() の後始末の途中で Ctrl-C を受けても、PTT を残したまま REPL に戻らないように"""
+    if _gate is not None:
+        _gate.unkey()
+
+
 def main():
     """電源投入時の入口(main.py から呼ぶ)。例外で止まったら表示して再起動する"""
     t0 = time.ticks_ms()
     try:
         run()
     except KeyboardInterrupt:
+        _ptt_off()
         restart.set_fails(0)
         print("[station] stopped by Ctrl-C (no restart)")
         return
     except Exception as e:
+        _ptt_off()
         sys.print_exception(e)
         quick = time.ticks_diff(time.ticks_ms(), t0) < FAIL_WINDOW_MS
         fails = restart.fails() + 1 if quick else 1

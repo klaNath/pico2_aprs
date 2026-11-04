@@ -71,9 +71,10 @@ def main(rounds=ROUNDS, method="pll", amplitude=config.TX_AMPLITUDE, verbose=Tru
         wait(rx, got, 500)
     finally:
         dt = time.ticks_diff(time.ticks_ms(), t0)
-        rx.stop()
-        tx.close()
-        rx.close()
+        try:
+            tx.close()  # 先に送信側を止める(受信の停止で待たされても残らないように)
+        finally:
+            rx.close()
     ok = sum(1 for b in sent if b in got)
     load = 100 * rx.busy_us / (dt * 1000)
     if not verbose:

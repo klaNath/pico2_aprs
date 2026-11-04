@@ -62,9 +62,10 @@ def main():
         drain(rx, got, bad)
     finally:
         dt = time.ticks_diff(time.ticks_ms(), t0)
-        rx.stop()
-        tx.close()
-        rx.close()
+        try:
+            tx.close()  # 先に送信側を止める(受信の停止で待たされても残らないように)
+        finally:
+            rx.close()
     ok = sum(1 for b in sent if b in got)
     print("decoded %d / %d sent, other good frames %d, bad FCS %d"
           % (ok, len(sent), len(got) - ok, bad[0]))

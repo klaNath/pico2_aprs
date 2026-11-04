@@ -38,6 +38,7 @@ _RING_BYTES = const(1 << _RING_BITS)
 _RING_N = const(_RING_BYTES // 2)  # サンプル数
 RING_ALLOC_BYTES = 2 * _RING_BYTES  # リングをその大きさの境界に揃えるため 2 倍確保する
 _BLOCK = const(512)
+_STOP_TIMEOUT_MS = const(500)  # Core1 のループが止まるのを待つ上限(1 ブロックの処理はテストの上限で約 11 ms)
 
 
 class AdcRing:
@@ -120,11 +121,18 @@ class Receiver:
         self.ring.start()
         _thread.start_new_thread(self._loop, ())
 
-    def stop(self):
+    def stop(self, timeout_ms=_STOP_TIMEOUT_MS):
+        """Core1 のループを止める。止まれば True。Core1 が応答しなくても待ち続けない
+        (呼び出し側の後始末を止めないため)"""
         self.running = False
+        t0 = time.ticks_ms()
         while not self.stopped:
+            if time.ticks_diff(time.ticks_ms(), t0) >= timeout_ms:
+                print("[rx] core 1 did not stop")
+                break
             time.sleep_ms(5)
         self.ring.stop()
+        return self.stopped
 
     def close(self):
         if not self.stopped:

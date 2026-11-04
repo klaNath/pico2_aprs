@@ -30,6 +30,7 @@ import uctypes
 from machine import PWM, Pin, mem32
 from micropython import const
 
+from core.txgate import TxTimeout
 from tnc.afsk_mod import Modulator
 from tnc.hdlc import encode_levels, levels_size
 
@@ -38,6 +39,7 @@ _PWM_STRIDE = const(0x14)
 _PWM_CC = const(0x0C)
 _PWM_TOP = const(0x10)
 _DMA_SIZE_16 = const(1)
+_DONE_MARGIN_MS = const(200)  # 波形の長さにこれを足しても終わらなければ DMA の異常とみなす
 
 
 class AfskTx:
@@ -116,11 +118,16 @@ class AfskTx:
             ctrl=self.dma.pack_ctrl(size=_DMA_SIZE_16, inc_write=False, treq_sel=self.timer),
         )
         self.busy = True
-        self.gate.key()
+        self.gate.key(n * 1000 // self.fs + _DONE_MARGIN_MS)
         self.dma.active(1)
 
     def finish(self):
-        """送出が終わっていれば PTT を切って True。"""
+        """送出が終わっていれば PTT を切って True。
+        時間の上限を過ぎても終わらなければ PTT を切って TxTimeout(ペーシングの停止などで
+        DMA が終わらないとき、呼び出し側の待ちのループが抜けられるように)"""
+        if self.busy and self.gate.expired():
+            self.abort()
+            raise TxTimeout("TX did not finish in time")
         if self.dma.active():
             return False
         if self.busy:
@@ -129,6 +136,13 @@ class AfskTx:
             self._write_cc(0)  # PWM を止める(受信中にエッジを出さない)
             self.busy = False
         return True
+
+    def abort(self):
+        """送信を今すぐやめる。何度呼んでもよい。最初に PTT を切る"""
+        self.gate.unkey()
+        self.dma.active(0)
+        self._write_cc(0)
+        self.busy = False
 
     async def send(self, frames):
         self.start(n=self.build(frames))
@@ -141,8 +155,8 @@ class AfskTx:
             time.sleep_ms(5)
 
     def close(self):
+        self.gate.unkey()  # 最初に切る(以降で例外や Ctrl-C があっても PTT を残さない)
         self.dma.active(0)
-        self.gate.unkey()
         self.dma.close()
         self.timer.close()
         self.pwm.deinit()
