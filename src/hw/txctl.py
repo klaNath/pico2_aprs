@@ -11,6 +11,7 @@ def _ptt_pin():
 
 
 def _gate(freq):
+    # Si5351 を組み込むときは、周波数源(I2C)を作る前に _ptt_pin() を呼ぶ(hw.si5351 の必須手順)
     return TxGate(_ptt_pin(), config.PTT_ACTIVE_HIGH, callsign=config.CALLSIGN,
                   allowed=config.TX_ENABLED, freq=freq)
 

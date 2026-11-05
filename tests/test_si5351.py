@@ -382,3 +382,74 @@ def test_gate_i2c_error_on_tx_off_refuses_later():
     assert gate._pin.v == 0 and not gate.keyed
     assert gate.refuse_reason() == "TX clock off failed"
     _raises(TxRefused, gate.key)
+
+
+class LogI2C(FakeI2C):
+    """GP2 と同じ記録に I2C の書き込みを残す。Pico のリセット後を再現する(全出力が有効のまま)"""
+
+    def __init__(self, log, **kw):
+        FakeI2C.__init__(self, **kw)
+        self.order = log
+        self.regs[3] = 0x00
+
+    def writeto_mem(self, addr, reg, data):
+        FakeI2C.writeto_mem(self, addr, reg, data)
+        self.order.append(("i2c", reg, data[0]))
+
+
+class LogPin:
+    def __init__(self, log):
+        self.order = log
+
+    def value(self, v=None):
+        if v is not None:
+            self.order.append(("gp2", v))
+
+
+def test_startup_drops_gp2_then_disables_all_outputs():
+    log = []
+    i2c = LogI2C(log)
+    d = _dev(i2c)
+    TxGate(LogPin(log), callsign=CALL, allowed=True, freq=d)
+    assert log == [("gp2", 0), ("i2c", 3, 0xFF)]
+    assert i2c.regs[3] == 0xFF
+
+
+def test_startup_gp2_low_even_when_i2c_is_down():
+    log = []
+    i2c = LogI2C(log, fail_write=0)
+    _raises(OSError, TxGate, LogPin(log), True, CALL, True, _dev(i2c))
+    assert log == [("gp2", 0)]
+    assert i2c.regs[3] == 0x00  # 全出力が残っている(起動時の失敗の扱いは未決)
+
+
+def test_rx_operations_never_enable_tx_clock():
+    i2c = FakeI2C()
+    d = _dev(i2c)
+    d.tx_off()
+    d.init(145_000_000, 145_000_000)
+    d.set_rx(144_660_000)
+    d.set_tx(145_000_000)
+    d.init(144_660_000, 144_660_000)  # 起動し直し
+    d.tx_off()
+    for reg, v in i2c.log:
+        if reg == 3:
+            assert v & (1 << 4), hex(v)
+
+
+def test_tx_off_failure_leaves_tx_clock_running():
+    # PTT は切れて以後の送信は拒否するが、送信クロックは動いたまま(受信に影響が残る)
+    i2c = FakeI2C()
+    d = _dev(i2c)
+    gate = _gate(i2c, d)
+    d.init(145_000_000, 145_000_000)
+    gate.key()
+    assert i2c.regs[3] == 0xE2
+    i2c.fail_write = i2c.writes
+    gate.unkey()
+    assert gate._pin.v == 0
+    assert i2c.regs[3] == 0xE2  # CLK4 は有効のまま
+    assert gate.refuse_reason() == "TX clock off failed"
+    i2c.fail_write = None
+    d.init(145_000_000, 145_000_000)  # I2C が戻れば init() で止まる
+    assert i2c.regs[3] == EXPECT_OEB
