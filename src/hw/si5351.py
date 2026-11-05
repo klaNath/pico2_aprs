@@ -27,7 +27,6 @@ init() の途中で失敗したら ready にならない
 未確認(データシートはレジスタの説明を AN619 に委ねていて、解決しない):
     レジスタ 7 = 0x01 の意味(CBPro の値のまま。AN619 では Reserved)
     レジスタ 4 = 0x00 の意味(CBPro の DIS_RESET_LOL。AN619 では Reserved)
-    レジスタ 9 の値(ビットの意味は AN619 にあるが、どの値にするかは未決。引数 oeb_mask)
 制限: PLLB のロック外れは検出できない。AN619 のレジスタ 0 は LOL_B を「Si5351A/C only」としているので、
 Si5351B では LOL_B を使わない。送信側はリセット後の待ち時間(TX_SETTLE_MS)と、SYS_INIT、LOS_XTAL の
 確認で管理する。tx_ready() が True でも PLLB がロックしている保証はない。実機の測定項目。LOL_A は使える。
