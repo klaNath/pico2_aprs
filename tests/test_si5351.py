@@ -149,6 +149,29 @@ def test_band_edges():
     _raises(ValueError, rx_ratio, 145_000_500)  # 受信は 1 kHz 単位
 
 
+def test_rx_band_is_judged_on_signal_frequency():
+    off = 24_000
+    # 同調周波数が 146 MHz を超えても、信号が帯域内なら受け付ける
+    assert rx_ratio(144_000_000, off) == (25, 3399)  # 144.024 MHz
+    assert rx_ratio(145_977_000, off) == (25, 5376)  # 146.001 MHz
+    assert rx_ratio(146_000_000, off) == (25, 5399)  # 146.024 MHz
+    for sig in (143_999_000, 146_001_000):  # 信号が帯域外(同調周波数は帯域内のものを含む)
+        _raises(ValueError, rx_ratio, sig, off)
+    i2c = FakeI2C()
+    d = _dev(i2c, rx_offset_hz=off)
+    d.init(146_000_000, 146_000_000)
+    assert d.rx_hz() == 146_000_000  # 信号の周波数を返す
+    assert [i2c.regs[r] for r in (0x1D, 0x1E)] == [0x0A, 0xFA]  # P1 = 128 x 25 + 122 - 512 = 2810
+    d.set_rx(144_000_000)
+    assert d.rx_hz() == 144_000_000
+    _raises(ValueError, d.set_rx, 146_001_000)
+    assert d.rx_hz() == 144_000_000  # 拒否したら変えない
+    _raises(ValueError, _dev(FakeI2C(), rx_offset_hz=off).init, 146_001_000, None)
+    # 送信の判定は変えない
+    _raises(ValueError, d.set_tx, 146_001_000)
+    _raises(ValueError, d.init, None, 146_000_001)
+
+
 def test_tx_rounds_to_nearest_step():
     assert tx_ratio(144_000_000) == (32, 0)
     assert tx_ratio(144_000_002) == (32, 0)  # VCO で 12 Hz < 13.5 Hz

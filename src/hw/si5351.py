@@ -5,7 +5,8 @@ ClockBuilder Pro の生成例(親の docs/Si5351B-RevB-Registers_1454MHz.h)。
 I2C は引数で渡すので、PC でも偽物でテストできる。
 
     受信: PLLA。VCO = 27 MHz x (a + b/5625)、LO1 = VCO/4、I/Q = VCO/24(Q は PHOFF で 90 度)
-          f_RX = LO1 - IF = 5 VCO / 24 = 5.625 MHz x (a + b/5625) なので b の 1 が 1 kHz
+          同調周波数 = LO1 - IF = 5 VCO / 24 = 5.625 MHz x (a + b/5625) なので b の 1 が 1 kHz
+          同調周波数 = 受信信号の周波数 + rx_offset_hz(低 IF、lnatest の +24 kHz)。帯域の判定は信号で行う
     送信: PLLB。VCO = f_TX x 6 = 27 MHz x (a + b/10^6)。c = 10^6 は VCXO の条件(AN619 3.2 と 7)
           MS4 相当は 6 分周の整数。VCXO_Param は周波数を変えるたびに計算し直す
 CLK の番号は確定していないので引数で受ける(config.SI5351_*_CLK)。
@@ -126,12 +127,13 @@ def _check_band(hz):
         raise ValueError("frequency out of band: %d" % hz)
 
 
-def rx_ratio(rx_hz):
-    """受信周波数(1 kHz 単位)-> PLLA の (a, b)"""
-    _check_band(rx_hz)
-    if rx_hz % 1000:
-        raise ValueError("RX frequency must be a multiple of 1 kHz")
-    khz = rx_hz // 1000
+def rx_ratio(sig_hz, offset_hz=0):
+    """受信信号の周波数 -> PLLA の (a, b)。帯域は信号で判定する。同調周波数は 1 kHz 単位"""
+    _check_band(sig_hz)
+    tuned = sig_hz + offset_hz
+    if tuned % 1000:
+        raise ValueError("RX tuning must be a multiple of 1 kHz")
+    khz = tuned // 1000
     return khz // RX_C, khz % RX_C
 
 
@@ -153,9 +155,11 @@ def vcxo_param(a, b, apr):
 
 class Si5351B:
     def __init__(self, i2c, addr=0x60, tx_clk=None, lo1_clk=None, i_clk=None, q_clk=None, apr=240,
-                 idrv_lo1_ma=8, idrv_iq_ma=8, idrv_tx_ma=8, xtal_cl_pf=8, oeb_mask=0x00):
+                 idrv_lo1_ma=8, idrv_iq_ma=8, idrv_tx_ma=8, xtal_cl_pf=8, oeb_mask=0x00,
+                 rx_offset_hz=0):
         """*_clk: 出力の番号(0〜5。MS6、MS7 は DIVBY4 と PHOFF が使えないので不可)。
-        tx_clk が None なら送信しない。lo1_clk、i_clk、q_clk はそろえて指定するか、すべて None"""
+        tx_clk が None なら送信しない。lo1_clk、i_clk、q_clk はそろえて指定するか、すべて None
+        rx_offset_hz: 受信信号の周波数に足して同調する量(低 IF)"""
         rx = (lo1_clk, i_clk, q_clk)
         if None in rx and rx != (None, None, None):
             raise ValueError("LO1, I and Q must be set together")
@@ -173,6 +177,7 @@ class Si5351B:
         self._idrv = (_IDRV[idrv_lo1_ma], _IDRV[idrv_iq_ma], _IDRV[idrv_tx_ma])
         self._xtal = _XTAL_BITS[xtal_cl_pf]
         self.oeb_mask = oeb_mask
+        self.rx_offset_hz = rx_offset_hz
         self._oeb = 0xFF  # レジスタ 3 の写し(1 = 無効)
         self._ready = False
         self._tx_hz = None
@@ -229,7 +234,7 @@ class Si5351B:
 
     # ---- 周波数
     def _write_rx(self, rx_hz):
-        a, b = rx_ratio(rx_hz)
+        a, b = rx_ratio(rx_hz, self.rx_offset_hz)
         self._write(_MSNA, _pack(*ms_params(a, b, RX_C)))
 
     def _write_tx(self, tx_hz):
@@ -239,8 +244,8 @@ class Si5351B:
         self._write(_VCXO, bytes((v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0x3F)))
 
     def set_rx(self, rx_hz):
-        """受信周波数を変えて PLLA をリセットする(I/Q の位相を揃えるため)"""
-        rx_ratio(rx_hz)
+        """受信信号の周波数を変えて PLLA をリセットする(I/Q の位相を揃えるため)"""
+        rx_ratio(rx_hz, self.rx_offset_hz)
         if not self._ready or self.lo1_clk is None:
             raise Si5351Error("RX is not ready")
         self._rx_hz = None
@@ -262,17 +267,18 @@ class Si5351B:
         self._tx_hz = tx_hz
 
     def rx_hz(self):
+        """受信信号の周波数(同調周波数ではない)"""
         return self._rx_hz if self._ready else None
 
     # ---- 初期化
     def init(self, rx_hz=None, tx_hz=None):
         """手順: SYS_INIT 待ち -> 全出力を止める -> 設定 -> PLL リセット -> LOL_A 確認と待ち -> 受信の出力。
-        失敗したら例外。送信の出力は有効にしない。周波数はここで範囲を確かめ、I2C の前に例外にする"""
+        rx_hz は受信信号の周波数。失敗したら例外。送信の出力は有効にしない。周波数はここで範囲を確かめ、I2C の前に例外にする"""
         self._ready = False
         self._tx_hz = self._rx_hz = None
         self._keyed = False
         if rx_hz is not None:
-            rx_ratio(rx_hz)
+            rx_ratio(rx_hz, self.rx_offset_hz)
             if self.lo1_clk is None:
                 raise ValueError("RX CLK numbers are not set")
         if tx_hz is not None:

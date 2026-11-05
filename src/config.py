@@ -110,6 +110,7 @@ SI5351_TX_CLK = None
 SI5351_LO1_CLK = None
 SI5351_I_CLK = None
 SI5351_Q_CLK = None
+SI5351_RX_OFFSET_HZ = 24_000  # 仮: 低 IF(同調 = 信号 + これ)。lnatest の値で、実際の符号は実機で確認する
 SI5351_APR = 240  # 仮: VCXO の引き込み幅(ppm)。生成例の値でデータシートの上限(+/-240)
 SI5351_IDRV_LO1_MA = 8  # 仮: 出力の駆動電流(2、4、6、8 mA)。CBPro の生成例の値
 SI5351_IDRV_IQ_MA = 8  # 仮
