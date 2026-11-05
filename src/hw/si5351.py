@@ -1,6 +1,7 @@
 """Si5351B(27 MHz 水晶、受信 PLLA + 送信 VCXO PLLB)のドライバ。core.txgate の周波数源の形。
 
-出典: AN619 Rev 0.8、ClockBuilder Pro の生成例(親の docs/Si5351B-RevB-Registers_1454MHz.h)。
+出典: AN619 Rev 0.8、データシート Si5351-B Rev 1.3(初期化の順序は Figure 10)、
+ClockBuilder Pro の生成例(親の docs/Si5351B-RevB-Registers_1454MHz.h)。
 I2C は引数で渡すので、PC でも偽物でテストできる。
 
     受信: PLLA。VCO = 27 MHz x (a + b/5625)、LO1 = VCO/4、I/Q = VCO/24(Q は PHOFF で 90 度)
@@ -13,12 +14,15 @@ Pico のリセットでは Si5351 は初期化されず、設定と出力が残�
 送信の出力は tx_on() まで無効のまま。init() の途中で失敗したら ready にならない
 (tx_hz() が None、locked() が False なので core.txgate が拒否する)。
 
-未確認:
+未確認(データシートはレジスタの説明を AN619 に委ねていて、解決しない):
     レジスタ 7 = 0x01 の意味(CBPro の値のまま。AN619 では Reserved)
     レジスタ 4 = 0x00 の意味(CBPro の DIS_RESET_LOL。AN619 では Reserved)
     レジスタ 9 の値(ビットの意味は AN619 にあるが、どの値にするかは未決。引数 oeb_mask)
-    レジスタ 177 の予約ビット(AN619 は「既定のまま」、ここでは 0xAC の 0x0C を残す)
     LOL_B が Si5351B で有効か(AN619 のレジスタ 0 の説明に「Si5351A/C only」とある)
+データシートとの照合で残る問題:
+    VCXO の出力の中心周波数は 112.5 MHz までと書かれている(データシート 3 章)。送信の
+    144〜146 MHz はこれを超える。CBPro の生成例はエラーなしで作れているが、実機での確認が必要
+    112.5 MHz を超える異なる周波数は同時に 2 つまで(Table 7)。LO1 と送信でちょうど 2 つ
 """
 
 import time
@@ -57,7 +61,7 @@ _SYS_INIT = const(0x80)
 _LOL_B = const(0x40)
 _LOL_A = const(0x20)
 _LOS_XTAL = const(0x08)
-_RESET_BOTH = const(0xAC)  # 手順の値(PLLB_RST、PLLA_RST、予約ビット 0x0C)
+_RESET_BOTH = const(0xAC)  # データシートの Figure 10 の値(PLLB_RST、PLLA_RST)
 _RESET_A = const(0x2C)  # 仮: 0xAC から PLLB_RST を除いたもの
 _RESET_B = const(0x8C)  # 仮: 0xAC から PLLA_RST を除いたもの
 _REG2_VALUE = const(0x13)  # CBPro の値
@@ -71,8 +75,9 @@ _DIVBY4 = const(0x0C)  # Multisynth の 3 バイト目の MSx_DIVBY4
 _IDRV = {2: 0, 4: 1, 6: 2, 8: 3}
 _XTAL_BITS = {6: 0x52, 8: 0x92, 10: 0xD2}  # 下位 6 ビットは 010010b(AN619 のレジスタ 183)
 
-INIT_TIMEOUT_MS = 1000  # 仮: SYS_INIT を待つ上限(AN619 に値なし)
-LOCK_TIMEOUT_MS = 200  # 仮: PLL のロックを待つ上限(AN619 に値なし)
+# 仮: 待ちの上限。文書にこの値はない。電源投入から出力までの T_RDY は最大 10 ms(Table 5)なので余裕を取る
+INIT_TIMEOUT_MS = 1000  # SYS_INIT
+LOCK_TIMEOUT_MS = 200  # PLL のロック
 
 
 class Si5351Error(Exception):
