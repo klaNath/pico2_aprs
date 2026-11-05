@@ -520,3 +520,127 @@ def test_unset_freq_is_not_ready():
     from core.txgate import UnsetFreq
 
     assert UnsetFreq().tx_hz() is None and UnsetFreq().tx_ready() is False
+
+
+class FailingFreq:
+    """起動時に出力を止められない周波数源(I2C が使えない)。呼ばれた時点の GP2 を記録する"""
+
+    def __init__(self):
+        import config
+
+        self.gp2_at_off = None
+        self.pin = config.PIN_PTT
+
+    def tx_hz(self):
+        return 145_000_000
+
+    def tx_ready(self):
+        return True
+
+    def tx_on(self):
+        raise AssertionError("must not enable the TX clock")
+
+    def tx_off(self):
+        self.gp2_at_off = _fake_hw.Pin.state.get(self.pin)
+        raise OSError("i2c")
+
+
+class Halted(Exception):
+    pass
+
+
+def _halt():
+    raise Halted
+
+
+def test_startup_i2c_failure_halts_with_gp2_low_on_every_restart():
+    if not _fake_hw.install():
+        return
+    import config
+    from hw import restart, txctl
+
+    off = 0 if config.PTT_ACTIVE_HIGH else 1
+    resets = []
+    keep = _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED
+    _fake_hw.sys.modules["machine"].reset = lambda: resets.append(1)
+    config.CALLSIGN, config.TX_ENABLED = CALL, True  # 送信を許可していても送らない
+    restart.set_fails(0)
+    try:
+        for _ in range(3):  # ウォッチドッグのリセットごとに同じ経路を通る
+            _fake_hw.Pin.reset()
+            _fake_hw.Pin.state[config.PIN_PTT] = 1 - off  # リセット前の High が残っている場合
+            freq = FailingFreq()
+            order = []
+
+            def make_freq(f=freq, o=order):
+                o.append(_fake_hw.Pin.state[config.PIN_PTT])  # I2C を作る時点
+                return f
+
+            try:
+                txctl.si5351_gate(make_freq, halt=_halt)
+                raise AssertionError("halt expected")
+            except Halted:
+                pass
+            assert order == [off] and freq.gp2_at_off == off  # I2C より先に GP2 が Low
+            assert set(_fake_hw.Pin.history[config.PIN_PTT]) == {off}  # High を書かない
+        assert resets == [] and restart.fails() == 0  # バックオフの経路に入らない
+    finally:
+        _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED = keep
+
+
+def test_startup_make_freq_failure_also_halts():
+    if not _fake_hw.install():
+        return
+    import config
+    from hw import txctl
+
+    def make_freq():
+        raise OSError("no i2c")
+
+    _fake_hw.Pin.reset()
+    try:
+        txctl.si5351_gate(make_freq, halt=_halt)
+        raise AssertionError("halt expected")
+    except Halted:
+        pass
+    assert _fake_hw.Pin.state[config.PIN_PTT] == (0 if config.PTT_ACTIVE_HIGH else 1)
+
+
+def test_halt_waits_until_interrupted():
+    if not _fake_hw.install():
+        return
+    from hw import txctl
+
+    calls = []
+
+    def sleep(ms):
+        calls.append(ms)
+        if len(calls) == 3:
+            raise KeyboardInterrupt
+
+    keep = txctl.time.sleep_ms
+    txctl.time.sleep_ms = sleep
+    try:
+        txctl.halt_for_watchdog()
+        raise AssertionError("must not return")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        txctl.time.sleep_ms = keep
+    assert len(calls) == 3
+
+
+def test_si5351_gate_success_is_not_open_by_default_settings():
+    if not _fake_hw.install():
+        return
+    import config
+    from core.txgate import FixedFreq
+    from hw import txctl
+
+    keep = config.CALLSIGN, config.TX_ENABLED
+    config.CALLSIGN, config.TX_ENABLED = None, False
+    try:
+        gate = txctl.si5351_gate(lambda: FixedFreq(145_000_000), halt=_halt)
+        assert gate.refuse_reason() == "callsign not set"
+    finally:
+        config.CALLSIGN, config.TX_ENABLED = keep

@@ -443,7 +443,7 @@ def test_startup_gp2_low_even_when_i2c_is_down():
     i2c = LogI2C(log, fail_write=0)
     _raises(OSError, TxGate, LogPin(log), True, CALL, True, _dev(i2c))
     assert log == [("gp2", 0)]
-    assert i2c.regs[3] == 0x00  # 全出力が残っている(起動時の失敗の扱いは未決)
+    assert i2c.regs[3] == 0x00  # 全出力が残っている(このあとの扱いは hw.txctl.si5351_gate)
 
 
 def test_rx_operations_never_enable_tx_clock():

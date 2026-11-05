@@ -1,5 +1,7 @@
 """PTT の本物のピンと core.txgate を結びつける。ピンの割り当ては config のとおり。"""
 
+import time
+
 from machine import Pin
 
 import config
@@ -11,7 +13,6 @@ def _ptt_pin():
 
 
 def _gate(freq):
-    # Si5351 を組み込むときは、周波数源(I2C)を作る前に _ptt_pin() を呼ぶ(hw.si5351 の必須手順)
     return TxGate(_ptt_pin(), config.PTT_ACTIVE_HIGH, callsign=config.CALLSIGN,
                   allowed=config.TX_ENABLED, freq=freq)
 
@@ -19,6 +20,32 @@ def _gate(freq):
 def station_gate():
     """局の送信に使うゲート。Si5351 のドライバができるまで周波数は未確定なので、常に拒否する"""
     return _gate(UnsetFreq())
+
+
+def halt_for_watchdog():
+    """起動時に周波数源の出力を止められなかったときの動作(オーナー決定 2026-11-05)。
+    何もせず待ち、フィードしないのでウォッチドッグのリセットで再起動を繰り返す。
+
+    ウォッチドッグは S5 で実装する。**それまでは、ここで永久に止まる**(PTT は切れたまま、送信なし、
+    受信と表示なし。USB の Ctrl-C だけで抜ける)。S5 では、ここに来る前にウォッチドッグを有効にし、
+    フィードは局のループだけで行う。例外にしないのは、station.main の異常時の経路(hw.restart の
+    バックオフ、machine.reset)に入れないため。失敗回数も増やさない"""
+    while True:
+        time.sleep_ms(100)
+
+
+def si5351_gate(make_freq, halt=halt_for_watchdog):
+    """Si5351 を周波数源にするゲートを作る(局への組み込みはまだ。hw.si5351 の必須手順)。
+    make_freq: I2C と Si5351B を作って返す関数。GP2 を Low にしてから呼ぶ。
+    I2C のエラーで出力を止められなければ halt を呼ぶ(ゲートは返さないので送信しない)"""
+    pin = _ptt_pin()  # I2C より先に確定する
+    try:
+        return TxGate(pin, config.PTT_ACTIVE_HIGH, callsign=config.CALLSIGN,
+                      allowed=config.TX_ENABLED, freq=make_freq())
+    except OSError as e:
+        print("[tx] cannot stop Si5351 outputs:", e)
+        halt()
+        raise  # halt が戻ったとき(試験用)。送信できる状態では戻らない
 
 
 def audio_only():
