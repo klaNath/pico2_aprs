@@ -187,21 +187,42 @@ def test_waits_for_sys_init_with_limit():
         m.INIT_TIMEOUT_MS = keep
 
 
-def test_lock_failure_leaves_outputs_off():
+def test_plla_lock_failure_leaves_outputs_off():
     import hw.si5351 as m
 
-    keep = m.LOCK_TIMEOUT_MS
-    m.LOCK_TIMEOUT_MS = 10
+    keep = m.RX_LOCK_TIMEOUT_MS
+    m.RX_LOCK_TIMEOUT_MS = 10
     try:
-        for status in (0x20, 0x40):  # LOL_A、LOL_B
-            i2c = FakeI2C(status=status)
-            d = _dev(i2c)
-            _raises(Si5351Error, d.init, 145_000_000, 145_000_000)
-            assert i2c.regs[3] == 0xFF and d.tx_hz() is None and not d.locked()
-            _raises(Si5351Error, d.tx_on)
-            assert i2c.regs[3] == 0xFF
+        i2c = FakeI2C(status=0x20)  # LOL_A
+        d = _dev(i2c)
+        _raises(Si5351Error, d.init, 145_000_000, 145_000_000)
+        assert i2c.regs[3] == 0xFF and d.tx_hz() is None and not d.tx_ready()
+        _raises(Si5351Error, d.tx_on)
+        assert i2c.regs[3] == 0xFF
     finally:
-        m.LOCK_TIMEOUT_MS = keep
+        m.RX_LOCK_TIMEOUT_MS = keep
+
+
+def test_lol_b_is_not_used_on_si5351b():
+    # AN619: LOL_B は Si5351A/C のみ。立っていても判定を変えない(PLLB のロック外れは検出できない)
+    i2c = FakeI2C(status=0x40)
+    d = _dev(i2c)
+    d.init(145_000_000, 145_000_000)
+    assert d.tx_ready()
+
+
+def test_tx_settle_wait_replaces_lock_detection():
+    import time
+
+    import hw.si5351 as m
+
+    d = _dev(FakeI2C())
+    t0 = time.ticks_ms()
+    d.init(145_000_000, 145_000_000)
+    assert time.ticks_diff(time.ticks_ms(), t0) >= m.TX_SETTLE_MS
+    t0 = time.ticks_ms()
+    d.set_tx(144_660_000)
+    assert time.ticks_diff(time.ticks_ms(), t0) >= m.TX_SETTLE_MS
 
 
 def test_i2c_error_at_any_step_keeps_tx_off():
@@ -213,7 +234,7 @@ def test_i2c_error_at_any_step_keeps_tx_off():
         d = _dev(i2c)
         _raises(OSError, d.init, 145_000_000, 145_000_000)
         assert i2c.regs[3] & (1 << 4), k
-        assert d.tx_hz() is None and not d.locked(), k
+        assert d.tx_hz() is None and not d.tx_ready(), k
         _raises(Si5351Error, d.tx_on)
         assert i2c.regs[3] & (1 << 4), k
 
@@ -222,7 +243,7 @@ def test_tx_on_off_touches_only_tx_bit():
     i2c = FakeI2C()
     d = _dev(i2c)
     d.init(145_000_000, 145_000_000)
-    assert d.tx_hz() == 145_000_000 and d.rx_hz() == 145_000_000 and d.locked()
+    assert d.tx_hz() == 145_000_000 and d.rx_hz() == 145_000_000 and d.tx_ready()
     d.tx_on()
     assert i2c.regs[3] == 0xE2
     _raises(Si5351Error, d.set_tx, 144_660_000)  # 送信中は変えない
@@ -236,23 +257,23 @@ def test_tx_off_before_init_disables_everything():
     d = _dev(i2c)
     d.tx_off()
     assert i2c.regs[3] == 0xFF
-    assert d.tx_hz() is None and not d.locked()
+    assert d.tx_hz() is None and not d.tx_ready()
     _raises(Si5351Error, d.tx_on)
 
 
-def test_locked_reads_status_and_fails_safe():
+def test_tx_ready_reads_status_and_fails_safe():
     i2c = FakeI2C()
     d = _dev(i2c)
     d.init(145_000_000, 145_000_000)
-    assert d.locked()
-    for status in (0x40, 0x80, 0x08):  # LOL_B、SYS_INIT、LOS_XTAL
+    assert d.tx_ready()
+    for status in (0x80, 0x08):  # SYS_INIT、LOS_XTAL
         i2c.status = status
-        assert not d.locked()
+        assert not d.tx_ready()
     i2c.status = 0x20  # LOL_A(受信)は送信の条件にしない
-    assert d.locked()
+    assert d.tx_ready()
     i2c.status = 0
     i2c.fail_read = True
-    assert not d.locked()
+    assert not d.tx_ready()
 
 
 def test_failed_retune_is_not_confirmed():
@@ -334,8 +355,8 @@ def test_gate_with_driver_sequence():
     assert gate._pin.v == 1 and i2c.regs[3] == 0xE2
     gate.unkey()
     assert gate._pin.v == 0 and i2c.regs[3] == EXPECT_OEB
-    i2c.status = 0x40
-    assert gate.refuse_reason() == "frequency source not locked"
+    i2c.status = 0x08  # LOS_XTAL
+    assert gate.refuse_reason() == "frequency source not ready"
     _raises(TxRefused, gate.key)
     assert i2c.regs[3] == EXPECT_OEB and gate._pin.v == 0
 

@@ -444,17 +444,17 @@ def test_stale_fix_stops_beacon():
 class LogFreq:
     """周波数源の呼ばれ方を記録する偽物"""
 
-    def __init__(self, log, lock=True, fail_on=False):
+    def __init__(self, log, ready=True, fail_on=False):
         self.log = log
-        self.lock = lock
+        self.ready = ready
         self.fail_on = fail_on
 
     def tx_hz(self):
         return 145_000_000
 
-    def locked(self):
-        self.log.append("locked?")
-        return self.lock
+    def tx_ready(self):
+        self.log.append("ready?")
+        return self.ready
 
     def tx_on(self):
         self.log.append("clk_on")
@@ -482,18 +482,18 @@ def test_gate_tx_clock_order():
     assert log == ["ptt_off", "clk_off"]  # Pico のリセット後も出力が残らないように切る
     del log[:]
     gate.key()
-    assert log == ["locked?", "clk_on", "ptt_on"]
+    assert log == ["ready?", "clk_on", "ptt_on"]
     del log[:]
     gate.unkey()
     assert log == ["ptt_off", "clk_off"]
 
 
-def test_gate_refuses_when_not_locked():
+def test_gate_refuses_when_not_ready():
     from core.txgate import TxGate, TxRefused
 
     log = []
-    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log, lock=False))
-    assert gate.refuse_reason() == "frequency source not locked"
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log, ready=False))
+    assert gate.refuse_reason() == "frequency source not ready"
     del log[:]
     try:
         gate.key()
@@ -516,7 +516,7 @@ def test_gate_clock_failure_never_keys_ptt():
     assert "ptt_on" not in log and not gate.keyed and log[-1] == "clk_off"
 
 
-def test_unset_freq_is_not_locked():
+def test_unset_freq_is_not_ready():
     from core.txgate import UnsetFreq
 
-    assert UnsetFreq().tx_hz() is None and UnsetFreq().locked() is False
+    assert UnsetFreq().tx_hz() is None and UnsetFreq().tx_ready() is False

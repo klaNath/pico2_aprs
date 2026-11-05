@@ -7,7 +7,7 @@
     コールサインが設定されている / 送信が許可されている / 周波数が確定して帯域内にある
 RF-04(使用区別の表)は V-02 の完了後に、refuse_reason() に加える。
 順序(周波数源の出力は送信の間だけ有効にする):
-    開始: 条件の確認(PLL のロックを含む)-> 送受切替 -> 送信クロック有効 -> PTT
+    開始: 条件の確認(周波数源の tx_ready を含む)-> 送受切替 -> 送信クロック有効 -> PTT
     終了: PTT -> 送信クロック無効 -> 送受切替
 入れている時間の上限(SAF-02)もここで持つ。expired() を見て止めるのは呼び出し側(hw.afsk_tx)。
 ファームウェアが止まったときの保護ではない(それはウォッチドッグの役目)。
@@ -54,7 +54,7 @@ class UnsetFreq:
 
     ドライバは同じ形にする:
         tx_hz()   確定した送信周波数(未確定なら None)
-        locked()  送信 PLL がロックしているか(LOL_B = 0)
+        tx_ready()  送信クロックを出してよい状態か(PLL のロック検出とは限らない)
         tx_on() / tx_off()  送信クロックの出力を有効 / 無効にする
     ドライバへの注意:
         Pico のリセットでは Si5351 は初期化されず、設定と出力が残る。TxGate は作るときに tx_off() を
@@ -65,7 +65,7 @@ class UnsetFreq:
     def tx_hz(self):
         return None
 
-    def locked(self):
+    def tx_ready(self):
         return False
 
     def tx_on(self):
@@ -84,7 +84,7 @@ class FixedFreq:
     def tx_hz(self):
         return self.hz
 
-    def locked(self):
+    def tx_ready(self):
         return True
 
     def tx_on(self):
@@ -127,8 +127,8 @@ class TxGate:
             return "frequency not set"
         if not TX_MIN_HZ <= hz <= TX_MAX_HZ:
             return "frequency out of band"
-        if not self.freq.locked():
-            return "frequency source not locked"
+        if not self.freq.tx_ready():
+            return "frequency source not ready"
         return None
 
     def check(self):

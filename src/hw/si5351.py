@@ -12,13 +12,15 @@ CLK の番号は確定していないので引数で受ける(config.SI5351_*_CL
 
 Pico のリセットでは Si5351 は初期化されず、設定と出力が残る。init() は全出力を止めてから書く。
 送信の出力は tx_on() まで無効のまま。init() の途中で失敗したら ready にならない
-(tx_hz() が None、locked() が False なので core.txgate が拒否する)。
+(tx_hz() が None、tx_ready() が False なので core.txgate が拒否する)。
 
 未確認(データシートはレジスタの説明を AN619 に委ねていて、解決しない):
     レジスタ 7 = 0x01 の意味(CBPro の値のまま。AN619 では Reserved)
     レジスタ 4 = 0x00 の意味(CBPro の DIS_RESET_LOL。AN619 では Reserved)
     レジスタ 9 の値(ビットの意味は AN619 にあるが、どの値にするかは未決。引数 oeb_mask)
-    LOL_B が Si5351B で有効か(AN619 のレジスタ 0 の説明に「Si5351A/C only」とある)
+制限: PLLB のロック外れは検出できない。AN619 のレジスタ 0 は LOL_B を「Si5351A/C only」としているので、
+Si5351B では LOL_B を使わない。送信側はリセット後の待ち時間(TX_SETTLE_MS)と、SYS_INIT、LOS_XTAL の
+確認で管理する。tx_ready() が True でも PLLB がロックしている保証はない。実機の測定項目。LOL_A は使える。
 データシートとの照合で残る問題:
     VCXO の出力の中心周波数は 112.5 MHz までと書かれている(データシート 3 章)。送信の
     144〜146 MHz はこれを超える。CBPro の生成例はエラーなしで作れているが、実機での確認が必要
@@ -58,7 +60,6 @@ _RESET = const(177)
 _XTAL_CL = const(183)
 
 _SYS_INIT = const(0x80)
-_LOL_B = const(0x40)
 _LOL_A = const(0x20)
 _LOS_XTAL = const(0x08)
 _RESET_BOTH = const(0xAC)  # データシートの Figure 10 の値(PLLB_RST、PLLA_RST)
@@ -77,7 +78,12 @@ _XTAL_BITS = {6: 0x52, 8: 0x92, 10: 0xD2}  # 下位 6 ビットは 010010b(AN619
 
 # 仮: 待ちの上限。文書にこの値はない。電源投入から出力までの T_RDY は最大 10 ms(Table 5)なので余裕を取る
 INIT_TIMEOUT_MS = 1000  # SYS_INIT
-LOCK_TIMEOUT_MS = 200  # PLL のロック
+RX_LOCK_TIMEOUT_MS = 200  # PLLA のロック(LOL_A)
+# PLLB をリセットしたあとに送信クロックを出すまでの待ち。ロック検出の代わり。
+# データシート Rev 1.3 Table 5 の T_RDY(電源投入から出力まで)最大 10 ms を流用する。同表の周波数変更
+# T_FREQ は 10 us だが、ここでは PLL をリセットするので長い方を取る。PLL リセット後の時間そのものの規定は
+# 文書にない(仮)
+TX_SETTLE_MS = 10
 
 
 class Si5351Error(Exception):
@@ -186,12 +192,13 @@ class Si5351B:
         """確定した送信周波数。初期化の前後の失敗中や、書き込みの失敗後は None"""
         return self._tx_hz if self._ready else None
 
-    def locked(self):
-        """送信の PLL がロックしているか。読めなければ False(送信しない側)"""
+    def tx_ready(self):
+        """送信クロックを出してよいか。SYS_INIT と LOS_XTAL だけを見る。PLLB のロックは検出できない
+        (モジュールの説明)。読めなければ False(送信しない側)"""
         if not self._ready:
             return False
         try:
-            return not self._status() & (_SYS_INIT | _LOL_B | _LOS_XTAL)
+            return not self._status() & (_SYS_INIT | _LOS_XTAL)
         except OSError:
             return False
 
@@ -242,6 +249,7 @@ class Si5351B:
         self._tx_hz = None
         self._write_tx(tx_hz)
         self._write1(_RESET, _RESET_B)
+        time.sleep_ms(TX_SETTLE_MS)
         self._tx_hz = tx_hz
 
     def rx_hz(self):
@@ -249,7 +257,7 @@ class Si5351B:
 
     # ---- 初期化
     def init(self, rx_hz=None, tx_hz=None):
-        """手順: SYS_INIT 待ち -> 全出力を止める -> 設定 -> PLL リセット -> ロック確認 -> 受信の出力。
+        """手順: SYS_INIT 待ち -> 全出力を止める -> 設定 -> PLL リセット -> LOL_A 確認と待ち -> 受信の出力。
         失敗したら例外。送信の出力は有効にしない。周波数はここで範囲を確かめ、I2C の前に例外にする"""
         self._ready = False
         self._tx_hz = self._rx_hz = None
@@ -269,8 +277,10 @@ class Si5351B:
             self._write(_CLK0_CTRL, bytes((_CTRL_PDN,) * 8))
             self._write_config(rx_hz, tx_hz)
             self._write1(_RESET, _RESET_BOTH)
-            lol = (_LOL_A if rx_hz is not None else 0) | (_LOL_B if tx_hz is not None else 0)
-            self._wait_clear(lol, LOCK_TIMEOUT_MS, "PLL lock")
+            if rx_hz is not None:
+                self._wait_clear(_LOL_A, RX_LOCK_TIMEOUT_MS, "PLLA lock")
+            if tx_hz is not None:
+                time.sleep_ms(TX_SETTLE_MS)
             if rx_hz is not None:
                 self._oeb &= ~((1 << self.lo1_clk) | (1 << self.i_clk) | (1 << self.q_clk))
                 self._write1(_OEB, self._oeb)
