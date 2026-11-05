@@ -109,7 +109,7 @@ def test_145_000():
 
 def test_144_660():
     assert rx_ratio(144_660_000) == (25, 4035)
-    assert ms_params(25, 4035, 5625) == (2779, 4125, 5625)
+    assert ms_params(25, 4035, 5625) == (2779, 4605, 5625)
     assert tx_ratio(144_660_000) == (32, 146667)
     assert ms_params(32, 146667, 10**6) == (3602, 773376, 10**6)
     assert vcxo_param(32, 146667, 240) == 1012567
@@ -133,11 +133,11 @@ def test_vcxo_param_follows_frequency_and_apr():
 def test_band_edges():
     for hz in (144_000_000, 146_000_000):
         a, b = tx_ratio(hz)
-        assert 15 <= a <= 90 and 0 <= b < 10**6
+        assert a == 32 and 0 <= b < 10**6
+        assert 864_000 <= 27_000 * (a * 10**6 + b) // 10**6 <= 876_000  # VCO(kHz)= f_TX x 6
         a, b = rx_ratio(hz)
         assert 15 <= a <= 90 and 0 <= b < 5625
-        vco = 5625 * 24 * (1000 * a + b * 1000 // 5625) // (5 * 1000)
-        assert 600_000 <= vco // 1000 <= 900_000
+        assert 691_200 <= 27_000 * (a * 5625 + b) // 5625 <= 700_800  # VCO(kHz)= lnatest の範囲
     assert rx_ratio(144_000_000) == (25, 3375)  # lnatest の例
     for hz in (143_999_999, 146_000_001, 0):
         _raises(ValueError, tx_ratio, hz)
@@ -149,12 +149,10 @@ def test_band_edges():
     _raises(ValueError, rx_ratio, 145_000_500)  # 受信は 1 kHz 単位
 
 
-def test_tx_rounding_carries_into_a():
-    # 6 f_TX が 27 MHz の整数倍の直前(丸めると b = 10^6 になる)
-    assert tx_ratio(144_000_000 + 4_499_998 - 2_000_000) == (32, 666667)
-    assert tx_ratio(145_000_000)[1] < 10**6
-    a, b = tx_ratio(144_000_000)
-    assert (a, b) == (32, 0)
+def test_tx_rounds_to_nearest_step():
+    assert tx_ratio(144_000_000) == (32, 0)
+    assert tx_ratio(144_000_002) == (32, 0)  # VCO で 12 Hz < 13.5 Hz
+    assert tx_ratio(144_000_003) == (32, 1)  # VCO で 18 Hz > 13.5 Hz
 
 
 def test_init_order():

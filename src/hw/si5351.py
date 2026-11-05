@@ -119,12 +119,8 @@ def tx_ratio(tx_hz):
     """送信周波数 -> PLLB の (a, b)。b の 1 は出力で 4.5 Hz なので、最も近い値に丸める"""
     _check_band(tx_hz)
     vco = tx_hz * TX_MS
-    a = vco // XTAL_HZ
-    b = (vco % XTAL_HZ + 13) // 27  # 27 MHz / 10^6 = 27 Hz
-    if b >= TX_C:
-        a += 1
-        b = 0
-    return a, b
+    # 帯域内の VCO は 864〜876 MHz(a = 32、b < 0.45 x 10^6)なので、丸めで a に繰り上がらない
+    return vco // XTAL_HZ, (vco % XTAL_HZ + 13) // 27  # 27 MHz / 10^6 = 27 Hz
 
 
 def vcxo_param(a, b, apr):
