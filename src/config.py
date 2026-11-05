@@ -104,8 +104,18 @@ TX_ENABLED = False
 # 送信周波数(Hz)を書く。電波が出るので、ダミーロードをつないでオーナーが判断したときだけ設定する。
 # tests/ はこの値を見ない(実機テストは常に偽のピンを使う)
 BENCH_TX_HZ = None
-# Si5351 の送信クロックの出力番号(未確定、None)。Si5351 のドライバができたら使う
+# Si5351B(hw.si5351)。出力の番号は未確定なので None。局にはまだ組み込んでいない
+SI5351_I2C_ADDR = const(0x60)
 SI5351_TX_CLK = None
+SI5351_LO1_CLK = None
+SI5351_I_CLK = None
+SI5351_Q_CLK = None
+SI5351_APR = 240  # 仮: VCXO の引き込み幅(ppm)。CBPro の生成例の値
+SI5351_IDRV_LO1_MA = 8  # 仮: 出力の駆動電流(2、4、6、8 mA)。CBPro の生成例の値
+SI5351_IDRV_IQ_MA = 8  # 仮
+SI5351_IDRV_TX_MA = 8  # 仮
+SI5351_XTAL_CL_PF = 8  # 仮: 水晶の内部負荷容量(6、8、10 pF)。CBPro の生成例の値
+SI5351_OEB_MASK = 0x00  # 未決: レジスタ 9。0 = OEB ピンが出力を制御する(リセット時の値)
 
 # 仮: このマシンだけの設定(git 管理外)。上の値を上書きする
 try:
