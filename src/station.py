@@ -90,6 +90,7 @@ class Station:
             self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
         self.call = display_call(config.CALLSIGN, config.SSID)
         self.status = Status()
+        self.status.callsign = self.call
         self.stations = Stations(own_call=self.call)
         spi = SPI(config.LCD_SPI, baudrate=config.LCD_BAUD, sck=Pin(config.PIN_LCD_SCK),
                   mosi=Pin(config.PIN_LCD_MOSI))

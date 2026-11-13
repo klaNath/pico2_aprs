@@ -31,7 +31,7 @@ BORDER = rgb(70, 110, 190)  # 欄の区切り線(2px)。地図の円や目盛り
 
 CH = 8  # 文字の幅・高さ
 ROW = 9  # 行の高さ(1 ピクセルの行間)
-STATUS_LINES_WIDE = 4  # 320x240 の自局の状態の行数(その下が衛星の棒グラフ)
+STATUS_LINES_WIDE = 5  # 320x240 の自局の状態の行数(その下が衛星の棒グラフ)
 
 # 衛星の系(UBX の gnssId)-> (RINEX の記号, 色)
 SYSTEMS = {
@@ -70,6 +70,7 @@ class Status:
         self.aug: "tuple[str, ...]" = ()  # 使えている補強('QZSS', 'SBAS', 'SLAS')
         # 衛星 (gnssId, C/N0, 使用中か, 仰角 / None, 方位角)。C/N0 が 0 なら捕捉していない
         self.signals: "Sequence[tuple[int, int, bool, int | None, int]]" = []
+        self.callsign: "str | None" = None  # 自局のコールサイン-SSID(常に表示)/ None = 表示しない
         self.grid: "str | None" = None  # Grid Locator 8 文字
         self.sd: "str | None" = None  # hw.sdlog.SdLog.state / None = SD を使わない(表示しない)
         self.lat: "float | None" = None
@@ -302,9 +303,10 @@ def _two(left, right, cols):
 def status_lines(status, cols, rows=4):
     """自局の状態 -> [(文字列, 色), ...]
 
-    cols が 24 以上(320x240 の下段): 4 行。
-        測位・衛星・補強 / 時刻と Grid / 位置 / ビーコンと送受信数
-    それより狭い(240x135): 測位と時刻 / 位置 / ビーコン / 送受信数(rows が 5 以上なら Grid も)
+    cols が 24 以上(320x240 の下段): 5 行。
+        測位・衛星・補強 / 時刻と Grid / 位置 / ビーコンと送受信数 / 自局のコールサイン-SSID
+    それより狭い(240x135): 測位と時刻 / 位置 / ビーコン / 送受信数
+        (rows が 5 以上なら自局のコールサイン-SSID と Grid。コールサイン未設定なら Grid だけ)
     """
     lines = []
     t = geo.fmt_jst(status.utc_s) if status.utc_s is not None else "--:--:--"
@@ -326,6 +328,7 @@ def status_lines(status, cols, rows=4):
         lines.append((pos, pos_color))
         lines.append((_two(bcn, "RX %d TX %d" % (status.rx_count, status.tx_count), cols),
                       bcn_color))
+        lines.append((status.callsign or "", CYAN))  # 5 行目: 自局のコールサイン-SSID
         return lines
     gps = gnss_text(status, cols - len(t) - 1)
     lines.append((_two(gps, t, cols), gps_color))
@@ -333,7 +336,10 @@ def status_lines(status, cols, rows=4):
     lines.append((bcn, bcn_color))
     lines.append(("RX %d  TX %d" % (status.rx_count, status.tx_count), WHITE))
     if rows >= 5:
-        lines.append(("GRID " + grid, WHITE))
+        if status.callsign:  # 自局のコールサイン-SSID と Grid
+            lines.append((_two(status.callsign, grid, cols), CYAN))
+        else:
+            lines.append(("GRID " + grid, WHITE))
     return lines
 
 
@@ -389,17 +395,27 @@ def draw_signals(fb, y0, w, h, signals):
     base = y0 + bar_h  # 棒の下端
     for cno in (20, 40):  # 目盛り
         fb.hline(0, base - cno * bar_h // CNO_MAX, w, DARK)
-    pitch = max(2, min(7, w // len(signals)))
-    bw = max(1, pitch - 1)
+    # 系ごとの機数。系の記号(CH + 1 px)が必ず入るよう、機数の少ない系はその幅まで広げる
+    counts = []
+    prev = None
+    for s in signals:
+        if s[0] != prev:
+            counts.append(0)
+            prev = s[0]
+        counts[-1] += 1
+    pitch = 7
+    while pitch > 2 and sum(max(n * pitch, CH + 1) for n in counts) > w:
+        pitch -= 1
+    bw = pitch - 1
     x = 0
     prev = None
     label_end = 0
     for gnss, cno, used, _, _ in signals:
         sym, col = SYSTEMS.get(gnss, ("?", GRAY))
         if gnss != prev:
-            if x >= label_end:
-                fb.text(sym, x, base + 2, col)
-                label_end = x + CH + 1
+            x = max(x, label_end)  # 前の系の記号に重ねない
+            fb.text(sym, x, base + 2, col)
+            label_end = x + CH + 1
             prev = gnss
         bh = max(1, min(cno, CNO_MAX) * bar_h // CNO_MAX)
         if used:

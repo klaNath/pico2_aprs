@@ -19,6 +19,7 @@ from ui.views import (
     Status,
     badge_color,
     detail_lines,
+    draw_signals,
     gnss_text,
     sd_tag,
     sd_tag_pos,
@@ -36,6 +37,7 @@ def full_status():
     st.lat, st.lon, st.grid = 35.5, 139.5, "PM95SM00"
     st.beacon_on, st.next_beacon_s = True, 599
     st.rx_count, st.tx_count = 123, 45
+    st.callsign = "JK1BBJ-7"
     return st
 
 
@@ -49,8 +51,8 @@ def test_layout_320x240():
     assert (lay.status_x, lay.status_y, lay.status_cols) == (0, 123, 25)
     assert lay.map_w == lay.map_h == 117 and lay.map_x + lay.map_w == 320
     assert lay.status_x + lay.status_w + 3 == lay.map_x
-    # 棒グラフは状態 4 行の下
-    assert lay.sats_y == 1 + 4 * 9 + 1 and lay.status_h - lay.sats_y >= 70
+    # 棒グラフは状態 5 行(最後が自局のコールサイン)の下
+    assert lay.sats_y == 1 + 5 * 9 + 1 and lay.status_h - lay.sats_y >= 60
 
 
 def test_layout_240x135_has_no_small_map():
@@ -75,7 +77,8 @@ def test_status_lines_wide():
     assert lines == ["3D 21/38 HDOP0.7",
                      "08:48:33 JST     PM95SM00",
                      "N35 30.00 E139 30.00",
-                     "BCN ON 9:59  RX 123 TX 45"]
+                     "BCN ON 9:59  RX 123 TX 45",
+                     "JK1BBJ-7"]
     assert all(len(s) <= 25 for s in lines)
     assert len(lines[2]) + len(" [RX]") <= 25  # 送受信中の印と重ならない
     st = Status()
@@ -90,6 +93,9 @@ def test_status_lines_compact():
     assert lay.status_cols == 20
     assert lines == ["NO FIX 0/0  --:--:--", "position unknown", "BCN OFF", "RX 0  TX 0",
                      "GRID --------"]
+    st.callsign = "JK1BBJ-15"  # 自局のコールサイン-SSID と Grid を 1 行に
+    lines = [s for s, _ in status_lines(st, lay.status_cols, lay.status_rows)]
+    assert lines[4] == "JK1BBJ-15   --------" and len(lines[4]) <= lay.status_cols
 
 
 def test_detail_distance_line():
@@ -164,3 +170,53 @@ def test_detail_big_callsign():
     assert len(lines[1]) == 30
     lines = [t for t, _ in detail_lines(st, None, None, 13_000, 30, 27, 9)]
     assert lines[1].startswith("own position unknown") and lines[1].endswith("12s")
+
+
+class FakeFb:
+    """描画の呼び出しのうち、文字と棒の位置だけを記録する"""
+
+    def __init__(self):
+        self.texts = []
+        self.bars = []
+
+    def text(self, s, x, y, col):
+        self.texts.append((s, x))
+
+    def hline(self, x, y, w, col):
+        pass
+
+    def fill_rect(self, x, y, w, h, col):
+        self.bars.append((x, w))
+
+    def rect(self, x, y, w, h, col):
+        self.bars.append((x, w))
+
+
+def _signals(counts):
+    # counts: [(gnssId, 機数), ...] -> Status.signals の形
+    return [(g, 30, True, 45, 0) for g, n in counts for _ in range(n)]
+
+
+def test_draw_signals_labels_single_satellite_systems():
+    # 1 機だけの系が続いても、全ての系の記号が重ならずに出る
+    fb = FakeFb()
+    draw_signals(fb, 0, 200, 60, _signals([(0, 8), (1, 1), (2, 1), (5, 1), (6, 3)]))
+    assert [s for s, _ in fb.texts] == ["G", "S", "E", "J", "R"]
+    xs = [x for _, x in fb.texts]
+    assert all(b - a >= 9 for a, b in zip(xs, xs[1:]))
+    assert len(fb.bars) == 14
+    assert all(x + w <= 200 for x, w in fb.bars)
+
+
+def test_draw_signals_many_satellites_fit():
+    # 機数が多いときは棒を細くして幅に収め、記号は全て出す
+    fb = FakeFb()
+    draw_signals(fb, 0, 200, 60, _signals([(0, 12), (1, 2), (2, 10), (3, 14), (5, 1), (6, 9)]))
+    assert [s for s, _ in fb.texts] == ["G", "S", "E", "C", "J", "R"]
+    assert all(x + w <= 200 for x, w in fb.bars)
+
+
+def test_draw_signals_ignores_untracked():
+    fb = FakeFb()
+    draw_signals(fb, 0, 200, 60, [(0, 0, False, None, 0)])
+    assert fb.texts == [("no satellites tracked", 0)]
