@@ -19,15 +19,17 @@ from machine import Pin
 from ui import views
 
 MAP_TICK_S = 5
+METER_MS = 200  # 受信音量の縦棒を描き直す間隔
 
 
 class Ui:
-    def __init__(self, screen, stations, status, pins):
+    def __init__(self, screen, stations, status, pins, meter=False):
         """pins: (A, B, X, Y) の GPIO 番号"""
         self.scr = screen
         self.st = stations
         self.status = status
-        self.lay = views.Layout(screen.width, screen.height)
+        self.lay = views.Layout(screen.width, screen.height, meter)
+        self._meter_ms = 0  # 受信音量の縦棒を最後に描いた時刻
         self.btn = [Pin(p, Pin.IN, Pin.PULL_UP) for p in pins]
         self._prev = [1, 1, 1, 1]
         self.map_mode = False
@@ -88,6 +90,8 @@ class Ui:
                 self._draw_small_map(now_ms)
         elif blink_changed and not (self.map_mode and not self.lay.wide):
             self._draw_badge()
+        if self.lay.meter_w and time.ticks_diff(now_ms, self._meter_ms) >= METER_MS:
+            self._draw_meter(now_ms)
         self._seen_version = self.st.version
         self._last_sec = sec
         self._dirty_all = False
@@ -126,6 +130,14 @@ class Ui:
     def draw_status_now(self):
         """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)"""
         self._draw_status()
+
+    def _draw_meter(self, now_ms):
+        """受信音量の縦棒だけ描き直す(小さいので METER_MS ごとに描いても軽い)"""
+        lay = self.lay
+        self._meter_ms = now_ms
+        self.scr.region(lay.meter_x, lay.status_y, lay.meter_w, lay.status_h,
+                        lambda fb, dy: views.draw_meter(fb, dy, lay.meter_w, lay.status_h,
+                                                        self.status.level))
 
     def _draw_badge(self):
         lay = self.lay

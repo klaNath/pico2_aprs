@@ -301,6 +301,8 @@ class IfReceiver(Receiver):
               None なら確保する
     """
 
+    has_level = False  # 音量(ADC の振幅)は無い
+
     def __init__(self, pin=8, fs=19200, nslots=8, method="pll", k=144, kp=1, ki=16, lps=1,
                  vs=7, sm_id=0, ring_buf=None):
         self.method = method

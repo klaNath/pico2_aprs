@@ -9,7 +9,7 @@ draw(fb, dy) の形で、領域の左上を (0, 0) とした座標に dy を足�
 
 import math
 
-from core import geo
+from core import geo, level
 from hw.rgb565 import rgb
 
 try:
@@ -43,7 +43,10 @@ SYSTEMS = {
     6: ("R", ORANGE),  # GLONASS
 }
 CNO_MAX = 50  # 棒グラフの上端の C/N0(dBHz)
+# 受信音量(core.level.grade)-> 色
+METER_COLOR = {"clip": RED, "high": YELLOW, "ok": GREEN, "low": ORANGE, "none": GRAY}
 BADGE = 2 * CH  # 右上の測位状態の丸の大きさ
+METER_W = 7  # 受信音量の縦棒の幅(左 2px が適正範囲の目印、右 5px が棒)
 BIG = 3  # 320x240 の詳細欄のコールサインの拡大率(24x24 ドット)
 BIG_ROW = CH * BIG + 3  # 大きなコールサインの行の高さ
 
@@ -82,10 +85,13 @@ class Status:
         self.tx_count = 0
         self.tx_active = False
         self.rx_recent = False
+        # 受信音声の音量(core.level.Level)/ None = 表示しない(IF 入力など)
+        self.level: "level.Level | None" = None
 
 
 class Layout:
-    def __init__(self, width, height):
+    def __init__(self, width, height, meter=False):
+        """meter: 320x240 で、地図の左に受信音量の縦棒を出す(その分、状態の欄が 8px 狭くなる)"""
         self.w = width
         self.h = height
         self.list_w = 9 * CH  # コールサイン 9 文字。その右に 2px の区切り線と 1px の隙間
@@ -104,6 +110,10 @@ class Layout:
             self.map_y = self.status_y
             self.status_x = 0
             self.status_w = self.map_x - 3  # 地図の左に 2px の区切り線と 1px の隙間
+            self.meter_w = METER_W if meter else 0
+            if meter:
+                self.status_w -= METER_W + 1  # 縦棒と 1px の隙間
+            self.meter_x = self.status_w + 1
             self.sats_y = 1 + STATUS_LINES_WIDE * ROW + 1  # 状態の欄の中の棒グラフの上端
         else:
             self.detail_h = (height * 64) // 100  # 上 64% を詳細、残りを自局の状態
@@ -113,6 +123,7 @@ class Layout:
             self.map_x = self.map_y = self.map_w = self.map_h = 0
             self.status_x = self.right_x
             self.status_w = self.right_w
+            self.meter_w = self.meter_x = 0
             self.sats_y = self.status_h  # 棒グラフなし
         self.list_rows = (self.list_h - ROW) // ROW  # 見出し 1 行を除く
         self.status_cols = self.status_w // CH
@@ -204,6 +215,8 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0)
     if p.path:
         digi = [d for d in p.path if d.endswith("*")]
         lines.append((_clip("via " + (digi[-1] if digi else "direct"), cols), GRAY))
+    if st.level_db is not None:  # 受信音量(ADC 入力のとき)。このパケットのピーク
+        lines.append(level_line(st.level_db, st.clip))
     text = p.comment
     if p.kind == "message":
         text = "to %s: %s" % (p.addressee, p.text or "")
@@ -212,6 +225,42 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0)
     for t in _wrap(text or "", cols, 2):
         lines.append((t, WHITE))
     return lines
+
+
+def level_line(db, clip):
+    """詳細欄の音量の行 -> (文字列, 色)。'LVL -12dB'、クリップは赤で ' CLIP' を付ける"""
+    g = level.grade(db, clip)
+    s = "LVL %ddB" % int(db - 0.5 if db < 0 else db + 0.5)
+    if g == "clip":
+        return s + " CLIP", RED
+    return s, METER_COLOR[g]
+
+
+def meter_y(db, h):
+    """dBFS -> メータの中の y(0 = 上端 = 0 dBFS、h - 1 = 下端 = level.DB_MIN)"""
+    if db > 0:
+        db = 0
+    if db < level.DB_MIN:
+        db = level.DB_MIN
+    return int((h - 1) * db / level.DB_MIN + 0.5)
+
+
+def draw_meter(fb, dy, w, h, lv):
+    """受信音量の縦棒(w x h)。下端 DB_MIN、上端 0 dBFS。棒 = 今の実効値、白い線 = 保持したピーク。
+    色は保持したピークで決める(適正 = 緑、低い = 橙、大きい = 黄、クリップ = 赤)。
+    左 2px は適正範囲(ピークが OK_LO..OK_HI)の目印"""
+    fb.rect(2, dy, w - 2, h, DARK)
+    y_lo = meter_y(level.OK_LO, h)
+    y_hi = meter_y(level.OK_HI, h)
+    fb.fill_rect(0, y_hi + dy, 2, y_lo - y_hi + 1, GREEN)
+    if lv is None:
+        return
+    col = METER_COLOR[lv.grade()]
+    y = meter_y(lv.rms_db, h)
+    if lv.rms_db > level.DB_MIN:
+        fb.fill_rect(3, y + dy, w - 4, h - 1 - y, col)
+    if lv.peak_db > level.DB_MIN:
+        fb.fill_rect(2, meter_y(lv.peak_db, h) + dy, w - 2, 2, RED if lv.clip else WHITE)
 
 
 def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True):

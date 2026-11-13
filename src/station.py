@@ -15,6 +15,7 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
           ゲート(core.txgate)が拒否する間(コールサインや周波数が未確定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
+    受信音量(ADC 入力のとき): 地図の左の縦棒(今の実効値と 3 秒保持のピーク)と、詳細欄の局ごとの LVL
 送信波形のバッファ(config.TX_BUFFER_MS 分)は、ヒープが断片化する前に確保する
 (このモジュールの読み込みの最初)。
 dry run でも波形は作る(メモリの使い方を実際の送信と同じにする)。
@@ -46,6 +47,7 @@ from machine import SPI, Pin
 
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
+from core.level import Level, db_peak
 from core.stations import Stations
 from core.txgate import display_call
 from hw import restart, txctl
@@ -96,7 +98,11 @@ class Station:
                   mosi=Pin(config.PIN_LCD_MOSI))
         lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL,
                      config.LCD_PANEL)
-        self.ui = Ui(Screen(lcd, scratch=_UI_SCRATCH), self.stations, self.status, config.BUTTONS)
+        # 受信音量: ADC 入力のときだけ(地図の左の縦棒と、詳細欄の局ごとの LVL)
+        self.level = Level() if self.rx.has_level else None
+        self.status.level = self.level
+        self.ui = Ui(Screen(lcd, scratch=_UI_SCRATCH), self.stations, self.status, config.BUTTONS,
+                     meter=self.level is not None)
         lcd.backlight(0.8)
         self.sd = SdLog(config.SD_SPI, config.PIN_SD_SCK, config.PIN_SD_MOSI, config.PIN_SD_MISO,
                         config.PIN_SD_CS, config.PIN_SD_DET, header=self.call, log=print)
@@ -134,6 +140,9 @@ class Station:
     def step(self, now):
         if self.gnss_ok:
             self.gnss.poll(self.status)
+        if self.level is not None:
+            ms, pk, clip = self.rx.level()
+            self.level.update(ms, pk, clip, now)
         self._receive(now)
         self._beacon(now)
         self.sd.poll(self.utc(), now)
@@ -162,8 +171,13 @@ class Station:
                 continue
             text = tnc2(f)
             self.sd.packet(text, utc_s=self.utc())
+            lvl = None
+            clip = False
+            if self.level is not None:  # このパケットの音量: 直近 1 秒のピーク
+                pk, clip = self.rx.recent_peak()
+                lvl = db_peak(pk)
             try:
-                self.stations.update(parse_frame(f), now)
+                self.stations.update(parse_frame(f), now, lvl, clip)
             except Exception as e:  # 解析できない情報フィールドでも記録と受信数は残す
                 sys.print_exception(e)
             self.status.rx_count += 1
@@ -226,6 +240,10 @@ class Station:
             st.fix, st.sats, st.sats_view, st.rx_count, st.tx_count,
             "on" if st.beacon_on else "off", st.next_beacon_s, self.sd.state, gc.mem_free(),
             self.rx.lag_max))
+        if self.level is not None:
+            lv = self.level
+            print("[station] rx level rms %.0f dBFS, peak %.0f dBFS (%s)" % (
+                lv.rms_db, lv.peak_db, lv.grade()))
 
     def close(self):
         # 最初に PTT を切る。受信の停止で待たされたり、ここで Ctrl-C を受けたりしても残らないように

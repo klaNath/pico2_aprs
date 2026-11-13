@@ -5,6 +5,7 @@
 """
 
 from aprs.packet import parse_frame
+from core.level import DB_MIN
 from core.stations import STALE_S, Stations
 from tnc.ax25 import Frame
 from ui.views import (
@@ -21,6 +22,8 @@ from ui.views import (
     detail_lines,
     draw_signals,
     gnss_text,
+    level_line,
+    meter_y,
     sd_tag,
     sd_tag_pos,
     small_map_kind,
@@ -220,3 +223,40 @@ def test_draw_signals_ignores_untracked():
     fb = FakeFb()
     draw_signals(fb, 0, 200, 60, [(0, 0, False, None, 0)])
     assert fb.texts == [("no satellites tracked", 0)]
+
+
+def test_layout_with_level_meter():
+    plain = Layout(320, 240)
+    lay = Layout(320, 240, meter=True)
+    assert plain.meter_w == 0 and lay.meter_w == 7
+    # 縦棒は状態の欄と地図の区切り線の間。状態の欄は 24 文字になる
+    assert lay.status_w == plain.status_w - 8 and lay.status_cols == 24
+    # 縦棒の右に 1px の隙間、その右に地図の区切り線 2px
+    assert lay.meter_x == lay.status_w + 1 and lay.meter_x + lay.meter_w + 3 == lay.map_x
+    st = full_status()
+    st.sd = "log 0001"
+    lines = [s for s, _ in status_lines(st, lay.status_cols, lay.status_rows)]
+    assert all(len(s) <= 24 for s in lines)
+    assert lines[3] == "BCN ON 9:59 RX 123 TX 45"
+    assert not Layout(240, 135, meter=True).meter_w  # 240x135 には出さない
+
+
+def test_meter_scale():
+    assert meter_y(0, 117) == 0 and meter_y(DB_MIN, 117) == 116
+    assert meter_y(5, 117) == 0 and meter_y(-99, 117) == 116  # 範囲の外は端に張り付く
+    assert meter_y(-20, 117) == 58
+
+
+def test_detail_level_line():
+    assert level_line(-11.6, False) == ("LVL -12dB", GREEN)
+    assert level_line(-12.4, False) == ("LVL -12dB", ORANGE)  # 適正範囲(-12 dB 以上)より低い
+    assert level_line(-25.0, False) == ("LVL -25dB", ORANGE)
+    assert level_line(-1.0, False) == ("LVL -1dB", YELLOW)
+    assert level_line(-0.2, True) == ("LVL 0dB CLIP", RED)
+    s = Stations()
+    s.update(parse_frame(Frame.parse("JA1AAA>APRS,JA1DIG*:!3539.53N/13944.70E>test")), 1000,
+             -9.6, False)
+    lines = detail_lines(s.latest(), TOKYO[0], TOKYO[1], 1000, 30)
+    assert ("LVL -10dB", GREEN) in lines
+    s.update(parse_frame(Frame.parse("JA1AAA>APRS:>no level")), 2000)  # IF 入力などでは出さない
+    assert not any(t.startswith("LVL") for t, _ in detail_lines(s.latest(), None, None, 2000, 30))

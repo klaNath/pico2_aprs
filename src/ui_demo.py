@@ -7,6 +7,7 @@
 メッセージ)、60 分以上前に受信した「古い」局を入れる。8 秒ごとに 1 局ずつ新しい受信を模擬する。
 320x240 では小さな地図が常に出る。ボタン(240x135 の Display Pack のみ)A/B: 一覧の選択、
 X: 地図、Y: 最新局の自動表示に戻る。60 秒で終了。
+地図の左の縦棒は受信音量(架空の値): 受信のたびに 適正(緑)→ 低い(橙)→ 大きい(黄)→ クリップ(赤)。
 """
 
 import time
@@ -17,6 +18,7 @@ import config
 from aprs import mice
 from aprs.packet import parse, parse_frame
 from core import geo
+from core.level import Level, db_peak
 from core.stations import Stations
 from core.txgate import display_call
 from hw.st7789 import ST7789
@@ -26,6 +28,8 @@ from ui.screen import Screen
 from ui.views import Status
 
 OWN = (35.681236, 139.767125)
+# 架空の受信音量(ピーク、ADC の値): 適正、低い、大きい、クリップ
+DEMO_PEAKS = (900, 120, 1700, 2047)
 
 
 def offset(km, deg):
@@ -87,8 +91,10 @@ def main():
                       + [(0, 0, False, 5 + 7 * k, 100 + 50 * k) for k in range(3)])
     status.utc_s = time.time()
     status.beacon_on = True
+    status.callsign = own
+    status.level = Level()  # 受信音量の縦棒(架空の値。パケットごとに大きさを変える)
     ui = Ui(scr, stations, status,
-            config.BUTTONS)
+            config.BUTTONS, meter=True)
     now = time.ticks_ms()
     # 古い局(61 分前と 90 分前に受信したことにする)
     stations.update(pos_packet("JA1OLD", 20.0, 120, "-", "old station"),
@@ -96,7 +102,8 @@ def main():
     stations.update(pos_packet("JA1OLD-2", 6.0, 200, "-", "old 2"),
                     time.ticks_add(now, -61 * 60_000))
     for k in range(5):
-        stations.update(SAMPLES[k](), time.ticks_add(now, -(5 - k) * 20_000))
+        stations.update(SAMPLES[k](), time.ticks_add(now, -(5 - k) * 20_000),
+                        db_peak(DEMO_PEAKS[k % len(DEMO_PEAKS)]), DEMO_PEAKS[k % 4] >= 2040)
         status.rx_count += 1
     lcd.backlight(0.8)
     t_end = time.ticks_add(now, 60_000)
@@ -105,10 +112,13 @@ def main():
     nb = 180  # 次のビーコンまでの秒(表示の確認用に 3 分から数える)
     t_sec = now
     t_draw = 0
+    t_burst = None
     while time.ticks_diff(t_end, time.ticks_ms()) > 0:
         now = time.ticks_ms()
         if time.ticks_diff(now, t_next) >= 0:
-            stations.update(SAMPLES[k % len(SAMPLES)](), now)
+            pk = DEMO_PEAKS[k % len(DEMO_PEAKS)]
+            stations.update(SAMPLES[k % len(SAMPLES)](), now, db_peak(pk), pk >= 2040)
+            t_burst = now
             status.rx_count += 1
             status.rx_recent = True
             k += 1
@@ -120,6 +130,12 @@ def main():
             nb = nb - 1 if nb > 0 else 180
         status.utc_s = time.time()
         status.next_beacon_s = nb
+        # 受けてから 0.8 秒はその大きさのサイン波、あとは無音(スケルチが閉じた状態)とする
+        if t_burst is not None and time.ticks_diff(now, t_burst) < 800:
+            pk = DEMO_PEAKS[(k - 1) % len(DEMO_PEAKS)]
+            status.level.update(pk * pk // 2 // 16, pk, pk >= 2040, now)
+        else:
+            status.level.update(3, 6, False, now)
         t0 = time.ticks_us()
         ui.poll(now)
         t_draw = max(t_draw, time.ticks_diff(time.ticks_us(), t0))

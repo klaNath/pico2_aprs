@@ -22,7 +22,8 @@ MAP_STATIONS = 6
 
 
 class Station:
-    __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own")
+    __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own",
+                 "level_db", "clip")
 
     def __init__(self, call, own=False):
         self.call = call
@@ -33,6 +34,9 @@ class Station:
         self.count = 0
         self.lat: "Optional[float]" = None
         self.lon: "Optional[float]" = None
+        # 最後に受けたパケットの音量(ピーク、dBFS)とクリップしたか / None = 測っていない
+        self.level_db: "Optional[float]" = None
+        self.clip = False
 
     def age_s(self, now_ms):
         return time.ticks_diff(now_ms, self.heard_ms) // 1000
@@ -50,8 +54,9 @@ class Stations:
         self.by_call = {}
         self.version = 0  # 変わるたびに増える(表示側の再描画判定用)
 
-    def update(self, packet, now_ms=None):
-        """aprs.packet.Packet を取り込む。オブジェクト/アイテムは名前で 1 局として扱う。"""
+    def update(self, packet, now_ms=None, level_db=None, clip=False):
+        """aprs.packet.Packet を取り込む。オブジェクト/アイテムは名前で 1 局として扱う。
+        level_db, clip: このパケットの音量(ADC 入力のとき。core.level)"""
         if now_ms is None:
             now_ms = time.ticks_ms()
         call = packet.name if packet.kind in ("object", "item") and packet.name else packet.src
@@ -65,6 +70,8 @@ class Stations:
         st.packet = packet
         st.heard_ms = now_ms
         st.count += 1
+        st.level_db = level_db
+        st.clip = clip
         if packet.lat is not None and packet.lon is not None:
             st.lat = packet.lat
             st.lon = packet.lon

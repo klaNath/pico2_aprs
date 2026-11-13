@@ -17,6 +17,7 @@ import _thread
 import time
 from array import array
 
+import micropython
 import rp2
 import uctypes
 from machine import ADC, Pin, mem32
@@ -39,6 +40,38 @@ _RING_N = const(_RING_BYTES // 2)  # サンプル数
 RING_ALLOC_BYTES = 2 * _RING_BYTES  # リングをその大きさの境界に揃えるため 2 倍確保する
 _BLOCK = const(512)
 _STOP_TIMEOUT_MS = const(500)  # Core1 のループが止まるのを待つ上限(1 ブロックの処理はテストの上限で約 11 ms)
+_LEVEL_N = const(1920)  # 音量を集計する長さ(サンプル数。19.2 kHz で 100 ms)
+_LEVEL_HIST = const(16)  # 音量の履歴の数(1.6 秒分)
+_CLIP_LO = const(4)  # ADC の値がこれ以下 / これ以上ならクリップ
+_CLIP_HI = const(4091)
+
+
+@micropython.viper
+def _level(buf: ptr16, start: int, n: int, acc: ptr32):
+    """buf[start:start+n] の最小・最大・和・二乗和を acc(array('i'))に足し込む。
+    acc = [最小, 最大, (x - 2048) の和, ((x - 2048)^2 >> 4) の和, 個数]
+    100 ms(1920 個)なら和は 400 万、二乗和は 5 億までで 32 bit に収まる"""
+    mn = int(acc[0])
+    mx = int(acc[1])
+    s = int(acc[2])
+    q = int(acc[3])
+    i = start
+    end = start + n
+    while i < end:
+        x = int(buf[i])
+        if x < mn:
+            mn = x
+        if x > mx:
+            mx = x
+        d = x - 2048
+        s += d
+        q += (d * d) >> 4
+        i += 1
+    acc[0] = mn
+    acc[1] = mx
+    acc[2] = s
+    acc[3] = q
+    acc[4] = int(acc[4]) + n
 
 
 class AdcRing:
@@ -100,7 +133,14 @@ class AdcRing:
 
 
 class Receiver:
-    """Core1 で ADC のリングを復調し、完成したフレームを Core0 に渡す。"""
+    """Core1 で ADC のリングを復調し、完成したフレームを Core0 に渡す。
+
+    音量: 約 100 ms ごとに、直流を引いた二乗平均 / 16(lv_ms)、ピーク(lv_pk、中点から)、
+    クリップ(lv_clip)を更新し、ピークとクリップは 1.6 秒分の履歴にも残す(level() / recent_peak())。
+    Core1 では整数の計算と配列への代入だけを行う(メモリを確保しない)。
+    """
+
+    has_level = True  # 音量を出せるか(IF 入力の IfReceiver は False)
 
     def __init__(self, pin=26, fs=19200, nslots=8, ring_buf=None):
         self.ring = AdcRing(pin, fs, ring_buf)
@@ -114,6 +154,13 @@ class Receiver:
         self.overruns = 0  # 処理が間に合わずにリング 1 周分以上を捨てた回数
         self.samples = 0
         self._recent = []  # 2 つの復調器から同じフレームが出たときの重複除去
+        self._lacc = array("i", (4095, 0, 0, 0, 0))  # _level の集計中の値
+        self.lv_ms = 0
+        self.lv_pk = 0
+        self.lv_clip = 0
+        self._lv_hpk = array("H", bytes(2 * _LEVEL_HIST))
+        self._lv_hclip = bytearray(_LEVEL_HIST)
+        self._lv_i = 0
 
     def start(self):
         self.running = True
@@ -145,6 +192,7 @@ class Receiver:
         off = ring.off
         n = ring.n
         chains = self.chains
+        lacc = self._lacc
         rd = ring.position()
         try:
             while self.running:
@@ -163,10 +211,53 @@ class Receiver:
                 for dem, dfr in chains:
                     nb = dem.process(buf, k, off + rd)
                     dfr.feed(dem.bits, nb)
+                _level(buf, off + rd, k, lacc)  # type: ignore[arg-type]  (viper のポインタ型)
+                if lacc[4] >= _LEVEL_N:
+                    self._publish_level()
                 rd = (rd + k) % n
                 self.samples = (self.samples + k) & 0x3FFFFFFF  # small int のまま回す(確保なし)
         finally:
             self.stopped = True
+
+    def _publish_level(self):
+        """集計した 100 ms 分を公開して、集計をやり直す(Core1。整数だけ、確保なし)"""
+        a = self._lacc
+        cnt = a[4]
+        mean = a[2] // cnt
+        ms = a[3] // cnt - ((mean * mean) >> 4)
+        hi = a[1] - 2048 - mean
+        lo = 2048 + mean - a[0]
+        pk = hi if hi > lo else lo
+        clip = 1 if a[0] <= _CLIP_LO or a[1] >= _CLIP_HI else 0
+        self.lv_ms = ms if ms > 0 else 0
+        self.lv_pk = pk if pk > 0 else 0
+        self.lv_clip = clip
+        i = self._lv_i
+        self._lv_hpk[i] = self.lv_pk
+        self._lv_hclip[i] = clip
+        self._lv_i = (i + 1) % _LEVEL_HIST
+        a[0] = 4095
+        a[1] = 0
+        a[2] = 0
+        a[3] = 0
+        a[4] = 0
+
+    def level(self):
+        """最新の 100 ms の (直流を引いた二乗平均 / 16, ピーク, クリップしたか)。
+        core.level で dB に直す"""
+        return self.lv_ms, self.lv_pk, bool(self.lv_clip)
+
+    def recent_peak(self, windows=10):
+        """直近 windows 個(1 個 100 ms)のピークの最大と、その間にクリップしたか"""
+        pk = 0
+        clip = False
+        i = self._lv_i
+        for k in range(1, min(windows, _LEVEL_HIST) + 1):
+            j = (i - k) % _LEVEL_HIST
+            if self._lv_hpk[j] > pk:
+                pk = self._lv_hpk[j]
+            clip = clip or bool(self._lv_hclip[j])
+        return pk, clip
 
     def get(self, now_ms=None):
         """完成したフレーム(FCS 込みの bytes)を 1 つ返す。無ければ None。
