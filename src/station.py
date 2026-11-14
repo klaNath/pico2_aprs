@@ -181,6 +181,7 @@ class Station:
             if self.level is not None:  # このパケットの音量: 直近 1 秒のピーク
                 pk, clip = self.rx.recent_peak()
                 lvl = db_peak(pk)
+                self.level.packet(lvl, clip, now)  # 縦棒のピークをこのパケットにする
             try:
                 self.stations.update(parse_frame(f), now, lvl, clip)
             except Exception as e:  # 解析できない情報フィールドでも記録と受信数は残す

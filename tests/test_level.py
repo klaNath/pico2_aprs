@@ -32,3 +32,26 @@ def test_peak_and_clip_are_held():
     assert near(lv.peak_db, -6.02) and lv.clip  # 3 秒たつまで保持
     lv.update(0, 100, False, now_ms=5000)
     assert near(lv.peak_db, db_peak(100)) and not lv.clip
+
+
+def test_packet_sets_peak_and_ignores_tail_noise():
+    lv = Level(hold_ms=3000, guard_ms=1200)
+    lv.update(0, 100, False, now_ms=0)
+    lv.packet(-10.7, False, now_ms=1000)  # 復号した: パケットの音量
+    assert near(lv.peak_db, -10.7) and lv.grade() == "ok"
+    lv.update(2048 * 2048 // 2 // 16, 2047, True, now_ms=1200)  # テールノイズ(ほぼ満振幅、クリップ)
+    assert near(lv.peak_db, -10.7) and not lv.clip and lv.rms_db > -10  # 実効値だけ更新する
+    lv.update(0, 2047, True, now_ms=2199)
+    assert near(lv.peak_db, -10.7) and not lv.clip
+    lv.update(0, 100, False, now_ms=2200)  # 1.2 秒たった: 通常に戻る(保持は 3 秒)
+    assert near(lv.peak_db, -10.7)
+    lv.update(0, 100, False, now_ms=4000)
+    assert near(lv.peak_db, db_peak(100))
+
+
+def test_packet_clip_is_held():
+    lv = Level(hold_ms=3000, guard_ms=1200)
+    lv.packet(-0.5, True, now_ms=0)
+    assert lv.clip and lv.grade() == "clip"
+    lv.update(0, 100, False, now_ms=3000)
+    assert not lv.clip
