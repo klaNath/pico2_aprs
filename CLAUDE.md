@@ -12,6 +12,12 @@
 - PC とは USB シリアルで接続。操作は全て `tools/dev.py`(mpremote のラッパー)経由
 - 自局のコールサインをソース、テスト、サンプルに書かない。設定は git 管理外の `src/config_local.py` に書く(仮、電源を切っても残る設定の保存ができるまでの方法。`tools/config_local.example.py` を参照)。テストと例示には架空の値を使い、架空であることを明記する
 
+## 動作モード(`config.MODE`、`src/config_local.py` で上書き)
+
+- `"tnc"`(既定): 無線機の外付け TNC。受信は GP26 の音声(ADC)、送信は GP3 の音声(PWM)と PTT(GP2)。周波数と電波型式は無線機側で決まるので、送信ゲート(`hw.txctl.tnc_gate`)は周波数を見ない。コールサインと `TX_ENABLED` がそろったときだけ送信する
+- `"si5351"`: Si5351B を使うフル機能のトランシーバー。**未完成**。`src/transceiver.py` が LCD に「NOT COMPLETE」と出して待つだけで、受信・送信・GNSS・ビーコンは動かない(PTT は切ったまま、Si5351 にも触れない)。455 kHz FM IF 受信(`hw/fm_if_rx.py`、`PIN_RX_IF`)と `SI5351_*` の設定はこのモード用
+- 切り替えは電源投入時の設定のみ(実行中には切り替えない)
+
 ## ディレクトリ構成
 
 - `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント

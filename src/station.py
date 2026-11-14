@@ -1,5 +1,11 @@
 """APRS 局の本体: 受信(Core1)・ビーコン送信・GNSS・画面・microSD の記録を 1 つのループで回す。
 
+動作モード(config.MODE):
+    "tnc"     外付け TNC(既定)。受信は GP26 の音声(ADC)、送信は GP3 の音声(PWM)と PTT(GP2)。
+              周波数と電波型式は無線機側で決まるので、送信ゲートは周波数を見ない(hw.txctl.tnc_gate)
+    "si5351"  Si5351B のトランシーバー(未完成)。run() が transceiver.run を呼び、未完成と表示して
+              何も動かさない。以下の説明は "tnc" の局のこと
+
 main.py が main() を呼ぶ。開発中は `python tools/dev.py run src/main.py -t 60` で、フラッシュに
 書かずに動かせる(タイムアウトで切れても、デバイス上では次の接続まで動き続ける)。
 main() は例外で止まったら内容を LCD・USB・SD に出し、待ってからハードリセットする(電源投入だけで
@@ -14,10 +20,10 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
     送信: ビーコンスイッチ(GP21、GND に落とすとオン、開放や断線はオフ)がオンで測位があれば、core.beacon の規則で
           Mic-E を送る。
-          ゲート(core.txgate)が拒否する間(コールサインや周波数が未確定、config.TX_ENABLED =
+          ゲート(core.txgate)が拒否する間(コールサインが未設定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
-    受信音量(ADC 入力のとき): 地図の左の縦棒(今の実効値と 3 秒保持のピーク)と、詳細欄の局ごとの LVL
+    受信音量: 地図の左の縦棒(今の実効値と 3 秒保持のピーク)と、詳細欄の局ごとの LVL
 送信波形のバッファ(config.TX_BUFFER_MS 分)は、ヒープが断片化する前に確保する
 (このモジュールの読み込みの最初)。
 dry run でも波形は作る(メモリの使い方を実際の送信と同じにする)。
@@ -33,12 +39,8 @@ import config
 # 取れない(実測: 読み込み後の最大の連続領域は 48 KB)。ROMFS からの起動では問題ないが、同じ作りにする
 gc.collect()
 _TX_RAW = bytearray(2 * (config.FS * config.TX_BUFFER_MS // 1000))  # 送信波形(1.5 秒で 57.6 KB)
-# 受信のリング: ADC は hw.afsk_rx.RING_ALLOC_BYTES(16 KB)、IF は hw.fm_if_rx.ring_alloc_bytes
-# (PLL は 32 KB、周期の逆数計数は 16 KB)と同じ大きさ
-if config.RX_SOURCE == "if":
-    _RX_RING = array("H", bytes(2 << (14 if config.RX_IF_METHOD == "pll" else 13)))
-else:
-    _RX_RING = array("H", bytes(2 * 8192))
+# 受信のリング: hw.afsk_rx.RING_ALLOC_BYTES(16 KB)と同じ大きさ
+_RX_RING = array("H", bytes(2 * 8192))
 _UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
 
 import sys
@@ -55,7 +57,6 @@ from core.txgate import display_call
 from hw import restart, txctl, watchdog
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
-from hw.fm_if_rx import IfReceiver
 from hw.m10 import M10
 from hw.sdlog import SdLog
 from hw.st7789 import ST7789
@@ -84,15 +85,11 @@ class Station:
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
         global _gate
         self.wdt = wdt if wdt is not None else watchdog.Watchdog(enabled=False)
-        self.gate = _gate = txctl.station_gate()
+        self.gate = _gate = txctl.tnc_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
                          config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
         self._refused = None  # 最後に記録した拒否の理由(同じ理由を毎回書かない)
-        if config.RX_SOURCE == "if":
-            self.rx = IfReceiver(config.PIN_RX_IF, config.FS, method=config.RX_IF_METHOD,
-                                 ring_buf=_RX_RING)
-        else:
-            self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
+        self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
         self.call = display_call(config.CALLSIGN, config.SSID)
         self.status = Status()
         self.status.callsign = self.call
@@ -101,8 +98,8 @@ class Station:
                   mosi=Pin(config.PIN_LCD_MOSI))
         lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL,
                      config.LCD_PANEL)
-        # 受信音量: ADC 入力のときだけ(地図の左の縦棒と、詳細欄の局ごとの LVL)
-        self.level = Level() if self.rx.has_level else None
+        # 受信音量(地図の左の縦棒と、詳細欄の局ごとの LVL)
+        self.level = Level()
         self.status.level = self.level
         self.ui = Ui(Screen(lcd, scratch=_UI_SCRATCH), self.stations, self.status, config.BUTTONS,
                      meter=self.level is not None)
@@ -135,10 +132,8 @@ class Station:
             print("[gnss] not available:", e)
         gc.collect()
         self.rx.start()
-        src = "ADC GP%d" % config.PIN_RX_ADC if config.RX_SOURCE != "if" else "IF GP%d %s" % (
-            config.PIN_RX_IF, config.RX_IF_METHOD)
-        print("[station] %s started, RX %s, TX %s, free %d" % (
-            self.call, src, self.gate.refuse_reason() or "enabled",
+        print("[station] %s started, TNC mode, RX ADC GP%d, TX %s, free %d" % (
+            self.call, config.PIN_RX_ADC, self.gate.refuse_reason() or "enabled",
             gc.mem_free()))
 
     def step(self, now):
@@ -267,6 +262,12 @@ class Station:
 def run(duration_ms=None, wdt=None):
     """局を動かす。duration_ms を渡すとその時間で止まる(試験用)。
     wdt: main() が起動中の設定で有効にした hw.watchdog.Watchdog(ループに入るとき LOOP_MS に直す)"""
+    if config.MODE == "si5351":  # 未完成。表示だけで、局は作らない
+        import transceiver
+
+        return transceiver.run(duration_ms, wdt)
+    if config.MODE != "tnc":
+        raise ValueError("unknown config.MODE: %r" % (config.MODE,))
     station = Station(wdt)
     try:
         station.start()
@@ -290,25 +291,10 @@ def _err_text(e):
 def _show_fatal(e, wait_s):
     """例外の内容を LCD に出す(LCD を作り直す。失敗しても無視)"""
     try:
-        from ui.views import BLACK, CH, RED, ROW, WHITE
+        from ui import notice
+        from ui.views import RED
 
-        gc.collect()
-        spi = SPI(config.LCD_SPI, baudrate=config.LCD_BAUD, sck=Pin(config.PIN_LCD_SCK),
-                  mosi=Pin(config.PIN_LCD_MOSI))
-        lcd = ST7789(spi, config.PIN_LCD_DC, config.PIN_LCD_CS, config.PIN_LCD_BL,
-                     config.LCD_PANEL)
-        cols = lcd.width // CH
-        text = _err_text(e)
-        lines = ["STATION ERROR", ""] + [text[i:i + cols] for i in range(0, len(text), cols)][:8]
-        lines += ["", "restart in %d s" % wait_s]
-
-        def draw(fb, dy):
-            for i, s in enumerate(lines):
-                fb.text(s, 0, 1 + i * ROW + dy, RED if i == 0 else WHITE)
-
-        # 作業領域は小さく(メモリ不足で止まった直後でも描けるように)
-        Screen(lcd, 4096).region(0, 0, lcd.width, lcd.height, draw, BLACK)
-        lcd.backlight(0.8)
+        notice.show(["STATION ERROR", "", _err_text(e), "", "restart in %d s" % wait_s], RED)
     except Exception as e2:
         sys.print_exception(e2)
 

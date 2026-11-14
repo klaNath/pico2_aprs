@@ -312,6 +312,7 @@ def test_config_defaults_do_not_transmit():
     except ImportError:
         assert config.CALLSIGN is None
         assert config.TX_ENABLED is False
+        assert config.MODE == "tnc"  # 既定は外付け TNC
         assert config.BENCH_TX_HZ is None
 
 
@@ -341,12 +342,49 @@ def test_station_default_never_keys_ptt():
     import config
 
     st = _station()
-    # コールサインと許可をそろえても、周波数が未確定なら入らない
-    st.gate.callsign, st.gate.allowed = CALL, True
+    # 既定(コールサイン未設定、送信は許可されていない)では入らない
     st._beacon(0)
     assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
-    assert st.status.tx_count == 1 and st._refused == "frequency not set"  # dry run として数える
+    assert st.status.tx_count == 1 and st._refused == "callsign not set"  # dry run として数える
+    # コールサインだけでは入らない。許可(TX_ENABLED)も要る
+    st.gate.callsign = CALL
+    st.beacon.reset()
+    st._beacon(0)
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    assert st.status.tx_count == 2 and st._refused == "TX not enabled"
     st.close()
+
+
+def test_tnc_gate_does_not_need_a_frequency():
+    # 外付け TNC モード: 周波数は無線機側で決まる。コールサインと許可だけで開く
+    if not _fake_hw.install():
+        return
+    import config
+    from hw import txctl
+
+    keep = config.CALLSIGN, config.TX_ENABLED
+    try:
+        config.CALLSIGN, config.TX_ENABLED = CALL, True
+        gate = txctl.tnc_gate()
+        assert gate.refuse_reason() is None
+        config.CALLSIGN = None
+        assert txctl.tnc_gate().refuse_reason() == "callsign not set"
+        config.CALLSIGN, config.TX_ENABLED = CALL, False
+        assert txctl.tnc_gate().refuse_reason() == "TX not enabled"
+    finally:
+        config.CALLSIGN, config.TX_ENABLED = keep
+
+
+def test_gate_checks_frequency_unless_told_not_to():
+    # 既定(Si5351 モードなど周波数を Pico が決める側)は、これまでどおり周波数を見る
+    from core.txgate import TxGate
+
+    assert TxGate(Rec(), callsign=CALL, allowed=True).refuse_reason() == "frequency not set"
+    gate = TxGate(Rec(), callsign=CALL, allowed=True, check_freq=False)
+    assert gate.refuse_reason() is None
+    gate.key()
+    assert gate.keyed
+    gate.unkey()
 
 
 def test_station_keys_when_gate_is_open():
@@ -784,3 +822,54 @@ def test_main_ctrl_c_holds_the_watchdog_with_a_timer():
     before = wdts[-1].feeds
     timers[0].callback(timers[0])
     assert wdts[-1].feeds == before + 1
+
+
+# ---- 動作モード(config.MODE)
+def test_si5351_mode_does_nothing_and_keeps_ptt_off():
+    if not _fake_hw.install():
+        return
+    import config
+    import station
+    from hw import watchdog
+
+    _fake_hw.WDT.instances.clear()
+    _fake_hw.Pin.reset()
+    keep = config.MODE, config.CALLSIGN, config.TX_ENABLED
+    config.MODE, config.CALLSIGN, config.TX_ENABLED = "si5351", CALL, True  # 許可していても動かさない
+    _fake_hw.Pin.state[config.PIN_PTT] = 1  # リセット前の High が残っている場合
+    wd = watchdog.Watchdog()
+    wd.arm(watchdog.STARTUP_MS)
+    shown = []
+    from ui import notice
+
+    keep_show = notice.show
+    notice.show = lambda lines, color, scratch_bytes=0: shown.append(list(lines))
+    try:
+        station.run(duration_ms=300, wdt=wd)
+    finally:
+        notice.show = keep_show
+        config.MODE, config.CALLSIGN, config.TX_ENABLED = keep
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    assert _fake_hw.Pin.state[config.PIN_PTT] == (0 if config.PTT_ACTIVE_HIGH else 1)
+    assert len(shown) == 1 and "NOT COMPLETE" in shown[0]  # 未完成の表示
+    # 局は作られていない(受信・GNSS・SD・ビーコンのピンに触れていない)
+    for pin in (config.PIN_BEACON_SW, config.PIN_STATUS_LED, config.PIN_SD_CS, config.PIN_AFSK_OUT):
+        assert pin not in _fake_hw.Pin.history
+    assert _fake_hw.WDT.instances[-1].feeds >= 2  # 待つ間もフィードする
+
+
+def test_unknown_mode_is_an_error():
+    if not _fake_hw.install():
+        return
+    import config
+    import station
+
+    keep = config.MODE
+    config.MODE = "bogus"
+    try:
+        station.run(duration_ms=0)
+        raise AssertionError("ValueError expected")
+    except ValueError:
+        pass
+    finally:
+        config.MODE = keep

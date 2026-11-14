@@ -9,7 +9,7 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP4/5 I2C0 SDA/SCL(無線機ボード J5。将来の Si5351 用)
     GP6  GNSS RESET_N(BBR を消すので通常は駆動しない)
     GP7  状態表示 LED(赤、D2)
-    GP8  (未接続)455 kHz FM IF の入力(RX_SOURCE = "if" のとき。リミッタの 0-3.3 V の方形波)
+    GP8  (未接続)455 kHz FM IF の入力(Si5351 モード用。リミッタの 0-3.3 V の方形波)
     GP9  microSD カード検出
     GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
@@ -25,13 +25,18 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
 
 from micropython import const
 
+# 動作モード(config_local.py で上書きする)
+#   "tnc"     外付け TNC(既定)。無線機の音声出力を ADC(GP26)で受け、送信は PWM の音声(GP3)と
+#             PTT(GP2)で行う。周波数と電波型式は無線機側で決まる
+#   "si5351"  Si5351B を使うフル機能のトランシーバー(未完成)。ディスプレイにそう表示して何もしない
+#             (受信・送信・GNSS・ビーコンは動かない。PTT は切ったまま)
+MODE = "tnc"
+
 PIN_AFSK_OUT = const(3)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
-# 受信の入力: "adc" = GP26 の音声を ADC で取る(hw.afsk_rx)、
-#             "if"  = GP8 の 455 kHz FM IF(リミッタの方形波)を PIO でエッジの時刻から
-#                     復調する(hw.fm_if_rx)
-RX_SOURCE = "adc"
+# Si5351 モード用(未完成。外付け TNC モードでは使わない)。455 kHz FM IF(hw.fm_if_rx)を
+# PIO でエッジの時刻から復調する入力
 PIN_RX_IF = const(8)
 RX_IF_METHOD = "pll"  # "pll"(DPLL。乱れたエッジに強い)/ "count"(周期の逆数計数)
 PIN_BEACON_SW = const(21)  # 内部プルアップ。Low(GND に落とす)でビーコン送出オン(未接続はオフ)
@@ -107,7 +112,8 @@ TX_ENABLED = False
 # 送信周波数(Hz)を書く。電波が出るので、ダミーロードをつないでオーナーが判断したときだけ設定する。
 # tests/ はこの値を見ない(実機テストは常に偽のピンを使う)
 BENCH_TX_HZ = None
-# Si5351B(hw.si5351)。出力の番号は未確定なので None。局にはまだ組み込んでいない
+# Si5351B(hw.si5351)。Si5351 モード(config.MODE = "si5351"、未完成)用。
+# 出力の番号は未確定なので None。局にはまだ組み込んでいない
 SI5351_I2C_ADDR = const(0x60)
 SI5351_TX_CLK = None
 SI5351_LO1_CLK = None

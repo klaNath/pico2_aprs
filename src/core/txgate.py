@@ -5,6 +5,9 @@
     AudioOnly  音声(GP3)だけを出す試験用。PTT には触らない
 送信の条件(コールサインが未設定なら送信しない、144〜146MHz の外では送信しない):
     コールサインが設定されている / 送信が許可されている / 周波数が確定して帯域内にある
+外付け TNC モード(既定。hw.txctl.tnc_gate)は周波数を見ない(check_freq=False)。周波数と電波型式は
+無線機側で決まり、Pico からは分からないので、そちらはオーナーの責任。
+Si5351 モード(未完成)は周波数を見る。
 周波数と電波型式ごとの送信可否の表(法令の使用区別とバンドプラン)は、内容を一次資料で確認してから refuse_reason() に加える。
 順序(周波数源の出力は送信の間だけ有効にする):
     開始: 条件の確認(周波数源の tx_ready を含む)-> 送受切替 -> 送信クロック有効 -> PTT
@@ -96,14 +99,17 @@ class FixedFreq:
 
 class TxGate:
     def __init__(self, pin, active_high=True, callsign=None, allowed=False, freq=None, tr=None,
-                 max_ms=APRS_MAX_MS):
+                 max_ms=APRS_MAX_MS, check_freq=True):
         """callsign: 自局(SSID なし)。allowed: 送信の許可(config.TX_ENABLED)
         freq: tx_hz() を持つ周波数源(省略時は UnsetFreq = 常に拒否)
-        tr: 送受切替(アンテナ切替の方式が未決なので差し込む形だけ)。tx() と rx() を持つ。None なら何もしない"""
+        tr: 送受切替(アンテナ切替の方式が未決なので差し込む形だけ)。tx() と rx() を持つ。None なら何もしない
+        check_freq: False なら周波数の確定と帯域を見ない。外付け TNC モード(周波数は無線機が決め、
+        Pico からは分からない)用。コールサイン・許可・時間の上限は同じように効く"""
         self._pin = pin
         self._on = 1 if active_high else 0
         self.callsign = callsign
         self.allowed = allowed
+        self.check_freq = check_freq
         self.freq = freq if freq is not None else UnsetFreq()
         self.tr = tr
         self.max_ms = max_ms
@@ -122,6 +128,8 @@ class TxGate:
             return "callsign not set"
         if not self.allowed:
             return "TX not enabled"
+        if not self.check_freq:
+            return None
         hz = self.freq.tx_hz()
         if hz is None:
             return "frequency not set"
