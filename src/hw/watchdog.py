@@ -8,8 +8,9 @@
 - dev.py の run/exec(PC の src をマウント中)では有効にしない。マウント中にリセットが起きると
   デバイスが応答しなくなる(CLAUDE.md)。on_dev_mount() で判定する。
 - 有効にしたウォッチドッグは止められない。USB から Ctrl-C で局を止めたときは hold() で、タイマーが
-  フィードし続ける(REPL で作業できる。ソフトリセットでタイマーは止まるので、次の起動までに
-  HOLD_MS 以内にウォッチドッグが再設定されない場合はリセットされる)。
+  フィードし続ける(REPL で作業できる)。ソフトリセット(mpremote は接続のたびに行う)でタイマーは
+  消えるので、boot.py が bridge() でフィードを引き継ぐ。局が起動して arm() するとき止める
+  (mpremote で REPL に入っただけなら、main.py は走らないので、引き継ぎが続く)。
 - リセット後に PTT(GP2)が Low に戻るかは実機で確認する(docs/tx-time-limit.md §4)。
   対策として boot.py の先頭で GP2 を Low にする。
 
@@ -26,6 +27,38 @@ HOLD_PERIOD_MS = 1_000
 _SLEEP_STEP_MS = 1_000
 _REASON = 0x400D8008  # WATCHDOG REASON(bit0 = タイムアウト、bit1 = machine.reset などの強制)
 _REASON_TIMER = 1
+_CTRL = 0x400D8000  # WATCHDOG CTRL(bit30 = 有効)
+_CTRL_ENABLE = 1 << 30
+
+
+_bridge = None  # bridge() が作ったタイマー(arm() が止める)
+
+
+def bridge(running=None, wdt_class=None, timer_class=None):
+    """boot.py から呼ぶ。ソフトリセットの時点でウォッチドッグが動いていれば、タイマーでフィード。
+    動いていなければ何もしない(電源投入、ウォッチドッグのリセットの直後は止まっている)"""
+    global _bridge
+    if running is None:
+        import machine
+
+        running = bool(machine.mem32[_CTRL] & _CTRL_ENABLE)
+    if not running or _bridge is not None:
+        return None
+    if wdt_class is None or timer_class is None:
+        import machine
+
+        wdt_class, timer_class = wdt_class or machine.WDT, timer_class or machine.Timer
+    wdt = wdt_class(timeout=HOLD_MS)
+    _bridge = timer_class(-1)
+    _bridge.init(period=HOLD_PERIOD_MS, mode=_bridge.PERIODIC, callback=lambda _t: wdt.feed())
+    return _bridge
+
+
+def release_bridge():
+    global _bridge
+    if _bridge is not None:
+        _bridge.deinit()
+        _bridge = None
 
 
 def on_dev_mount(getcwd=None):
@@ -60,6 +93,7 @@ class Watchdog:
         """有効にする。すでに有効なら時間を設定し直す(止めることはできない)"""
         if not self.enabled:
             return
+        release_bridge()
         cls = self._wdt_class
         if cls is None:
             import machine

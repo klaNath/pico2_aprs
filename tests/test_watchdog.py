@@ -102,3 +102,25 @@ def test_on_dev_mount():
         raise OSError(2)
 
     assert not watchdog.on_dev_mount(broken)
+
+
+class FakeTimerD(FakeTimer):
+    def deinit(self):
+        self.stopped = True
+
+
+def test_bridge_only_when_running_and_released_by_arm():
+    from hw import watchdog as w
+
+    w.release_bridge()
+    FakeWdt.made.clear()
+    FakeTimerD.made.clear()
+    assert w.bridge(running=False, wdt_class=FakeWdt, timer_class=FakeTimerD) is None
+    t = w.bridge(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD)
+    assert t is not None and FakeWdt.made[0].timeout == w.HOLD_MS
+    assert w.bridge(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD) is None  # 2 重にしない
+    t.callback(t)
+    assert FakeWdt.made[0].feeds == 1
+    wd = watchdog.Watchdog(True, FakeWdt, FakeTimerD)
+    wd.arm(watchdog.STARTUP_MS)  # 局が起動した: 引き継ぎを止める
+    assert getattr(t, "stopped", False) and w._bridge is None

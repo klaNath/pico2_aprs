@@ -122,6 +122,9 @@ class Timer:
     def init(self, period=0, mode=1, callback=None):
         self.period, self.callback = period, callback
 
+    def deinit(self):
+        self.callback = None
+
 
 def install():
     """偽のモジュールを登録する。実機では登録せず False を返す(呼び出し側はテストを飛ばす)"""
