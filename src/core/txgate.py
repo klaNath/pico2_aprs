@@ -3,20 +3,20 @@
 ピンは偽物に差し替えられる(hw.txctl が本物のピンを渡す)。
     TxGate     条件がそろったときだけ PTT を入れる。既定はすべて拒否
     AudioOnly  音声(GP3)だけを出す試験用。PTT には触らない
-送信の条件(SAF-01、RF-01):
+送信の条件(コールサインが未設定なら送信しない、144〜146MHz の外では送信しない):
     コールサインが設定されている / 送信が許可されている / 周波数が確定して帯域内にある
-RF-04(使用区別の表)は V-02 の完了後に、refuse_reason() に加える。
+周波数と電波型式ごとの送信可否の表(法令の使用区別とバンドプラン)は、内容を一次資料で確認してから refuse_reason() に加える。
 順序(周波数源の出力は送信の間だけ有効にする):
     開始: 条件の確認(周波数源の tx_ready を含む)-> 送受切替 -> 送信クロック有効 -> PTT
     終了: PTT -> 送信クロック無効 -> 送受切替
-入れている時間の上限(SAF-02)もここで持つ。expired() を見て止めるのは呼び出し側(hw.afsk_tx)。
+入れている時間の上限(APRS 1 回で 5 秒。docs/tx-time-limit.md)もここで持つ。expired() を見て止めるのは呼び出し側(hw.afsk_tx)。
 ファームウェアが止まったときの保護ではない(それはウォッチドッグの役目)。
 """
 
 import time
 
-APRS_MAX_MS = 5000  # 送信時間の上限の既定(SAF-02 の APRS 5 秒、仮)
-TX_MIN_HZ = 144_000_000  # RF-01
+APRS_MAX_MS = 5000  # 送信時間の上限の既定(APRS のビーコン 1 回で 5 秒、仮)
+TX_MIN_HZ = 144_000_000  # この範囲の外では送信しない
 TX_MAX_HZ = 146_000_000
 NO_CALL = "NOCALL"  # 未設定のときの表示と dry run のフレーム用。送信はしない
 
@@ -99,7 +99,7 @@ class TxGate:
                  max_ms=APRS_MAX_MS):
         """callsign: 自局(SSID なし)。allowed: 送信の許可(config.TX_ENABLED)
         freq: tx_hz() を持つ周波数源(省略時は UnsetFreq = 常に拒否)
-        tr: 送受切替(D-11 が未決なので差し込む形だけ)。tx() と rx() を持つ。None なら何もしない"""
+        tr: 送受切替(アンテナ切替の方式が未決なので差し込む形だけ)。tx() と rx() を持つ。None なら何もしない"""
         self._pin = pin
         self._on = 1 if active_high else 0
         self.callsign = callsign
