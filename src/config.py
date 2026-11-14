@@ -75,8 +75,8 @@ TX_TAIL_MS = const(30)
 TX_BUFFER_MS = const(1500)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
-# 自局。ソースに書かない(SAF-01)。None の間は core.txgate が送信を拒否する。
-# 仮: APP-05(設定の保存)ができるまでは、git 管理外の src/config_local.py で設定する
+# 自局。ソースに書かない(公開リポジトリに残さず、設定前に送信しないため)。None の間は core.txgate が送信を拒否する。
+# 仮: 電源を切っても残る設定の保存ができるまでは、git 管理外の src/config_local.py で設定する
 # (下のこのファイルの最後を参照。例は tools/config_local.example.py)。
 # 電波を出す前に SSID・経路も含めて確認する
 CALLSIGN = None

@@ -19,7 +19,7 @@ Pico のリセット(ウォッチドッグを含む)では Si5351 は初期化�
        全出力を止める
     3. init() で設定する。受信の出力だけを有効にする
 1 と 2 は hw.txctl.si5351_gate が行う。2 で I2C が失敗したら、何もせずウォッチドッグのリセットで再起動を
-繰り返す(オーナー決定、hw.txctl.halt_for_watchdog)。ウォッチドッグの実装(S5)までは永久に止まる。
+繰り返す(オーナー決定、hw.txctl.halt_for_watchdog)。ウォッチドッグは未実装なので、それまでは永久に止まる(docs/tx-time-limit.md §4)。
 送信の出力は tx_on() まで無効のまま。受信の再選局(set_rx)でも有効にならない。
 tx_off() の I2C が失敗すると、PTT は切れていても送信クロックは動いたままで、受信に影響が残る。
 core.txgate は再起動まで送信を拒否するが、受信の妨害は解消しない。送信クロックを止めるには、I2C が
@@ -49,7 +49,7 @@ TX_C = const(1_000_000)  # VCXO の条件
 TX_MS = const(6)  # 送信の出力 Multisynth の分周比
 IQ_MS = const(24)
 PHOFF_90 = const(24)  # DesiredOffset x 4 x Fvco = (T_out / 4) x 4 x Fvco = 分周比(AN619 6)
-MIN_HZ = const(144_000_000)  # RF-01
+MIN_HZ = const(144_000_000)  # 144〜146MHz の外には設定しない
 MAX_HZ = const(146_000_000)
 
 _STATUS = const(0)

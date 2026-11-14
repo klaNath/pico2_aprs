@@ -10,7 +10,7 @@
     - ROMFS が有効であるため、必要ならばライブラリなどをROMFSへDeployし高速化を図ってください
 - オンボード LED は `Pin("LED", Pin.OUT)`
 - PC とは USB シリアルで接続。操作は全て `tools/dev.py`(mpremote のラッパー)経由
-- 自局のコールサインをソース、テスト、サンプルに書かない。設定は git 管理外の `src/config_local.py` に書く(仮、APP-05 ができるまでの方法。`tools/config_local.example.py` を参照)。テストと例示には架空の値を使い、架空であることを明記する
+- 自局のコールサインをソース、テスト、サンプルに書かない。設定は git 管理外の `src/config_local.py` に書く(仮、電源を切っても残る設定の保存ができるまでの方法。`tools/config_local.example.py` を参照)。テストと例示には架空の値を使い、架空であることを明記する
 
 ## ディレクトリ構成
 
