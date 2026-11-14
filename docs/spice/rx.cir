@@ -1,0 +1,16 @@
+* RX: DATA OUT (source Z = ZS, worst case 10k) -> C5 -> bias node -> R5/C7 -> GP26 ADC
+.param ZS=10k
+V1 in 0 AC 1
+Rs in s {ZS}
+C5 s n 1u
+R6 vref n 47k
+R7 n 0 47k
+R5 n adc 2.2k
+C7 adc 0 10n
+Vref vref 0 3.3
+.ac dec 50 10 100k
+.meas AC g1200 FIND mag(v(adc)) AT 1200
+.meas AC g2200 FIND mag(v(adc)) AT 2200
+.meas AC g9600 FIND mag(v(adc)) AT 9600
+.meas AC g20 FIND mag(v(adc)) AT 20
+.end
