@@ -156,12 +156,11 @@ def install():
     rp2.asm_pio = lambda **k: (lambda f: f)
     sys.modules["rp2"] = rp2
 
-    uctypes = types.ModuleType("uctypes")
-    uctypes.ARRAY = 0
-    uctypes.UINT16 = 0
-    uctypes.addressof = _addressof
-    uctypes.struct = _struct
-    sys.modules["uctypes"] = uctypes
+    # 変数名を uctypes にしない: MicroPython のコンパイラは uctypes.ARRAY などを定数にするので、
+    # 同名の変数への代入が SyntaxError になる(実機で import できなくなる)
+    fake_uctypes = types.ModuleType("uctypes")
+    fake_uctypes.__dict__.update(ARRAY=0, UINT16=0, addressof=_addressof, struct=_struct)
+    sys.modules["uctypes"] = fake_uctypes
 
     for name in ("framebuf", "sdcard", "vfs"):
         m = types.ModuleType(name)
