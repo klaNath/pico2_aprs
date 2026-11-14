@@ -110,17 +110,24 @@ class FakeTimerD(FakeTimer):
 
 
 def test_bridge_only_when_running_and_released_by_arm():
-    from hw import watchdog as w
+    import wdt_bridge as w
 
-    w.release_bridge()
+    w.release()
     FakeWdt.made.clear()
     FakeTimerD.made.clear()
-    assert w.bridge(running=False, wdt_class=FakeWdt, timer_class=FakeTimerD) is None
-    t = w.bridge(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD)
+    assert w.start(running=False, wdt_class=FakeWdt, timer_class=FakeTimerD) is None
+    t = w.start(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD)
     assert t is not None and FakeWdt.made[0].timeout == w.HOLD_MS
-    assert w.bridge(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD) is None  # 2 重にしない
+    assert w.start(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD) is None  # 2 重にしない
     t.callback(t)
     assert FakeWdt.made[0].feeds == 1
     wd = watchdog.Watchdog(True, FakeWdt, FakeTimerD)
     wd.arm(watchdog.STARTUP_MS)  # 局が起動した: 引き継ぎを止める
-    assert getattr(t, "stopped", False) and w._bridge is None
+    assert getattr(t, "stopped", False) and w._timer is None
+
+
+def test_bridge_hold_matches_watchdog_hold():
+    import wdt_bridge
+
+    assert wdt_bridge.HOLD_MS == watchdog.HOLD_MS
+    assert wdt_bridge.PERIOD_MS == watchdog.HOLD_PERIOD_MS
