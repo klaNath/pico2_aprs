@@ -84,6 +84,7 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 - **デバイス上のファイル**: `dev.py ls`, `dev.py cat boot.py`。
 - **接続できない**: 他ツール(MicroPico、Thonny、シリアルモニタ)がポートを掴んでいないかユーザーに確認。`dev.py ports` で検出状況を見る。
 - **マウント中にリセットしない**: `dev.py run/exec`(src をマウント中)で動かしたプログラムが `machine.reset()` などでリセットまで進むと、その後デバイスが応答しなくなる(USB の抜き差しで戻る)。リセットを伴う試験(`station.main()` の異常時の再起動など)は、書き込み後に `dev.py exec --no-mount` で行う。
+- **ウォッチドッグ**: 局(`station.main`)は、マウント中の `run/exec` 以外ではウォッチドッグを有効にする(起動中 16 秒、ループ 3 秒。設計は docs/tx-time-limit.md §4)。有効にすると止められない。USB から Ctrl-C で局を止めると、タイマーがフィードして REPL で作業できる。ソフトリセットすると約 16 秒後にリセットされることがあるので、書き込み済みの局を触るときは、基板が再起動してもよい状態にしておく。
 - **応答しない / 起動ループ**: まず `dev.py rm-main`(要確認)。それでも駄目ならユーザーに USB の抜き差しを頼む。最終手段は BOOTSEL でファームウェア再書き込み(ユーザー作業)。
 
 ## MicroPython で書くときの注意(CPython との違い)

@@ -197,7 +197,7 @@ def test_main_drops_ptt_when_run_is_interrupted():
     tx.start(n=20)
     assert not _ptt_is_off()
 
-    def run_interrupted():
+    def run_interrupted(wdt=None):
         raise KeyboardInterrupt
 
     keep_run, keep_gate = station.run, station._gate
@@ -644,3 +644,143 @@ def test_si5351_gate_success_is_not_open_by_default_settings():
         assert gate.refuse_reason() == "callsign not set"
     finally:
         config.CALLSIGN, config.TX_ENABLED = keep
+
+
+# ---- ウォッチドッグの組み込み(hw/watchdog.py、docs/tx-time-limit.md §4)
+def _armed_station(gate_on=True):
+    from hw import watchdog
+
+    _fake_hw.WDT.instances.clear()
+    wd = watchdog.Watchdog()  # 偽の machine.WDT を使う
+    wd.arm(watchdog.LOOP_MS)
+    st = _station(gate_on)
+    st.wdt = wd
+    return st, wd, _fake_hw.WDT.instances[-1]
+
+
+def test_step_feeds_the_watchdog():
+    if not _fake_hw.install():
+        return
+    import time
+
+    st, wd, fake = _armed_station(gate_on=False)
+    n = fake.feeds
+    st.step(time.ticks_ms())
+    st.step(time.ticks_ms())
+    assert fake.feeds == n + 2
+    st.close()
+
+
+def test_tx_feeds_once_before_waiting_not_while_waiting():
+    # 送信の待ちのループでフィードすると、止まった DMA をウォッチドッグが見つけられない
+    if not _fake_hw.install():
+        return
+    import time
+
+    st, wd, fake = _armed_station(gate_on=True)
+    n = fake.feeds
+    st._beacon(time.ticks_ms())
+    assert st.status.tx_count == 1 and fake.feeds == n + 1
+    st.close()
+
+
+def test_stuck_dma_beacon_is_cut_before_the_watchdog_limit():
+    if not _fake_hw.install():
+        return
+    import time
+
+    from hw import watchdog
+
+    st, wd, fake = _armed_station(gate_on=True)
+    _fake_hw.DMA.stuck = True
+    t0 = time.ticks_ms()
+    try:
+        try:
+            st._beacon(time.ticks_ms())
+            raise AssertionError("TxTimeout expected")
+        except Exception as e:
+            assert type(e).__name__ == "TxTimeout"
+    finally:
+        _fake_hw.DMA.stuck = False
+    assert _ptt_is_off()
+    assert time.ticks_diff(time.ticks_ms(), t0) < watchdog.LOOP_MS
+    st.close()
+
+
+def test_no_immediate_beacon_after_watchdog_reset():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+    from hw import watchdog
+
+    keep = watchdog.timed_out
+    watchdog.timed_out = lambda: True
+    try:
+        st = _station(gate_on=True)
+    finally:
+        watchdog.timed_out = keep
+    now = time.ticks_ms()
+    st._beacon(now)
+    assert st.status.tx_count == 0 and (st.status.next_beacon_s or 0) > 0
+    st._beacon(time.ticks_add(now, (config.BEACON_RESTART_HOLD_S + 1) * 1000))
+    assert st.status.tx_count == 1
+    st.close()
+
+
+def _main_with(run, sleeps):
+    """station.main() を、run を差し替えて動かす。sleeps に待ち時間(ms)を残す。WDT の一覧を返す"""
+    import station
+    from hw import restart, watchdog
+
+    _fake_hw.WDT.instances.clear()
+    _fake_hw.Timer.instances.clear()
+    keep = (station.run, station._show_fatal, station.machine.reset,
+            watchdog.Watchdog.sleep_s.__defaults__)
+    station.run = run
+    station._show_fatal = lambda e, wait: None
+    station.machine.reset = lambda: sleeps.append("reset")
+    watchdog.Watchdog.sleep_s.__defaults__ = (sleeps.append,)
+    restart.set_fails(0)
+    try:
+        station.main()
+    finally:
+        (station.run, station._show_fatal, station.machine.reset,
+         watchdog.Watchdog.sleep_s.__defaults__) = keep
+        restart.set_fails(0)
+    return list(_fake_hw.WDT.instances), list(_fake_hw.Timer.instances)
+
+
+def test_main_arms_startup_then_error_wait_feeds_and_resets():
+    if not _fake_hw.install():
+        return
+    from hw import watchdog
+
+    sleeps = []
+
+    def failing_run(duration_ms=None, wdt=None):
+        assert wdt is not None
+        wdt.arm(watchdog.LOOP_MS)  # run() がループに入るときの設定
+        raise RuntimeError("boom")
+
+    wdts, timers = _main_with(failing_run, sleeps)
+    assert [w.timeout for w in wdts] == [watchdog.STARTUP_MS, watchdog.LOOP_MS]
+    assert sleeps[-1] == "reset" and sum(s for s in sleeps[:-1]) == 10_000  # 最初の失敗は 10 秒待つ
+    assert max(s for s in sleeps[:-1]) <= 1000 and wdts[-1].feeds >= 10
+    assert timers == []
+
+
+def test_main_ctrl_c_holds_the_watchdog_with_a_timer():
+    if not _fake_hw.install():
+        return
+    from hw import watchdog
+
+    def interrupted(duration_ms=None, wdt=None):
+        raise KeyboardInterrupt
+
+    wdts, timers = _main_with(interrupted, [])
+    assert len(timers) == 1 and wdts[-1].timeout == watchdog.HOLD_MS
+    before = wdts[-1].feeds
+    timers[0].callback(timers[0])
+    assert wdts[-1].feeds == before + 1

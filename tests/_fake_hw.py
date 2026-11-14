@@ -96,6 +96,33 @@ def _struct(addr, desc):
     return types.SimpleNamespace(v=memoryview(_objs[addr]).cast("H"))
 
 
+class WDT:
+    """偽のウォッチドッグ。作られた順に instances へ残す(有効にした時間とフィードの回数を調べる)"""
+
+    instances = []
+
+    def __init__(self, id=0, timeout=5000):
+        self.timeout = timeout
+        self.feeds = 0
+        WDT.instances.append(self)
+
+    def feed(self):
+        self.feeds += 1
+
+
+class Timer:
+    PERIODIC = 1
+    instances = []
+
+    def __init__(self, id=-1):
+        self.period = None
+        self.callback = None
+        Timer.instances.append(self)
+
+    def init(self, period=0, mode=1, callback=None):
+        self.period, self.callback = period, callback
+
+
 def install():
     """偽のモジュールを登録する。実機では登録せず False を返す(呼び出し側はテストを飛ばす)"""
     if sys.implementation.name == "micropython":
@@ -114,6 +141,8 @@ def install():
     machine.mem32 = Mem32()
     machine.freq = lambda: 150_000_000
     machine.reset = lambda: None
+    # reset_cause: 1 = 電源投入
+    machine.__dict__.update(WDT=WDT, Timer=Timer, WDT_RESET=3, reset_cause=lambda: 1)
     sys.modules["machine"] = machine
 
     rp2 = types.ModuleType("rp2")

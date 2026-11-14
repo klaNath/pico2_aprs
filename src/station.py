@@ -6,6 +6,8 @@ main() は例外で止まったら内容を LCD・USB・SD に出し、待って
 使うため)。dev.py run/exec(PC の src をマウント中)で main() がリセットまで進むと、その後の接続で
 デバイスが応答しなくなることがあった(USB の抜き差しで戻る)。異常時の経路の試験は、書き込み後に
 `dev.py exec --no-mount` で行う。
+ウォッチドッグ(hw.watchdog): 起動中 16 秒、ループに入ったら 3 秒。ループの各ステップと送信の開始前にフィードする。
+dev.py run/exec(src をマウント中)では有効にしない。有効なときに Ctrl-C で止めると、タイマーがフィードし続ける。
 起動から FAIL_WINDOW_MS 以内の失敗が続くと待ちを 10, 20, 40 ... 300 秒と延ばす。失敗の回数は
 ウォッチドッグのスクラッチレジスタに置く(リセットでは消えず、電源を切ると消える。フラッシュに書かない)。
 USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
@@ -50,7 +52,7 @@ from core.beacon import Beacon, mice_frame
 from core.level import Level, db_peak
 from core.stations import Stations
 from core.txgate import display_call
-from hw import restart, txctl
+from hw import restart, txctl, watchdog
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
 from hw.fm_if_rx import IfReceiver
@@ -77,10 +79,11 @@ def tnc2(f):
 
 
 class Station:
-    def __init__(self):
+    def __init__(self, wdt=None):
         # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
         global _gate
+        self.wdt = wdt if wdt is not None else watchdog.Watchdog(enabled=False)
         self.gate = _gate = txctl.station_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
                          config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
@@ -114,7 +117,8 @@ class Station:
         self.sw = Pin(config.PIN_BEACON_SW, Pin.IN, Pin.PULL_UP)
         self.led = Pin(config.PIN_STATUS_LED, Pin.OUT, value=0)
         self.beacon = Beacon(config.BEACON_MOVING_S, config.BEACON_STILL_S, config.BEACON_MOVE_M)
-        if restart.fails():  # 異常で再起動した直後: 最初のビーコンをすぐには送らない
+        # 異常で再起動した直後(失敗の記録、またはウォッチドッグのリセット): 最初のビーコンを待つ
+        if restart.fails() or watchdog.timed_out():
             self.beacon.hold(time.ticks_ms(), config.BEACON_RESTART_HOLD_S)
         self._rx_ms = None
         self._report_ms = time.ticks_ms()
@@ -138,6 +142,7 @@ class Station:
             gc.mem_free()))
 
     def step(self, now):
+        self.wdt.feed()
         if self.gnss_ok:
             self.gnss.poll(self.status)
         if self.level is not None:
@@ -223,6 +228,7 @@ class Station:
             st.tx_active = True
             self.ui.draw_status_now()
             self.led.value(1)
+            self.wdt.feed()  # 待ちのループではフィードしない(最長約 2 秒。上限は txgate)
             try:
                 self.tx.start(n=n)
                 while not self.tx.finish():
@@ -257,11 +263,13 @@ class Station:
                 self.sd.close()
 
 
-def run(duration_ms=None):
-    """局を動かす。duration_ms を渡すとその時間で止まる(試験用)"""
-    station = Station()
+def run(duration_ms=None, wdt=None):
+    """局を動かす。duration_ms を渡すとその時間で止まる(試験用)。
+    wdt: main() が起動中の設定で有効にした hw.watchdog.Watchdog(ループに入るとき LOOP_MS に直す)"""
+    station = Station(wdt)
     try:
         station.start()
+        station.wdt.arm(watchdog.LOOP_MS)
         t0 = time.ticks_ms()
         while duration_ms is None or time.ticks_diff(time.ticks_ms(), t0) < duration_ms:
             station.step(time.ticks_ms())
@@ -313,11 +321,14 @@ def _ptt_off():
 def main():
     """電源投入時の入口(main.py から呼ぶ)。例外で止まったら表示して再起動する"""
     t0 = time.ticks_ms()
+    wdt = watchdog.Watchdog(enabled=not watchdog.on_dev_mount())
+    wdt.arm(watchdog.STARTUP_MS)
     try:
-        run()
+        run(wdt=wdt)
     except KeyboardInterrupt:
         _ptt_off()
         restart.set_fails(0)
+        wdt.hold()  # 有効にしたウォッチドッグは止められない。REPL に戻っても再起動しないようにする
         print("[station] stopped by Ctrl-C (no restart)")
         return
     except Exception as e:
@@ -330,9 +341,10 @@ def main():
         print("[station] error (%d in a row), restart in %d s" % (fails, wait))
         _show_fatal(e, wait)
         try:
-            time.sleep(wait)
+            wdt.sleep_s(wait)
         except KeyboardInterrupt:
             restart.set_fails(0)
+            wdt.hold()
             print("[station] restart cancelled by Ctrl-C")
             return
         machine.reset()
