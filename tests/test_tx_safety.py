@@ -144,7 +144,15 @@ def _station_for_close(rx):
     st.rx = rx
     st.led = _fake_hw.Any()
     st.sd = _fake_hw.Any()
+    st.gnss = _NoTimeGnss()
     return st
+
+
+class _NoTimeGnss:
+    """close() が SD に渡す時刻を聞く(時刻は不明)"""
+
+    class rtc:
+        synced = False
 
 
 class RxChecksPtt:
@@ -327,6 +335,8 @@ def _station(gate_on=False):
     st = station.Station()
     if gate_on:
         st.gate.callsign, st.gate.allowed, st.gate.freq = CALL, True, FixedFreq(145_000_000)
+    else:  # 既定の状態にする(src/config_local.py でコールサインと送信の許可を設定していても)
+        st.gate.callsign, st.gate.allowed = None, False
     st.call = CALL + "-7"
     st.tx.settle_ms = 0
     st.status.fix, st.status.lat, st.status.lon = 3, 35.68, 139.76

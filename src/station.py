@@ -18,6 +18,8 @@ dev.py run/exec(src をマウント中)では有効にしない。有効なと�
 ウォッチドッグのスクラッチレジスタに置く(リセットでは消えず、電源を切ると消える。フラッシュに書かない)。
 USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
+    局の表: SD の stations.txt に 1 分ごと(変わったとき)と終了時に保存し、起動後に GNSS の時刻が
+          分かったら読み出して表に加える(core.stationfile)
     送信: ビーコンスイッチ(GP21、GND に落とすとオン、開放や断線はオフ)がオンで測位があれば、core.beacon の規則で
           Mic-E を送る。
           ゲート(core.txgate)が拒否する間(コールサインが未設定、config.TX_ENABLED =
@@ -105,7 +107,8 @@ class Station:
                      meter=self.level is not None)
         lcd.backlight(0.8)
         self.sd = SdLog(config.SD_SPI, config.PIN_SD_SCK, config.PIN_SD_MOSI, config.PIN_SD_MISO,
-                        config.PIN_SD_CS, config.PIN_SD_DET, header=self.call, log=print)
+                        config.PIN_SD_CS, config.PIN_SD_DET, header=self.call, log=print,
+                        stations=self.stations)
         self.gnss = M10(config.GNSS_UART, config.PIN_GNSS_TX, config.PIN_GNSS_RX,
                         resetn=config.PIN_GNSS_RESETN, pps=config.PIN_GNSS_PPS,
                         baud=config.GNSS_BAUD, log=print)
@@ -256,7 +259,7 @@ class Station:
                 self.rx.close()
             finally:
                 self.led.value(0)
-                self.sd.close()
+                self.sd.close(self.utc())
 
 
 def run(duration_ms=None, wdt=None):
