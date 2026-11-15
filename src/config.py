@@ -83,10 +83,11 @@ TX_TAIL_MS = const(30)
 TX_BUFFER_MS = const(1500)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
-# 自局。ソースに書かない(公開リポジトリに残さず、設定前に送信しないため)。None の間は core.txgate が送信を拒否する。
-# 仮: 電源を切っても残る設定の保存ができるまでは、git 管理外の src/config_local.py で設定する
-# (下のこのファイルの最後を参照。例は tools/config_local.example.py)。
-# 電波を出す前に SSID・経路も含めて確認する
+# Own callsign. Never write it in the source (keeps it out of the public repository and
+# prevents transmitting before it is configured). While None, core.txgate refuses to transmit.
+# Provisional: until settings can be persisted across power cycles, set it in
+# src/config_local.py, which is not tracked by git (see the end of this file; example in
+# tools/config_local.example.py). Check the SSID and path as well before going on the air.
 CALLSIGN = None
 SSID = 7
 TEST_CALL = "Q1TEST"  # 架空のコールサイン。PTT を入れない音声だけのデモで使う
@@ -119,7 +120,8 @@ SI5351_TX_CLK = None
 SI5351_LO1_CLK = None
 SI5351_I_CLK = None
 SI5351_Q_CLK = None
-SI5351_RX_OFFSET_HZ = 24_000  # 仮: 低 IF(同調 = 信号 + これ)。lnatest の値で、実際の符号は実機で確認する
+# Provisional: low IF (tuning = signal + this). Value from lnatest; confirm the sign on hardware
+SI5351_RX_OFFSET_HZ = 24_000
 SI5351_APR = 240  # 仮: VCXO の引き込み幅(ppm)。生成例の値でデータシートの上限(+/-240)
 SI5351_IDRV_LO1_MA = 8  # 仮: 出力の駆動電流(2、4、6、8 mA)。CBPro の生成例の値
 SI5351_IDRV_IQ_MA = 8  # 仮

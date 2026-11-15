@@ -12,16 +12,17 @@ main() は例外で止まったら内容を LCD・USB・SD に出し、待って
 使うため)。dev.py run/exec(PC の src をマウント中)で main() がリセットまで進むと、その後の接続で
 デバイスが応答しなくなることがあった(USB の抜き差しで戻る)。異常時の経路の試験は、書き込み後に
 `dev.py exec --no-mount` で行う。
-ウォッチドッグ(hw.watchdog): 起動中 16 秒、ループに入ったら 3 秒。ループの各ステップと送信の開始前にフィードする。
-dev.py run/exec(src をマウント中)では有効にしない。有効なときに Ctrl-C で止めると、タイマーがフィードし続ける。
+Watchdog (hw.watchdog): 16 s during startup, 3 s once in the loop. Fed at each loop step and
+before each transmission. Not enabled under dev.py run/exec (src mounted). If stopped with
+Ctrl-C while enabled, a timer keeps feeding it.
 起動から FAIL_WINDOW_MS 以内の失敗が続くと待ちを 10, 20, 40 ... 300 秒と延ばす。失敗の回数は
 ウォッチドッグのスクラッチレジスタに置く(リセットでは消えず、電源を切ると消える。フラッシュに書かない)。
 USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     受信: Core1 の Receiver が復号したフレームを取り出し、局の表・画面・SD の記録に渡す
     局の表: SD の stations.txt に 1 分ごと(変わったとき)と終了時に保存し、起動後に GNSS の時刻が
           分かったら読み出して表に加える(core.stationfile)
-    送信: ビーコンスイッチ(GP21、GND に落とすとオン、開放や断線はオフ)がオンで測位があれば、core.beacon の規則で
-          Mic-E を送る。
+    TX: when the beacon switch (GP21; on when pulled to GND, off when open or broken) is on
+          and there is a fix, send Mic-E following the rules in core.beacon.
           ゲート(core.txgate)が拒否する間(コールサインが未設定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
@@ -233,7 +234,8 @@ class Station:
                 while not self.tx.finish():
                     time.sleep_ms(5)
             finally:
-                self.tx.abort()  # 例外や Ctrl-C で抜けても PTT を残さない(正常終了なら何も変わらない)
+                # Never leave PTT on after an exception or Ctrl-C (no-op on normal completion)
+                self.tx.abort()
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1

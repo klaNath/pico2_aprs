@@ -10,8 +10,9 @@ import time
 from core import geo
 
 RTC_SYNC_MS = 60 * 60 * 1000  # 最初に合わせたあと、合わせ直す間隔
-# 有効な測位の文をこの時間受けなければ、測位なしとして扱う(古い位置を最新としてビーコンに載せないため。GNSS の UART が止まると
-# RMC の V も来ないので、gps.valid だけでは分からない)。1 Hz で 5 回分
+# Treat as no fix if no valid fix sentence arrives within this time (so a stale position is
+# not beaconed as current; if the GNSS UART stops, no RMC "V" arrives either, so gps.valid
+# alone cannot tell). 5 sentences at 1 Hz
 FIX_MAX_AGE_MS = 5000
 
 # UBX の gnssId

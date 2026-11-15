@@ -134,26 +134,29 @@ def install():
         return True
     import types  # MicroPython には無いので、実機で読み込まれないようにここで
 
+    # Set attributes through __dict__ so pyright does not reject them on ModuleType
     machine = types.ModuleType("machine")
-    machine.Pin = Pin
-    machine.PWM = Any
-    machine.SPI = Any
-    machine.UART = Any
-    machine.ADC = lambda *a: types.SimpleNamespace(read_u16=lambda: 0)
-    machine.RTC = Any
-    machine.mem32 = Mem32()
-    machine.freq = lambda: 150_000_000
-    machine.reset = lambda: None
-    # reset_cause: 1 = 電源投入
-    machine.__dict__.update(WDT=WDT, Timer=Timer, WDT_RESET=3, reset_cause=lambda: 1)
+    machine.__dict__.update(
+        Pin=Pin,
+        PWM=Any,
+        SPI=Any,
+        UART=Any,
+        ADC=lambda *a: types.SimpleNamespace(read_u16=lambda: 0),
+        RTC=Any,
+        mem32=Mem32(),
+        freq=lambda: 150_000_000,
+        reset=lambda: None,
+        WDT=WDT,
+        Timer=Timer,
+        WDT_RESET=3,
+        reset_cause=lambda: 1,  # 1 = power-on
+    )
     sys.modules["machine"] = machine
 
     rp2 = types.ModuleType("rp2")
-    rp2.DMA = DMA
-    rp2.DMATimer = Any
-    rp2.PIO = Any
-    rp2.StateMachine = Any
-    rp2.asm_pio = lambda **k: (lambda f: f)
+    rp2.__dict__.update(
+        DMA=DMA, DMATimer=Any, PIO=Any, StateMachine=Any, asm_pio=lambda **k: (lambda f: f)
+    )
     sys.modules["rp2"] = rp2
 
     # 変数名を uctypes にしない: MicroPython のコンパイラは uctypes.ARRAY などを定数にするので、
@@ -164,10 +167,9 @@ def install():
 
     for name in ("framebuf", "sdcard", "vfs"):
         m = types.ModuleType(name)
-        m.FrameBuffer = Any
-        m.RGB565 = 1
-        m.SDCard = Any
-        m.VfsFat = Any
-        m.mount = m.umount = lambda *a: None
+        noop = lambda *a: None  # noqa: E731
+        m.__dict__.update(
+            FrameBuffer=Any, RGB565=1, SDCard=Any, VfsFat=Any, mount=noop, umount=noop
+        )
         sys.modules[name] = m
     return True

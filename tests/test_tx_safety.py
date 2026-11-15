@@ -130,7 +130,7 @@ def test_receiver_stop_does_not_wait_forever():
     from hw.afsk_rx import Receiver
 
     rx = Receiver.__new__(Receiver)
-    rx.ring = FakeRing()
+    rx.ring = FakeRing()  # pyright: ignore[reportAttributeAccessIssue]
     rx.running = True
     rx.stopped = False  # Core1 が応答しない
     assert rx.stop(timeout_ms=20) is False
@@ -142,9 +142,10 @@ def _station_for_close(rx):
     st = station.Station.__new__(station.Station)
     st.tx, st.gate = _keyed_tx()
     st.rx = rx
-    st.led = _fake_hw.Any()
-    st.sd = _fake_hw.Any()
-    st.gnss = _NoTimeGnss()
+    # Fakes in place of the real hardware types
+    st.led = _fake_hw.Any()  # pyright: ignore[reportAttributeAccessIssue]
+    st.sd = _fake_hw.Any()  # pyright: ignore[reportAttributeAccessIssue]
+    st.gnss = _NoTimeGnss()  # pyright: ignore[reportAttributeAccessIssue]
     return st
 
 
@@ -468,7 +469,8 @@ def test_no_immediate_beacon_after_abnormal_restart():
         restart.set_fails(0)
     now = time.ticks_ms()
     st._beacon(now)
-    assert st.status.tx_count == 0 and st.status.next_beacon_s > 0
+    nb = st.status.next_beacon_s
+    assert st.status.tx_count == 0 and nb is not None and nb > 0
     st._beacon(time.ticks_add(now, (config.BEACON_RESTART_HOLD_S + 1) * 1000))
     assert st.status.tx_count == 1
     st.close()
@@ -609,8 +611,9 @@ def test_startup_i2c_failure_halts_with_gp2_low_on_every_restart():
 
     off = 0 if config.PTT_ACTIVE_HIGH else 1
     resets = []
-    keep = _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED
-    _fake_hw.sys.modules["machine"].reset = lambda: resets.append(1)
+    machine = _fake_hw.sys.modules["machine"]
+    keep = machine.reset, config.CALLSIGN, config.TX_ENABLED
+    machine.__dict__["reset"] = lambda: resets.append(1)
     config.CALLSIGN, config.TX_ENABLED = CALL, True  # 送信を許可していても送らない
     restart.set_fails(0)
     try:
@@ -633,7 +636,7 @@ def test_startup_i2c_failure_halts_with_gp2_low_on_every_restart():
             assert set(_fake_hw.Pin.history[config.PIN_PTT]) == {off}  # High を書かない
         assert resets == [] and restart.fails() == 0  # バックオフの経路に入らない
     finally:
-        _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED = keep
+        machine.__dict__["reset"], config.CALLSIGN, config.TX_ENABLED = keep
 
 
 def test_startup_make_freq_failure_also_halts():
@@ -845,7 +848,8 @@ def test_si5351_mode_does_nothing_and_keeps_ptt_off():
     _fake_hw.WDT.instances.clear()
     _fake_hw.Pin.reset()
     keep = config.MODE, config.CALLSIGN, config.TX_ENABLED
-    config.MODE, config.CALLSIGN, config.TX_ENABLED = "si5351", CALL, True  # 許可していても動かさない
+    # Must stay idle even when transmitting is allowed
+    config.MODE, config.CALLSIGN, config.TX_ENABLED = "si5351", CALL, True
     _fake_hw.Pin.state[config.PIN_PTT] = 1  # リセット前の High が残っている場合
     wd = watchdog.Watchdog()
     wd.arm(watchdog.STARTUP_MS)

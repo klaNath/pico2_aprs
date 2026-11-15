@@ -119,7 +119,7 @@ def test_bridge_only_when_running_and_released_by_arm():
     t = w.start(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD)
     assert t is not None and FakeWdt.made[0].timeout == w.HOLD_MS
     assert w.start(running=True, wdt_class=FakeWdt, timer_class=FakeTimerD) is None  # 2 重にしない
-    t.callback(t)
+    t.callback(t)  # pyright: ignore[reportAttributeAccessIssue]  (FakeTimerD)
     assert FakeWdt.made[0].feeds == 1
     wd = watchdog.Watchdog(True, FakeWdt, FakeTimerD)
     wd.arm(watchdog.STARTUP_MS)  # 局が起動した: 引き継ぎを止める
