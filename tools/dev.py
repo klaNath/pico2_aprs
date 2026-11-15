@@ -325,6 +325,25 @@ for _p in ("/rom", "/rom/lib"):
 
 import {ROMFS_ENTRY}  # noqa: E402,F401
 '''
+# romfs deploy の直前に、同じ mpremote の呼び出しの中で実行する(mpremote が接続時に
+# ソフトリセットするのは最初の 1 回だけなので、間でリセットされない)。
+# ウォッチドッグが有効な基板では boot.py の wdt_bridge がタイマーでフィードしているが、そのコールバックの
+# バイトコードは ROMFS 上にあり、ROMFS の消去でフィードが止まって約 16 秒でリセットされる
+# (書き込みが途中で止まる)。そこで、タイマーを止めてからウォッチドッグを無効にする。
+# 書き込み中は raw REPL なので局は動いていない(PTT は boot.py が Low にしている)。局が起動すると
+# また有効になる。CTRL の +0x3000 は RP2350 のビットを原子的に消すエイリアス(bit30 = ENABLE)。
+WDT_STOP_CODE = """\
+import machine
+try:
+    import wdt_bridge
+    wdt_bridge.release()
+except Exception:
+    pass
+if machine.mem32[0x400D8000] & (1 << 30):
+    machine.mem32[0x400D8000 + 0x3000] = 1 << 30
+    on = machine.mem32[0x400D8000] & (1 << 30)
+    print('watchdog: was enabled, now', 'STILL ENABLED' if on else 'disabled', 'for the ROMFS write')
+"""
 RM_TREE_CODE = """\
 import os
 def _rm(p):
@@ -466,10 +485,13 @@ def cmd_romfs_deploy(a) -> int:
     # 3. イメージを作ってデプロイ(.mpy 化は dev.py、容量チェックと書き込みは mpremote)
     shadow = _romfs_stage(march, getattr(a, "exclude", ()))
     log(f"ROMFS 区画 {a.partition} へ {rel(ROMFS_STAGE)} をデプロイします")
-    rc, _ = mpremote(
-        ["romfs", "-p", str(a.partition), "--no-mpy", "deploy", rel(ROMFS_STAGE)],
+    rc, out = mpremote(
+        ["exec", WDT_STOP_CODE, "+",
+         "romfs", "-p", str(a.partition), "--no-mpy", "deploy", rel(ROMFS_STAGE)],
         a.timeout,
     )
+    if "STILL ENABLED" in out:
+        log("ウォッチドッグを無効にできませんでした。書き込みの途中でリセットされた可能性があります")
     if rc != 0:
         log("ROMFS のデプロイに失敗しました(イメージが区画より大きい場合もここで失敗します)")
         return rc
