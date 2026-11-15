@@ -81,6 +81,10 @@ TX_TAIL_MS = const(30)
 # 送信波形のバッファの長さ(起動時に 1 回だけ確保して使い回す。1 ms あたり 38.4 バイト)。
 # ビーコン(Mic-E、コメント付き)は約 0.7 秒。これより長いパケットは送れない
 TX_BUFFER_MS = const(1500)
+# FX.25(RS で誤り訂正を付ける)で送るか。内側が 128 バイトを超えるフレームは従来の AX.25 で送る。
+# 送信時間は延びる(実測: Mic-E 相当で 715 ms → 913 ms、前置フラグ 300 ms を含む)。
+# 相互運用は FT5D(AX.25 のみ)と Direwolf(FX.25)で確認済み。既定は従来どおり False
+FX25_TX = False
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
 # Own callsign. Never write it in the source (keeps it out of the public repository and

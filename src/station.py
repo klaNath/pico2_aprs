@@ -90,7 +90,8 @@ class Station:
         self.wdt = wdt if wdt is not None else watchdog.Watchdog(enabled=False)
         self.gate = _gate = txctl.tnc_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
-                         config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW)
+                         config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, raw=_TX_RAW,
+                         fx25=config.FX25_TX)
         self._refused = None  # 最後に記録した拒否の理由(同じ理由を毎回書かない)
         self.rx = Receiver(config.PIN_RX_ADC, config.FS, ring_buf=_RX_RING)
         self.call = display_call(config.CALLSIGN, config.SSID)
@@ -239,7 +240,8 @@ class Station:
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
-        print("[tx%s] %d ms" % ("" if why is None else " dry", n * 1000 // config.FS), text)
+        print("[tx%s%s] %d ms" % ("" if why is None else " dry", " fx25" if self.tx.fx_used else "",
+                                  n * 1000 // config.FS), text)
 
     def _report(self):
         st = self.status

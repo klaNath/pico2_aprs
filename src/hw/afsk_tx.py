@@ -31,6 +31,7 @@ from machine import PWM, Pin, mem32
 from micropython import const
 
 from core.txgate import TxRefused, TxTimeout
+from modem.fx25 import Fx25Tx
 from tnc.afsk_mod import Modulator
 from tnc.hdlc import encode_levels, levels_size
 
@@ -44,11 +45,15 @@ _DONE_MARGIN_MS = const(200)  # 波形の長さにこれを足しても終わら
 
 class AfskTx:
     def __init__(self, pin_audio, gate, fs=19200, pwm_top=1023, amplitude=0.4,
-                 txdelay_ms=300, txtail_ms=30, settle_ms=60, max_ms=1500, raw=None):
+                 txdelay_ms=300, txtail_ms=30, settle_ms=60, max_ms=1500, raw=None, fx25=False):
         """gate: core.txgate のゲート(hw.txctl で作る)。音声だけなら AudioOnly。
         raw: 送信波形のバッファ(bytearray、1 サンプル 2 バイト)。
-        None なら max_ms 分をここで確保する"""
+        None なら max_ms 分をここで確保する。
+        fx25: True なら FX.25(RS(48,32) / (80,64) / (144,128)、チェック 16 バイト)で送る。
+        内側が 128 バイトを超えるフレームは従来の AX.25 のまま"""
         self.fs = fs
+        self.fx = Fx25Tx() if fx25 else None  # 作るときに 1 回だけ確保する(約 1 KB)
+        self.fx_used = 0  # 直近の build() で FX.25 にしたフレーム数
         self.top = pwm_top
         mid = (pwm_top + 1) // 2
         self.mod = Modulator(fs, mid=mid, amp=int(mid * amplitude))
@@ -81,23 +86,37 @@ class AfskTx:
 
     def build(self, frames):
         """フレーム(FCS 込み bytes のリスト)の音声サンプルを self.raw に作り、サンプル数を返す。
+        fx25 を有効にしてあれば、内側が 128 バイト以下のフレームは FX.25 で、それ以外は
+        従来の AX.25 で作る(self.fx_used に FX.25 にしたフレーム数が入る)。
         メモリは確保しない。入りきらなければ ValueError、送出中なら RuntimeError"""
         if self.busy:
             raise RuntimeError("TX busy: the buffer is being sent")
         pre = max(1, self.txdelay_ms * 1200 // 8000)  # フラグ 1 個 = 8 ビット
         post = max(1, self.txtail_ms * 1200 // 8000)
-        n = 0
-        for i, f in enumerate(frames):
-            n += levels_size(len(f), pre if i == 0 else 2, post if i == len(frames) - 1 else 0)
-        if n > len(self.lv):
-            raise ValueError("frames too long for the TX buffer (%d > %d levels)"
-                             % (n, len(self.lv)))
         lv = memoryview(self.lv)
+        cap = len(self.lv)
+        fx = self.fx
+        self.fx_used = 0
         n = 0
         last = 0
+        nf = len(frames)
         for i, f in enumerate(frames):
-            k, last = encode_levels(f, lv[n:], pre if i == 0 else 2,
-                                    post if i == len(frames) - 1 else 0, last)
+            p = pre if i == 0 else 2
+            q = post if i == nf - 1 else 0
+            # prepare() が 0 なら対象外(内側が 128 バイト超): 従来の AX.25 で送る
+            fxf = fx if fx is not None and fx.prepare(f) > 0 else None
+            if fxf is not None:
+                need = fxf.levels_size(p, q)
+            else:
+                need = levels_size(len(f), p, q)
+            if need > cap - n:
+                raise ValueError("frames too long for the TX buffer (%d > %d levels)"
+                                 % (n + need, cap))
+            if fxf is not None:
+                k, last = fxf.write(lv[n:], p, q, last)
+                self.fx_used += 1
+            else:
+                k, last = encode_levels(f, lv[n:], p, q, last)
             n += k
         self.mod.modulate(self.lv, n, self.buf, 0)
         return self.mod.samples_size(n)
