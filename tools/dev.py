@@ -300,9 +300,9 @@ ROMFS_STAGE = ROOT / "build" / "romfs"
 ROMFS_IMAGE = ROOT / "build" / "app.romfs"
 ROMFS_SIZE = 1024 * 1024  # このファームウェアの ROMFS 区画(romfs-query で確認できる)
 # build / release で実機に載せないもの(src/ からの相対パス)。デモ・試験用スクリプトと、
-# テンプレートの app.py、旧 GNSS(GT-505)用のドライバ。dev.py run では今までどおり使える
+# 旧 GNSS(GT-505)用のドライバ。dev.py run では今までどおり使える
 RELEASE_EXCLUDE = (
-    "app.py", "gnss_demo.py", "gt505_demo.py", "lcd_test.py", "m10_check.py", "rx_loopback.py",
+    "gnss_demo.py", "gt505_demo.py", "lcd_test.py", "m10_check.py", "rx_loopback.py",
     "sdlog_demo.py", "tx_demo.py", "ui_demo.py", "fm_if_test.py", "fm_if_afsk_test.py",
     "fm_if_rt_test.py", "fm_if_pll_test.py",
     "core/nmea.py", "hw/gnss.py",

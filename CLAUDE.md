@@ -77,7 +77,7 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 
 ## デバッグの手順
 
-- **トレースバック**: `File "/remote/app.py", line N` の `/remote/` はマウントされた `src/` のこと。そのまま `src/app.py` の N 行目を見る。
+- **トレースバック**: `File "/remote/station.py", line N` の `/remote/` はマウントされた `src/` のこと。そのまま `src/station.py` の N 行目を見る。
 - **状態を覗く**: `dev.py exec "<コード>"` でモジュールを import して関数を呼ぶ・変数を print する。REPL の代わりにこれを使う。
 - **メモリ**: `import gc; gc.collect(); print(gc.mem_free())` を怪しい箇所の前後で出す。`MemoryError` が出たら大きなリスト/文字列連結/ループ内での確保を疑う。
 - **起動時の挙動(deploy 後)**: `dev.py monitor --reset -s 15` でソフトリセットして main.py の出力を 15 秒読む。
@@ -98,7 +98,7 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 - `@micropython.viper` のポインタ(`ptr8/16/32`)は**境界検査をしない**。書き込み先の大きさを必ず自前で守る(溢れるとメモリ破壊)。PC では同じコードが配列の添字エラー/`array('i')` の OverflowError になるので、`test --host` で検出できる。
 - viper の `ptr16`/`ptr32` の読み出しは符号なし扱い。符号付きの値は `array('i')` に入れて `int(p[i])` で読む。
 - 標準以外のライブラリは micropython-lib にあれば `dev.py mip <名前>`(要確認)。CPython の pip パッケージは基本的に動かない。
-- ハードウェア依存部分(Pin, I2C, SPI など)はクラスの引数として渡し、テストでは偽オブジェクトに差し替えられるようにする(`src/app.py` と `tests/test_app.py` が例)。
+- ハードウェア依存部分(Pin, I2C, SPI など)はクラスの引数として渡し、テストでは偽オブジェクトに差し替えられるようにする(`tests/_fake_hw.py` と `tests/test_tx_safety.py` が例)。
 
 ## 配線メモ(ユーザーが追記する)
 
