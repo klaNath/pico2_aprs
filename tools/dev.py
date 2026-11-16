@@ -179,6 +179,91 @@ def rel(p: Path) -> str:
     return p.resolve().relative_to(ROOT).as_posix()
 
 
+# ---------------------------------------------------------------- マウントして実行(時間切れでも固めない)
+# mpremote の mount はデバイス側から PC へファイルを要求する。要求の間、デバイスは Ctrl-C を無効にして
+# PC の応答を待つ。mpremote を強制終了すると、その途中で PC がいなくなり、デバイスは応答を待ったまま
+# 固まる(次の接続の Ctrl-C も読み捨てられる)。起動中は PC の src/ から import を続けるので、
+# そこで時間切れになると必ず固まった(2026-11-16 の調査)。
+# そこで mpremote をライブラリとして使い、時間切れのときはシリアルを読み続けたまま(= マウントの要求に
+# 応え続けたまま)Ctrl-C を送り、プログラムが止まってから、アンマウントして閉じる。
+INTERRUPT_TRIES = 20  # 時間切れのあと Ctrl-C を送る回数(1 秒ごと。局の後始末に数秒かかる)
+EXIT_TIMEOUT = 124  # 時間切れで止めた(従来と同じ終了コード)
+EXIT_STUCK = 125  # 時間切れのあと止められなかった
+
+
+def mounted_exec(code: str | bytes, mount: Path, timeout: float | None) -> tuple[int, str]:
+    """mount を /remote にマウントして code を実行する。出力をそのまま流しつつ集めて返す。
+    timeout 秒(実行の開始から)で Ctrl-C を送って止める(終了コード 124)"""
+    import codecs
+
+    from mpremote.transport import TransportError
+    from mpremote.transport_serial import SerialTransport
+
+    port = find_port()
+    chunks: list[str] = []
+    dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def out(b: bytes) -> None:
+        s = dec.decode(b)
+        if s:
+            chunks.append(s)
+            sys.stdout.write(s)
+            sys.stdout.flush()
+
+    try:
+        t = SerialTransport(port, baudrate=115200)
+    except TransportError as e:
+        log(f"{port} を開けません: {e}")
+        return 1, ""
+    rc = 0
+    try:
+        try:
+            t.enter_raw_repl(soft_reset=True)
+            t.mount_local(str(mount))
+            log(f"{rel(mount)} を /remote にマウントしました")
+            t.exec_raw_no_follow(code)
+        except TransportError as e:
+            log(f"実行を始められません: {e}")
+            return 1, "could not enter raw repl"
+        # 標準出力(\x04 まで)、続いてエラー出力(\x04 まで)
+        data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=timeout)
+        if not data.endswith(b"\x04"):
+            log(f"タイムアウト({timeout:g} 秒)。Ctrl-C を送って止めます")
+            rc = EXIT_TIMEOUT
+            for _ in range(INTERRUPT_TRIES):
+                t.serial.write(b"\x03")
+                data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=1.0)
+                if data.endswith(b"\x04"):
+                    break
+            else:
+                log(
+                    f"Ctrl-C を {INTERRUPT_TRIES} 回送っても止まりませんでした。デバイスが応答しなければ、"
+                    "USB の抜き差しが必要です"
+                )
+                return EXIT_STUCK, "".join(chunks)
+        err = t.read_until(1, b"\x04", timeout=10)
+        if err.endswith(b"\x04"):
+            err = err[:-1]
+        if err:
+            out(err)
+            if rc == 0:
+                rc = 1
+        out(b"")  # デコーダの残り
+        try:
+            t.umount_local()
+            t.exit_raw_repl()
+        except (OSError, TransportError) as e:
+            log(f"アンマウントに失敗しました(無視): {e}")
+        if rc == EXIT_TIMEOUT:
+            log(
+                "止めました。デバイス上のプログラムは終わっています"
+                "(フラッシュの局を動かし直すには `dev.py monitor --reset -s 20`)"
+            )
+        return rc, "".join(chunks)
+    finally:
+        t.close()
+
+
 # ---------------------------------------------------------------- サブコマンド
 INFO_CODE = r"""
 import sys, os, gc, machine
@@ -212,13 +297,15 @@ def cmd_run(a) -> int:
     f = Path(a.file)
     if not f.exists():
         die(f"{f} がありません")
-    return mpremote(["mount", rel(SRC), "run", rel(f)], a.timeout)[0]
+    log(f"{rel(f)} を実行します(src/ をマウント、{a.timeout:g} 秒で止める)")
+    return mounted_exec(f.read_bytes(), SRC, a.timeout)[0]
 
 
 def cmd_exec(a) -> int:
     if a.no_mount:  # 書き込んだ本体(フラッシュ / ROMFS)をそのまま使う
         return mpremote(["exec", a.code], a.timeout)[0]
-    return mpremote(["mount", rel(SRC), "exec", a.code], a.timeout)[0]
+    log(f"exec(src/ をマウント、{a.timeout:g} 秒で止める): {a.code}")
+    return mounted_exec(a.code, SRC, a.timeout)[0]
 
 
 def _test_result(rc: int, out: str) -> int:
@@ -241,7 +328,7 @@ def cmd_test(a) -> int:
         "import _runner\n"
         f"_runner.main({a.pattern!r})\n"
     )
-    return _test_result(*mpremote(["mount", ".", "exec", code], a.timeout))
+    return _test_result(*mounted_exec(code, ROOT, a.timeout))
 
 
 def cmd_lint(a) -> int:
