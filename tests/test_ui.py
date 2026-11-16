@@ -260,3 +260,59 @@ def test_detail_level_line():
     assert ("LVL -10dB", GREEN) in lines
     s.update(parse_frame(Frame.parse("JA1AAA>APRS:>no level")), 2000)  # IF 入力などでは出さない
     assert not any(t.startswith("LVL") for t, _ in detail_lines(s.latest(), None, None, 2000, 30))
+
+
+def test_hw_draw_passkey_fits_and_shows_digits():
+    import framebuf
+
+    from ui.views import BIG, CH, draw_passkey
+
+    assert 6 * CH * BIG <= 240  # 6 桁が幅に収まる(320 幅も同じ)
+    w, h, band = 240, 135, 27
+    buf = bytearray(2 * w * band)
+
+    def render(pk):
+        """実際の画面(ui.screen)と同じく帯に分けて描き、帯ごとの合計を並べる"""
+        sums = []
+        for top in range(0, h, band):
+            fb = framebuf.FrameBuffer(buf, w, band, framebuf.RGB565)
+            fb.fill(0)
+            draw_passkey(fb, -top, w, h, pk)
+            sums.append(sum(buf))
+        return sums
+
+    a = render(123456)
+    assert any(a)  # 何か描いた
+    assert render(7) != a  # 先頭の 0 を埋めて 6 桁にしているので、別の絵になる
+
+
+def test_hw_ui_switches_to_passkey_and_back():
+    from ui.controller import Ui
+
+    class Scr:
+        width, height = 320, 240
+
+        def __init__(self):
+            self.regions = []
+
+        def region(self, x, y, w, h, draw, bg=0):
+            self.regions.append((x, y, w, h))
+
+        def fill(self, color):
+            self.regions.append("fill")
+
+    scr = Scr()
+    st = Status()
+    ui = Ui(scr, Stations(), st, ())
+    ui.poll(1000)
+    n = len(scr.regions)
+    assert n > 1  # 通常の画面
+    st.passkey = 123456
+    ui.poll(1100)
+    assert scr.regions[n:] == [(0, 0, 320, 240)]  # 全画面で 1 回だけ
+    ui.poll(2100)
+    ui.poll(3100)
+    assert len(scr.regions) == n + 1  # 出している間は描き直さない
+    st.passkey = None
+    ui.poll(4100)
+    assert len(scr.regions) > n + 1  # 通常の画面に戻る(全体を描き直す)

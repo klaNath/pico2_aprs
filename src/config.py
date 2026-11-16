@@ -85,6 +85,9 @@ TX_BUFFER_MS = const(1500)
 # 送信時間は延びる(実測: Mic-E 相当で 715 ms → 913 ms、前置フラグ 300 ms を含む)。
 # 相互運用は FT5D(AX.25 のみ)と Direwolf(FX.25)で確認済み。既定は従来どおり False
 FX25_TX = False
+# BLE(スマホからの設定変更と受信情報の読み取り。docs/ble-protocol.md)。外付け TNC モードだけで動く。
+# 認証(LCD に出る 6 桁のパスキー)が済んだ接続だけが操作できる。BLE が起動できなくても局は動く
+BLE_ENABLED = True
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
 # Own callsign. Never write it in the source (keeps it out of the public repository and

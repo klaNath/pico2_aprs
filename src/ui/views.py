@@ -85,6 +85,7 @@ class Status:
         self.tx_count = 0
         self.tx_active = False
         self.rx_recent = False
+        self.passkey: "int | None" = None  # BLE のペアリング中のパスキー(全画面で表示)
         # 受信音声の音量(core.level.Level)/ None = 表示しない(IF 入力など)
         self.level: "level.Level | None" = None
 
@@ -429,6 +430,16 @@ def draw_status(fb, dy, lay, status):
         fb.text(s, pos[0] * CH, 1 + pos[1] * ROW + dy, c)
     if lay.wide:
         draw_signals(fb, lay.sats_y + dy, lay.status_w, lay.status_h - lay.sats_y, status.signals)
+
+
+def draw_passkey(fb, dy, w, h, passkey):
+    """BLE のペアリング中の全画面表示: スマホに入力する 6 桁のパスキー"""
+    x = (w - 6 * CH * BIG) // 2
+    y = h // 2 - CH * BIG // 2
+    fb.text("BLE pairing", (w - 11 * CH) // 2, y - 3 * ROW + dy, WHITE)
+    draw_big(fb, "%06d" % passkey, x, y + dy, YELLOW)
+    for i, s in enumerate(("Enter this passkey", "on the phone")):
+        fb.text(s, (w - len(s) * CH) // 2, y + CH * BIG + 2 * ROW + i * ROW + dy, GRAY)
 
 
 def draw_signals(fb, y0, w, h, signals):

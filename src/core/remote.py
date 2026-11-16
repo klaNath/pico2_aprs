@@ -129,6 +129,11 @@ class Remote:
         if self.attached:
             self._reply(None, "err", code="too_long", msg="max %d bytes" % LINE_MAX)
 
+    def busy(self):
+        """処理待ちの行が満杯で、行を捨てた(hw.ble から)"""
+        if self.attached:
+            self._reply(None, "err", code="busy", msg="request dropped, retry")
+
     def _dispatch(self, rid, op, req):
         st = self.settings
         if op == "hello":

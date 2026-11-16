@@ -88,6 +88,9 @@ def tnc2(f):
 
 
 class Station:
+    ble: "Any" = None  # hw.ble.Ble / None = 使わない(config.BLE_ENABLED = False、起動に失敗)
+    remote: "Any" = None  # core.remote.Remote(BLE で接続されたスマホ)/ None = 使わない
+
     def __init__(self, wdt=None, settings=None):
         """settings: core.settings.Settings(読み込み済み)。変更されたら apply_settings() で
         反映する"""
@@ -134,8 +137,37 @@ class Station:
         self.settings = settings
         if settings is not None:
             settings.listeners.append(self.apply_settings)
-        self.remote: "Any" = None  # core.remote.Remote(BLE で接続されたスマホ)/ None = 使わない
         self._tx_ms = None  # 最後にビーコンを作った ticks_ms(dry run を含む)
+
+    def start_ble(self):
+        """BLE を始める(config.BLE_ENABLED のとき)。失敗しても局は動かす(スマホから操作できない)"""
+        if not config.BLE_ENABLED or self.settings is None:
+            return
+        try:
+            from core.remote import Remote
+            from hw.ble import Ble
+
+            self.remote = Remote(self.settings, None, self.remote_status, self.remote_stations,
+                                 log=print)
+            self.ble = Ble(self.remote, on_passkey=self._on_passkey, log=print)
+            self.ble.start()
+        except Exception as e:
+            sys.print_exception(e)
+            print("[ble] not available")
+            self._stop_ble()
+
+    def _stop_ble(self):
+        ble, self.ble, self.remote = self.ble, None, None
+        if ble is None:
+            return
+        self.status.passkey = None
+        try:
+            ble.stop()
+        except Exception as e:  # 止めるときの失敗は無視(局の停止を妨げない)
+            sys.print_exception(e)
+
+    def _on_passkey(self, passkey):
+        self.status.passkey = passkey  # 画面(ui)が全画面で出す。None で通常の画面に戻る
 
     def apply_settings(self, changed=None):
         """config の値を各部に反映する(設定の変更のあと。step() の中から呼ばれ、送信中には来ない)。
@@ -213,6 +245,13 @@ class Station:
             self.level.update(ms, pk, clip, now)
         self._receive(now)
         self._beacon(now)
+        if self.ble is not None:
+            try:
+                self.ble.poll(now)
+            except Exception as e:  # BLE の不具合で局を止めない: BLE を止めて続ける
+                sys.print_exception(e)
+                print("[ble] stopped after an error")
+                self._stop_ble()
         self.sd.poll(self.utc(), now)
         self.status.sd = self.sd.state
         if self._rx_ms is not None:
@@ -320,14 +359,21 @@ class Station:
 
     def _report(self):
         st = self.status
-        print("[station] fix %dD sats %d/%d rx %d tx %d bcn %s next %s sd %s free %d lag %d" % (
+        print("[station] fix %dD sats %d/%d rx %d tx %d bcn %s next %s sd %s ble %s "
+              "free %d lag %d" % (
             st.fix, st.sats, st.sats_view, st.rx_count, st.tx_count,
-            "on" if st.beacon_on else "off", st.next_beacon_s, self.sd.state, gc.mem_free(),
-            self.rx.lag_max))
+            "on" if st.beacon_on else "off", st.next_beacon_s, self.sd.state, self._ble_state(),
+            gc.mem_free(), self.rx.lag_max))
         if self.level is not None:
             lv = self.level
             print("[station] rx level rms %.0f dBFS, peak %.0f dBFS (%s)" % (
                 lv.rms_db, lv.peak_db, lv.grade()))
+
+    def _ble_state(self):
+        b = self.ble
+        if b is None:
+            return "off"
+        return "auth" if b.authenticated else "conn" if b.conn is not None else "adv"
 
     def close(self):
         # 最初に PTT を切る。受信の停止で待たされたり、ここで Ctrl-C を受けたりしても残らないように
@@ -338,6 +384,7 @@ class Station:
                 self.rx.close()
             finally:
                 self.led.value(0)
+                self._stop_ble()
                 self.sd.close(self.utc())
 
 
@@ -355,6 +402,7 @@ def run(duration_ms=None, wdt=None):
     station = Station(wdt, settings)
     try:
         station.start()
+        station.start_ble()
         station.wdt.arm(watchdog.LOOP_MS)
         t0 = time.ticks_ms()
         while duration_ms is None or time.ticks_diff(time.ticks_ms(), t0) < duration_ms:

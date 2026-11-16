@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.1 (2026-11-16) / protocol version `proto`: 1
+- Document version: 0.2 (2026-11-16) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -289,6 +289,7 @@ When BLE cannot send fast enough, items queue up on the device.
 |---|---|---|
 | `bad_json` | Not readable as JSON, or not an object | absent |
 | `too_long` | A line exceeded 512 bytes | absent |
+| `busy` | The device could not keep up and dropped a line (too many sent in a short time). Wait a moment and resend | absent |
 | `unknown_op` | Unknown `op` (`msg` holds the first 32 characters of the received `op`) | present |
 | `invalid` | A settings value is invalid (`key` is the item, `msg` is the condition). Nothing was changed | present |
 | `io` | Could not save to flash. Nothing was changed | present |
@@ -376,4 +377,5 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2 | 2026-11-16 | Added the `busy` error. Pairing and bonding confirmed available in the firmware |
 | 0.1 | 2026-11-16 | First version. Message handling (§6–§9) is fixed to match the implementation; the BLE layer (§2–§5.2) is provisional |
