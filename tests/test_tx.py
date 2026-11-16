@@ -123,3 +123,21 @@ def test_hw_tx_buffer_reused():
             pass
     finally:
         tx.close()
+
+
+def test_hw_tx_set_fx25_switches_without_reallocating():
+    tx, _pin = _tx(fx25=False)
+    try:
+        f = bytes(Frame.parse("JA1XYZ-9>APRS,WIDE1-1:!3540.12N/13945.67E>Pico2 TX test").encode())
+        assert tx.fx is None
+        n_plain = tx.build([f])
+        tx.set_fx25(True)  # 設定の変更(core.settings)で実行中に切り替える
+        enc = tx.fx
+        assert enc is not None
+        assert tx.build([f]) > n_plain and tx.fx_used == 1
+        tx.set_fx25(False)
+        assert tx.fx is None and tx.build([f]) == n_plain and tx.fx_used == 0
+        tx.set_fx25(True)
+        assert tx.fx is enc  # 作り直さない
+    finally:
+        tx.close()

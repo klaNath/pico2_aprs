@@ -7,11 +7,10 @@
               何も動かさない。以下の説明は "tnc" の局のこと
 
 main.py が main() を呼ぶ。開発中は `python tools/dev.py run src/main.py -t 60` で、フラッシュに
-書かずに動かせる(タイムアウトで切れても、デバイス上では次の接続まで動き続ける)。
+書かずに動かせる(タイムアウトになると dev.py が Ctrl-C を送って止める)。
 main() は例外で止まったら内容を LCD・USB・SD に出し、待ってからハードリセットする(電源投入だけで
-使うため)。dev.py run/exec(PC の src をマウント中)で main() がリセットまで進むと、その後の接続で
-デバイスが応答しなくなることがあった(USB の抜き差しで戻る)。異常時の経路の試験は、書き込み後に
-`dev.py exec --no-mount` で行う。
+使うため)。リセットするとマウントが切れて dev.py が出力を追えないので、異常時の経路の試験は、
+書き込み後に `dev.py exec --no-mount` で行う。
 Watchdog (hw.watchdog): 16 s during startup, 3 s once in the loop. Fed at each loop step and
 before each transmission. Not enabled under dev.py run/exec (src mounted). If stopped with
 Ctrl-C while enabled, a timer keeps feeding it.
@@ -49,12 +48,18 @@ _UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
 import sys
 import time
 
+try:
+    from typing import Any  # noqa: F401  (型注釈用。MicroPython には無い)
+except ImportError:
+    pass
+
 import machine
 from machine import SPI, Pin
 
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
 from core.level import Level, db_peak
+from core.settings import Settings
 from core.stations import Stations
 from core.txgate import display_call
 from hw import restart, txctl, watchdog
@@ -83,7 +88,9 @@ def tnc2(f):
 
 
 class Station:
-    def __init__(self, wdt=None):
+    def __init__(self, wdt=None, settings=None):
+        """settings: core.settings.Settings(読み込み済み)。変更されたら apply_settings() で
+        反映する"""
         # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
         global _gate
@@ -124,6 +131,62 @@ class Station:
             self.beacon.hold(time.ticks_ms(), config.BEACON_RESTART_HOLD_S)
         self._rx_ms = None
         self._report_ms = time.ticks_ms()
+        self.settings = settings
+        if settings is not None:
+            settings.listeners.append(self.apply_settings)
+        self.remote: "Any" = None  # core.remote.Remote(BLE で接続されたスマホ)/ None = 使わない
+        self._tx_ms = None  # 最後にビーコンを作った ticks_ms(dry run を含む)
+
+    def apply_settings(self, changed=None):
+        """config の値を各部に反映する(設定の変更のあと。step() の中から呼ばれ、送信中には来ない)。
+        ビーコンの PATH、シンボル、コメント、メッセージは _beacon() が毎回 config を読む"""
+        self.gate.callsign = config.CALLSIGN
+        self.gate.allowed = config.TX_ENABLED
+        self.tx.set_fx25(config.FX25_TX)
+        b = self.beacon
+        b.moving_s = config.BEACON_MOVING_S
+        b.still_s = config.BEACON_STILL_S
+        b.move_m = config.BEACON_MOVE_M
+        self.call = display_call(config.CALLSIGN, config.SSID)
+        self.status.callsign = self.call
+        self.stations.own_call = self.call
+        self._refused = None  # 送信できない理由が変わっていれば、次の送信で記録し直す
+        print("[settings] applied %s, TX %s" % (
+            ", ".join(changed) if changed else "all", self.gate.refuse_reason() or "enabled"))
+
+    # ---- スマホ(core.remote)へ渡す情報
+    def remote_status(self):
+        """status の中身(docs/ble-control.md §5.4)。None の項目は remote が省く"""
+        st = self.status
+        pos = st.fix >= 2 and st.lat is not None
+        why = self.gate.refuse_reason()
+        return {
+            "utc_s": self.utc(),
+            "fix": st.fix,
+            "sats": st.sats,
+            "lat": st.lat if pos else None,
+            "lon": st.lon if pos else None,
+            "sw": st.beacon_on,
+            "tx_enabled": bool(config.TX_ENABLED),
+            # スイッチがオンで、ゲートが許可する(次のビーコンで実際に電波を出す)
+            "tx_ready": st.beacon_on and why is None,
+            "tx_refuse": why,
+            "call": self.call,
+            "last_tx_s": (None if self._tx_ms is None
+                          else time.ticks_diff(time.ticks_ms(), self._tx_ms) // 1000),
+            "next_beacon_s": st.next_beacon_s,
+            "rx_count": st.rx_count,
+            "tx_count": st.tx_count,
+            "lvl_db": self.level.rms_db if self.level is not None else None,
+            "sd": self.sd.state,
+        }
+
+    def remote_stations(self):
+        """局の表の要約を新しい順に 1 局ずつ(remote が送れた分だけ取り出す)"""
+        now = time.ticks_ms()
+        for s in list(self.stations.order):  # 送る途中で受信して表が変わってもよいように写す
+            yield {"src": s.call, "last_s": s.age_s(now), "count": s.count, "lat": s.lat,
+                   "lon": s.lon, "lvl_db": s.level_db, "own": s.own or None}
 
     def utc(self):
         return time.time() if self.gnss.rtc.synced else None
@@ -182,10 +245,19 @@ class Station:
                 pk, clip = self.rx.recent_peak()
                 lvl = db_peak(pk)
                 self.level.packet(lvl, clip, now)  # 縦棒のピークをこのパケットにする
+            p = None
             try:
-                self.stations.update(parse_frame(f), now, lvl, clip)
+                p = parse_frame(f)
+                self.stations.update(p, now, lvl, clip)
             except Exception as e:  # 解析できない情報フィールドでも記録と受信数は残す
                 sys.print_exception(e)
+            if self.remote is not None:
+                d = {"tnc2": text, "lvl_db": lvl, "clip": clip or None, "utc_s": self.utc()}
+                if p is not None:
+                    d["src"], d["kind"], d["lat"], d["lon"] = p.src, p.kind, p.lat, p.lon
+                    if p.table is not None and p.code is not None:
+                        d["sym"] = p.table + p.code
+                self.remote.rx(d)
             self.status.rx_count += 1
             self.status.rx_recent = True
             self._rx_ms = now
@@ -211,6 +283,7 @@ class Station:
                        gps.altitude if st.fix == 3 else None, config.SYMBOL,
                        config.BEACON_COMMENT, config.BEACON_MESSAGE)
         self.beacon.sent(st.lat, st.lon, now)
+        self._tx_ms = now
         text = tnc2(f)
         try:
             n = self.tx.build([bytes(f.encode())])
@@ -240,6 +313,8 @@ class Station:
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
+        if self.remote is not None:
+            self.remote.tx({"tnc2": text, "dry": why is not None, "utc_s": self.utc()})
         print("[tx%s%s] %d ms" % ("" if why is None else " dry", " fx25" if self.tx.fx_used else "",
                                   n * 1000 // config.FS), text)
 
@@ -275,7 +350,9 @@ def run(duration_ms=None, wdt=None):
         return transceiver.run(duration_ms, wdt)
     if config.MODE != "tnc":
         raise ValueError("unknown config.MODE: %r" % (config.MODE,))
-    station = Station(wdt)
+    settings = Settings(config, log=print)
+    settings.load()  # Station が config を読む前に反映する
+    station = Station(wdt, settings)
     try:
         station.start()
         station.wdt.arm(watchdog.LOOP_MS)

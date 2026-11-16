@@ -52,7 +52,10 @@ class AfskTx:
         fx25: True なら FX.25(RS(48,32) / (80,64) / (144,128)、チェック 16 バイト)で送る。
         内側が 128 バイトを超えるフレームは従来の AX.25 のまま"""
         self.fs = fs
-        self.fx = Fx25Tx() if fx25 else None  # 作るときに 1 回だけ確保する(約 1 KB)
+        self.busy = False
+        self.fx = None  # FX.25 の符号器(有効なとき)。None = 従来の AX.25
+        self._fx = None  # 一度作った符号器(set_fx25 で切り替えても作り直さない)
+        self.set_fx25(fx25)
         self.fx_used = 0  # 直近の build() で FX.25 にしたフレーム数
         self.top = pwm_top
         mid = (pwm_top + 1) // 2
@@ -79,6 +82,15 @@ class AfskTx:
         self.timer = rp2.DMATimer(freq=fs)
         self.dma = rp2.DMA()
         self.busy = False
+
+    def set_fx25(self, on):
+        """FX.25 の有効/無効(実行中に切り替えられる。設定の変更で使う)。
+        符号器は最初に有効にしたときに 1 回だけ確保する(約 1 KB)。送出中は RuntimeError"""
+        if self.busy:
+            raise RuntimeError("TX busy")
+        if on and self._fx is None:
+            self._fx = Fx25Tx()
+        self.fx = self._fx if on else None
 
     def _write_cc(self, v):
         # A/B 両方に同じ値(DMA の 16 bit 書き込みも両半分に複製されるので揃える)

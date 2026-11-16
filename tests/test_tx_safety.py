@@ -887,3 +887,91 @@ def test_unknown_mode_is_an_error():
         pass
     finally:
         config.MODE = keep
+
+
+# ---- 設定の変更(core.settings、BLE から)
+def test_settings_change_applies_to_running_station_and_switch_still_rules():
+    if not _fake_hw.install():
+        return
+    from test_settings import FakeFs
+
+    import config
+    from core.settings import Settings
+
+    fs = FakeFs()  # フラッシュの /settings.json には書かない
+    s = Settings(config, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
+    st = _station()
+    s.listeners.append(st.apply_settings)
+    try:
+        s.set({"callsign": CALL, "ssid": 9, "tx_enabled": True, "fx25_tx": True,
+               "beacon_moving_s": 45, "beacon_still_s": 900, "beacon_move_m": 30})
+        assert st.gate.callsign == CALL and st.gate.allowed is True
+        assert st.call == CALL + "-9" and st.status.callsign == st.call
+        assert st.stations.own_call == st.call
+        assert st.tx.fx is not None
+        assert (st.beacon.moving_s, st.beacon.still_s, st.beacon.move_m) == (45, 900, 30.0)
+        # 設定で送信を許可しても、ビーコンスイッチがオフなら送らない
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        st._beacon(0)
+        assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == [] and st.status.tx_count == 0
+        # スイッチをオンにすると送る(偽のピン)
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        st._beacon(0)
+        assert st.status.tx_count == 1 and st.tx.fx_used == 1
+        assert len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        # 送信の許可を取り消すと、次のビーコンは dry run
+        s.set({"tx_enabled": False})
+        assert st.gate.allowed is False and st.tx.fx is not None
+        st.beacon.reset()
+        st._beacon(0)
+        assert st.status.tx_count == 2 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+    finally:
+        s.reset()  # config を元に戻す(ほかのテストのため)
+        st.close()
+
+
+def test_station_feeds_remote_status_tx_and_stations():
+    if not _fake_hw.install():
+        return
+    import time
+
+    from test_remote import Link
+    from test_settings import FakeFs
+
+    import config
+    from aprs.packet import parse_frame
+    from core.remote import Remote
+    from core.settings import Settings
+    from tnc.ax25 import Frame
+
+    fs = FakeFs()
+    s = Settings(config, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
+    st = _station()
+    link = Link()
+    st.remote = r = Remote(s, link.write, st.remote_status, st.remote_stations)
+    r.attach()
+    try:
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        st._beacon(0)
+        d = st.remote_status()
+        assert d["sw"] is False and d["tx_ready"] is False and d["last_tx_s"] is None
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        st._beacon(time.ticks_ms())  # ゲートが拒否する(既定): dry run
+        d = st.remote_status()
+        assert d["sw"] is True and d["tx_ready"] is False and d["tx_refuse"] == "callsign not set"
+        assert d["last_tx_s"] == 0 and d["lat"] == 35.68
+        st.gate.callsign, st.gate.allowed = CALL, True
+        assert st.remote_status()["tx_ready"] is True
+        st.stations.update(parse_frame(Frame.parse("Q1AAA-9>APRS:!3540.12N/13945.67E>x")), 0)
+        r.handle(b'{"op": "stations.list", "id": 3}')
+        r.poll(0)
+        ms = link.take()
+        kinds = [m["t"] for m in ms]
+        assert "tx" in kinds and kinds.count("station") == 1 and "stations.end" in kinds
+        tx = [m for m in ms if m["t"] == "tx"][0]
+        assert tx["dry"] is True and tx["tnc2"].startswith(CALL + "-7>")
+        stn = [m for m in ms if m["t"] == "station"][0]
+        assert stn["src"] == "Q1AAA-9" and stn["count"] == 1 and abs(stn["lat"] - 35.668) < 0.001
+        assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    finally:
+        st.close()
