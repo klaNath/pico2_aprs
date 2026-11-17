@@ -235,6 +235,13 @@ def test_notifications_are_split_by_mtu():
     assert max(len(c) for c in chunks) == 244 and all(len(c) <= 244 for c in chunks)
     msg = json.loads(b"".join(chunks))
     assert msg["t"] == "schema" and msg["id"] == 2
+    fb.notified = []
+    fb.ev(B.IRQ_MTU_EXCHANGED, 1, 517)  # MTU が大きくても NOTIFY_MAX で区切る
+    fb.write(1, b'{"op":"settings.schema","id":3}\n')
+    b.poll(3)
+    chunks = [c for _c, c in fb.notified]
+    assert max(len(c) for c in chunks) == B.NOTIFY_MAX == 244
+    assert json.loads(b"".join(chunks))["id"] == 3
 
 
 def test_full_notify_queue_is_retried_without_loss():

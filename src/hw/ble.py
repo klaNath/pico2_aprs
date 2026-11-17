@@ -67,6 +67,10 @@ RX_BUF = const(512)  # RX 特性のバッファ(1 回の書き込みの上限は
 ATT_OVERHEAD = const(3)
 DEFAULT_MTU = const(23)
 MTU_WANTED = const(517)
+# 1 回の通知の上限。リンク層の 1 パケット(データ長拡張 251 - L2CAP 4 - ATT 3)。
+# MTU 517 で 514 バイトの通知を続けて送ると、Windows の GATT が止まった(2026-11-17。
+# 応答が来なくなり、Bluetooth を入れ直すまで、つなぎ直しても通知の購読が Unreachable になる)
+NOTIFY_MAX = const(244)
 ADV_INTERVAL_US = const(100_000)
 LINES_MAX = const(4)  # 処理待ちの行の上限(溢れたら、その行は捨てて too_long の代わりに busy)
 MAX_SECRETS = const(24)  # 保存する鍵の数(1 台につき数個。4 台分)
@@ -409,14 +413,14 @@ class Ble:
 
     # ---- 送信(remote.write として使う)
     def write(self, data):
-        """1 行(\\n 付き)を通知で送る。MTU - 3 バイトずつに区切る。
+        """1 行(\\n 付き)を通知で送る。MTU - 3 バイト(NOTIFY_MAX まで)ずつに区切る。
         True: 受け付けた(送りきれなかった分は poll() で送る)/ False: 前の送り残しが詰まっている"""
         if not self.authenticated or self.conn is None:
             return True  # 接続していない: 捨てる(remote も送らないはず)
         self._flush_out()
         if self._out:
             return False
-        n = self.mtu - ATT_OVERHEAD
+        n = min(self.mtu - ATT_OVERHEAD, NOTIFY_MAX)
         self._out = [data[i:i + n] for i in range(0, len(data), n)]
         self._flush_out()
         return True

@@ -104,7 +104,7 @@ async def pair_with_passkey(client, repair=False):
                 if pin is None:
                     errors.append("no passkey")
                 else:
-                    a.accept(pin)
+                    a.accept_with_pin(pin)  # pywinrt では Accept(pin) の多重定義がこの名前になる
             else:
                 errors.append("unexpected pairing kind %r (device should require a passkey)" % a.pairing_kind)
         except Exception as e:  # noqa: BLE001
