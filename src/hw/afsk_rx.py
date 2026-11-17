@@ -39,7 +39,8 @@ _RING_BYTES = const(1 << _RING_BITS)
 _RING_N = const(_RING_BYTES // 2)  # サンプル数
 RING_ALLOC_BYTES = 2 * _RING_BYTES  # リングをその大きさの境界に揃えるため 2 倍確保する
 _BLOCK = const(512)
-_STOP_TIMEOUT_MS = const(500)  # Core1 のループが止まるのを待つ上限(1 ブロックの処理はテストの上限で約 11 ms)
+# Max wait for the Core1 loop to stop (one block takes about 11 ms at the test limit)
+_STOP_TIMEOUT_MS = const(500)
 _LEVEL_N = const(1920)  # 音量を集計する長さ(サンプル数。19.2 kHz で 100 ms)
 _LEVEL_HIST = const(16)  # 音量の履歴の数(1.6 秒分)
 _CLIP_LO = const(4)  # ADC の値がこれ以下 / これ以上ならクリップ

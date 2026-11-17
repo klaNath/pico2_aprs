@@ -17,9 +17,16 @@ def _gate(freq):
                   allowed=config.TX_ENABLED, freq=freq)
 
 
-def station_gate():
-    """局の送信に使うゲート。Si5351 のドライバができるまで周波数は未確定なので、常に拒否する"""
-    return _gate(UnsetFreq())
+def ptt_off():
+    """PTT のピンを切った状態にする(何も送らないモードの起動で、リセット前の High を残さない)"""
+    _ptt_pin()
+
+
+def tnc_gate():
+    """外付け TNC モード(config.MODE = "tnc")の局が使うゲート。周波数は無線機側で決まるので見ない。
+    コールサインと config.TX_ENABLED がそろわなければ拒否する"""
+    return TxGate(_ptt_pin(), config.PTT_ACTIVE_HIGH, callsign=config.CALLSIGN,
+                  allowed=config.TX_ENABLED, freq=UnsetFreq(), check_freq=False)
 
 
 def halt_for_watchdog():

@@ -41,10 +41,10 @@ def frames(k):
 def main():
     gate = txctl.bench_gate()
     tx = AfskTx(config.PIN_AFSK_OUT, gate, config.FS, config.PWM_TOP,
-                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS)
-    print("TX demo: GP%d audio, PTT %s, every %d s, %d times"
+                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, fx25=config.FX25_TX)
+    print("TX demo: GP%d audio, PTT %s, every %d s, %d times, FX.25 %s"
           % (config.PIN_AFSK_OUT, "stays off" if isinstance(gate, AudioOnly) else "ON",
-             INTERVAL_S, MAX_SENDS))
+             INTERVAL_S, MAX_SENDS, "on" if config.FX25_TX else "off"))
     why = gate.refuse_reason()
     if why is not None:
         print("TX demo: refused:", why)
@@ -56,8 +56,8 @@ def main():
             f, b = frames(k)
             t0 = time.ticks_ms()
             tx.send_blocking([b])
-            print("[%d] sent %d ms: %s:%r" % (k, time.ticks_diff(time.ticks_ms(), t0),
-                                              f.header(), f.info))
+            print("[%d] sent %d ms%s: %s:%r" % (k, time.ticks_diff(time.ticks_ms(), t0),
+                                                " fx25" if tx.fx_used else "", f.header(), f.info))
             k += 1
             time.sleep(INTERVAL_S)
     finally:

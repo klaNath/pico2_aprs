@@ -8,6 +8,8 @@ poll() を Core0 のループから呼ぶ。挿入を 0.5 秒続けて検出し�
 マウントを外す。
 マウントや書き込みに失敗したら RETRY_MS 後にやり直す。
 電源投入後の最初の初期化は失敗するカードがある(この基板の 32 GB で確認)ので、初期化は 3 回まで試す。
+stations(core.stations.Stations)を渡すと、受信した局の表を STATIONS_FILE に保存し、起動後の
+最初のマウントで読み出して表に加える(core.stationfile。GNSS の時刻が分かってから)。
 """
 
 import time
@@ -20,6 +22,7 @@ from core.logger import Logger
 
 MOUNT = "/sd"
 LOG_DIR = MOUNT + "/log"
+STATIONS_FILE = MOUNT + "/stations.txt"
 DEBOUNCE_MS = 500
 TIME_WAIT_MS = 20_000  # 見出しに時刻を書くため、GNSS の時刻を最大これだけ待ってから開く
 RETRY_MS = 5000
@@ -27,12 +30,17 @@ SD_BAUD = 20_000_000
 
 
 class SdLog:
-    def __init__(self, spi_id, sck, mosi, miso, cs, det, header="", log=None):
+    def __init__(self, spi_id, sck, mosi, miso, cs, det, header="", log=None, stations=None):
         self.spi = SPI(spi_id, baudrate=400_000, sck=Pin(sck), mosi=Pin(mosi), miso=Pin(miso))
         self.cs = Pin(cs, Pin.OUT, value=1)
         self.det = Pin(det, Pin.IN, Pin.PULL_UP)
         self.logger = Logger(header)
         self.log = log or (lambda *a: None)
+        self.stations = stations
+        # core.stationfile は最初にマウントしたときに読み込む。dev.py run/exec(src をマウント)では
+        # 読み込むたびにコンパイルでヒープが細切れになり、局の起動(Core1 のスタック 4 KB)が
+        # MemoryError になった
+        self.stfile = None
         self.mounted = False
         # 表示用: 'no card' / 'wait'(挿入済みで開く前)/ 'log 0001' / 'error'(やり直し待ち)
         self.state = "no card"
@@ -77,6 +85,16 @@ class SdLog:
             self.logger.poll(now)
         except OSError as e:
             self._fail("write", e, now)
+            return
+        if self.stations is not None:
+            if self.stfile is None:
+                from core.stationfile import StationFile
+
+                self.stfile = StationFile(STATIONS_FILE, log=self.log)
+            try:
+                self.stfile.poll(self.stations, utc_s, now)
+            except OSError as e:
+                self._fail("stations", e, now)
 
     def _mount(self, utc_s, now):
         try:
@@ -119,7 +137,13 @@ class SdLog:
                 pass
         self.mounted = False
 
-    def close(self):
-        """書き残しを書いてマウントを外す(電源を切る前・カードを抜く前)"""
+    def close(self, utc_s=None):
+        """書き残し(と局の表)を書いてマウントを外す(電源を切る前・カードを抜く前)。
+        utc_s: 今の UTC の秒(不明なら局の表は書かない)"""
+        if self.mounted and self.stfile is not None:
+            try:
+                self.stfile.close(self.stations, utc_s, time.ticks_ms())
+            except OSError as e:
+                self.log("[sd] stations save failed: %r" % (e,))
         self._unmount(flush=True)
         self.state = "no card" if not self.inserted() else "closed"

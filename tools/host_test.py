@@ -30,14 +30,15 @@ def install_shims() -> None:
     for name in ("ptr", "ptr8", "ptr16", "ptr32", "uint"):
         setattr(builtins, name, lambda x: x)
 
-    t0 = time.monotonic_ns()
+    # Windows の monotonic は分解能が 15.6 ms(GetTickCount64)で、sleep_ms(10) が 0 ms に見えることがある
+    t0 = time.perf_counter_ns()
     period = 1 << 30  # MicroPython rp2 の ticks の周期
 
     def ticks_ms() -> int:
-        return ((time.monotonic_ns() - t0) // 1_000_000) & (period - 1)
+        return ((time.perf_counter_ns() - t0) // 1_000_000) & (period - 1)
 
     def ticks_us() -> int:
-        return ((time.monotonic_ns() - t0) // 1_000) & (period - 1)
+        return ((time.perf_counter_ns() - t0) // 1_000) & (period - 1)
 
     def ticks_add(t: int, d: int) -> int:
         return (t + d) & (period - 1)

@@ -1,42 +1,52 @@
-"""Si5351B(27 MHz 水晶、受信 PLLA + 送信 VCXO PLLB)のドライバ。core.txgate の周波数源の形。
+"""Si5351B driver (27 MHz crystal, RX on PLLA + TX VCXO on PLLB). Shaped as a core.txgate
+frequency source.
 
-出典: AN619 Rev 0.8、データシート Si5351-B Rev 1.3(初期化の順序は Figure 10)、
-ClockBuilder Pro の生成例(親の docs/Si5351B-RevB-Registers_1454MHz.h)。
-I2C は引数で渡すので、PC でも偽物でテストできる。
+Sources: AN619 Rev 0.8, datasheet Si5351-B Rev 1.3 (initialization order in Figure 10),
+ClockBuilder Pro output example (parent repo docs/Si5351B-RevB-Registers_1454MHz.h).
+I2C is passed in as an argument, so it can be tested on a PC with a fake.
 
-    受信: PLLA。VCO = 27 MHz x (a + b/5625)、LO1 = VCO/4、I/Q = VCO/24(Q は PHOFF で 90 度)
-          同調周波数 = LO1 - IF = 5 VCO / 24 = 5.625 MHz x (a + b/5625) なので b の 1 が 1 kHz
-          同調周波数 = 受信信号の周波数 + rx_offset_hz(低 IF、lnatest の +24 kHz)。帯域の判定は信号で行う
-    送信: PLLB。VCO = f_TX x 6 = 27 MHz x (a + b/10^6)。c = 10^6 は VCXO の条件(AN619 3.2 と 7)
-          MS4 相当は 6 分周の整数。VCXO_Param は周波数を変えるたびに計算し直す
-CLK の番号は確定していないので引数で受ける(config.SI5351_*_CLK)。
+    RX: PLLA. VCO = 27 MHz x (a + b/5625), LO1 = VCO/4, I/Q = VCO/24 (Q at 90 deg via PHOFF)
+        tuning = LO1 - IF = 5 VCO / 24 = 5.625 MHz x (a + b/5625), so 1 step of b is 1 kHz
+        tuning = received signal + rx_offset_hz (low IF, +24 kHz from lnatest).
+        Band checks use the signal frequency
+    TX: PLLB. VCO = f_TX x 6 = 27 MHz x (a + b/10^6). c = 10^6 is the VCXO condition
+        (AN619 3.2 and 7). The MS4 equivalent is an integer divide by 6. VCXO_Param is
+        recomputed on every frequency change
+CLK numbers are not fixed yet, so they are arguments (config.SI5351_*_CLK).
 
-Pico のリセット(ウォッチドッグを含む)では Si5351 は初期化されず、設定と出力が残る。TX_EN が Low でも
-送信クロックが動いていると空中線端子へ漏れ、受信と同じ周波数なら受信できなくなる(electric の手計算で
--40〜-20 dBm、+/-10 dB、仮。未測定)。局に組み込むときの必須手順(この順で、起動の最初に行う):
-    1. GP2 を Low にする。I2C を使う前、I2C のオブジェクトを作る前に行う(I2C が使えなくても必ず実行される)
-    2. TxGate を作る。作るときに GP2 を切ってから tx_off() を呼び、init() の前なのでレジスタ 3 = 0xFF で
-       全出力を止める
-    3. init() で設定する。受信の出力だけを有効にする
-1 と 2 は hw.txctl.si5351_gate が行う。2 で I2C が失敗したら、何もせずウォッチドッグのリセットで再起動を
-繰り返す(オーナー決定、hw.txctl.halt_for_watchdog。起動中のウォッチドッグは 16 秒。docs/tx-time-limit.md §4)。
-送信の出力は tx_on() まで無効のまま。受信の再選局(set_rx)でも有効にならない。
-tx_off() の I2C が失敗すると、PTT は切れていても送信クロックは動いたままで、受信に影響が残る。
-core.txgate は再起動まで送信を拒否するが、受信の妨害は解消しない。送信クロックを止めるには、I2C が
-戻ったあとの init() か再起動が要る(自動で再試行はしない)。
-init() の途中で失敗したら ready にならない
-(tx_hz() が None、tx_ready() が False なので core.txgate が拒否する)。
+A Pico reset (including the watchdog) does not reset the Si5351; its settings and outputs
+remain. Even with TX_EN low, a running TX clock leaks to the antenna terminal and blocks
+reception on the same frequency (-40 to -20 dBm by hand calculation in electric, +/-10 dB,
+provisional, not measured). Required steps when integrating into the station (in this order,
+first thing at startup):
+    1. Drive GP2 low. Do it before using I2C and before creating the I2C object (it must run
+       even if I2C is broken)
+    2. Create the TxGate. On construction it turns GP2 off and then calls tx_off(); since this
+       is before init(), register 3 = 0xFF stops all outputs
+    3. Configure with init(). Only the RX outputs are enabled
+hw.txctl.si5351_gate does 1 and 2. If I2C fails in step 2, do nothing and keep rebooting via
+watchdog resets (owner's decision, hw.txctl.halt_for_watchdog; the startup watchdog is 16 s,
+docs/tx-time-limit.md §4).
+The TX output stays disabled until tx_on(). Retuning RX (set_rx) does not enable it either.
+If the I2C write in tx_off() fails, the TX clock keeps running even though PTT is off, and
+reception stays affected. core.txgate refuses to transmit until reboot, but that does not
+clear the interference. Stopping the TX clock needs init() after I2C recovers, or a reboot
+(no automatic retry).
+If init() fails midway, the driver does not become ready
+(tx_hz() is None and tx_ready() is False, so core.txgate refuses).
 
-未確認(データシートはレジスタの説明を AN619 に委ねていて、解決しない):
-    レジスタ 7 = 0x01 の意味(CBPro の値のまま。AN619 では Reserved)
-    レジスタ 4 = 0x00 の意味(CBPro の DIS_RESET_LOL。AN619 では Reserved)
-制限: PLLB のロック外れは検出できない。AN619 のレジスタ 0 は LOL_B を「Si5351A/C only」としているので、
-Si5351B では LOL_B を使わない。送信側はリセット後の待ち時間(TX_SETTLE_MS)と、SYS_INIT、LOS_XTAL の
-確認で管理する。tx_ready() が True でも PLLB がロックしている保証はない。実機の測定項目。LOL_A は使える。
-データシートとの照合で残る問題:
-    VCXO の出力の中心周波数は 112.5 MHz までと書かれている(データシート 3 章)。送信の
-    144〜146 MHz はデータシートの記載を超えるが、オーナーの実験(144.66 MHz)で確認済み。保証外
-    112.5 MHz を超える異なる周波数は同時に 2 つまで(Table 7)。LO1 と送信でちょうど 2 つ
+Unconfirmed (the datasheet defers register descriptions to AN619, which does not resolve them):
+    meaning of register 7 = 0x01 (kept from CBPro; Reserved in AN619)
+    meaning of register 4 = 0x00 (CBPro's DIS_RESET_LOL; Reserved in AN619)
+Limitation: PLLB loss of lock cannot be detected. AN619 register 0 marks LOL_B as
+"Si5351A/C only", so LOL_B is not used on the Si5351B. The TX side relies on the wait after
+reset (TX_SETTLE_MS) and on checking SYS_INIT and LOS_XTAL. tx_ready() being True does not
+guarantee PLLB is locked; to be measured on hardware. LOL_A can be used.
+Remaining issues from checking against the datasheet:
+    The VCXO output center frequency is specified up to 112.5 MHz (datasheet chapter 3).
+    TX at 144-146 MHz exceeds that, but was confirmed by the owner's experiment (144.66 MHz).
+    Not guaranteed
+    At most 2 distinct frequencies above 112.5 MHz at once (Table 7). LO1 and TX make exactly 2
 """
 
 import time
@@ -88,13 +98,14 @@ _DIVBY4 = const(0x0C)  # Multisynth の 3 バイト目の MSx_DIVBY4
 _IDRV = {2: 0, 4: 1, 6: 2, 8: 3}
 _XTAL_BITS = {6: 0x52, 8: 0x92, 10: 0xD2}  # 下位 6 ビットは 010010b(AN619 のレジスタ 183)
 
-# 仮: 待ちの上限。文書にこの値はない。電源投入から出力までの T_RDY は最大 10 ms(Table 5)なので余裕を取る
+# Provisional: wait limits. The documents give no value; T_RDY from power-up to output is
+# 10 ms max (Table 5), so leave a margin
 INIT_TIMEOUT_MS = 1000  # SYS_INIT
-RX_LOCK_TIMEOUT_MS = 200  # PLLA のロック(LOL_A)
-# PLLB をリセットしたあとに送信クロックを出すまでの待ち。ロック検出の代わり。
-# データシート Rev 1.3 Table 5 の T_RDY(電源投入から出力まで)最大 10 ms を流用する。同表の周波数変更
-# T_FREQ は 10 us だが、ここでは PLL をリセットするので長い方を取る。PLL リセット後の時間そのものの規定は
-# 文書にない(仮)
+RX_LOCK_TIMEOUT_MS = 200  # PLLA lock (LOL_A)
+# Wait after resetting PLLB before outputting the TX clock, in place of lock detection.
+# Reuses T_RDY (power-up to output) of 10 ms max from datasheet Rev 1.3 Table 5. The same
+# table's frequency change time T_FREQ is 10 us, but here the PLL is reset, so take the longer
+# one. The documents specify no time after a PLL reset itself (provisional)
 TX_SETTLE_MS = 10
 
 
@@ -274,19 +285,19 @@ class Si5351B:
 
     # ---- 初期化
     def init(self, rx_hz=None, tx_hz=None):
-        """手順: SYS_INIT 待ち -> 全出力を止める -> 設定 -> PLL リセット -> LOL_A 確認と待ち -> 受信の出力。
-        rx_hz は受信信号の周波数。失敗したら例外。送信の出力は有効にしない。周波数はここで範囲を確かめ、I2C の前に例外にする"""
+        """Steps: wait SYS_INIT -> stop all outputs -> configure -> PLL reset -> check/wait
+        LOL_A -> RX outputs.
+        rx_hz is the received signal frequency. Raises on failure. Never enables the TX
+        output. Frequencies are range-checked here and raise before any I2C access"""
         self._ready = False
         self._tx_hz = self._rx_hz = None
         self._keyed = False
         if rx_hz is not None:
             rx_ratio(rx_hz, self.rx_offset_hz)
-            if self.lo1_clk is None:
-                raise ValueError("RX CLK numbers are not set")
+            self._rx_clks()
         if tx_hz is not None:
             tx_ratio(tx_hz)
-            if self.tx_clk is None:
-                raise ValueError("TX CLK number is not set")
+            self._tx_clk()
         self._oeb = 0xFF
         try:
             self._wait_clear(_SYS_INIT, INIT_TIMEOUT_MS, "SYS_INIT")
@@ -299,7 +310,8 @@ class Si5351B:
             if tx_hz is not None:
                 time.sleep_ms(TX_SETTLE_MS)
             if rx_hz is not None:
-                self._oeb &= ~((1 << self.lo1_clk) | (1 << self.i_clk) | (1 << self.q_clk))
+                lo1, i, q = self._rx_clks()
+                self._oeb &= ~((1 << lo1) | (1 << i) | (1 << q))
                 self._write1(_OEB, self._oeb)
         except BaseException:
             self._oeb = 0xFF
@@ -311,6 +323,19 @@ class Si5351B:
         self._rx_hz = rx_hz
         self._tx_hz = tx_hz
         self._ready = True
+
+    def _rx_clks(self):
+        """(LO1, I, Q) CLK numbers. The constructor guarantees all three or none are set"""
+        lo1, i, q = self.lo1_clk, self.i_clk, self.q_clk
+        if lo1 is None or i is None or q is None:
+            raise ValueError("RX CLK numbers are not set")
+        return lo1, i, q
+
+    def _tx_clk(self):
+        c = self.tx_clk
+        if c is None:
+            raise ValueError("TX CLK number is not set")
+        return c
 
     def _write_config(self, rx_hz, tx_hz):
         # レジスタ 3 と 177 は書かない(0x0003 の 0x00 は送信の出力も有効にしてしまう)
@@ -330,24 +355,28 @@ class Si5351B:
     def _write_controls(self, rx_hz, tx_hz):
         ctrl = [_CTRL_UNUSED] * 8
         if rx_hz is not None:
-            ctrl[self.lo1_clk] = _CTRL_LO1 | self._idrv[0]
-            ctrl[self.i_clk] = _CTRL_IQ | self._idrv[1]
-            ctrl[self.q_clk] = _CTRL_IQ | self._idrv[1]
+            lo1, i, q = self._rx_clks()
+            ctrl[lo1] = _CTRL_LO1 | self._idrv[0]
+            ctrl[i] = _CTRL_IQ | self._idrv[1]
+            ctrl[q] = _CTRL_IQ | self._idrv[1]
         if tx_hz is not None:
-            ctrl[self.tx_clk] = _CTRL_TX | self._idrv[2]
+            ctrl[self._tx_clk()] = _CTRL_TX | self._idrv[2]
         self._write(_CLK0_CTRL, bytes(ctrl))
 
     def _write_multisynths(self, rx_hz, tx_hz):
         if rx_hz is not None:
+            lo1, i, q = self._rx_clks()
             self._write_rx(rx_hz)
-            self._write(_MS0 + 8 * self.lo1_clk, _pack(0, 0, 1, _DIVBY4))  # 150 MHz を超えるので 4 分周
+            # Divide by 4 since it is above 150 MHz
+            self._write(_MS0 + 8 * lo1, _pack(0, 0, 1, _DIVBY4))
             iq = _pack(*ms_params(IQ_MS, 0, 1))
-            self._write(_MS0 + 8 * self.i_clk, iq)
-            self._write(_MS0 + 8 * self.q_clk, iq)
-            self._write1(_PHOFF0 + self.lo1_clk, 0)
-            self._write1(_PHOFF0 + self.i_clk, 0)
-            self._write1(_PHOFF0 + self.q_clk, PHOFF_90)
+            self._write(_MS0 + 8 * i, iq)
+            self._write(_MS0 + 8 * q, iq)
+            self._write1(_PHOFF0 + lo1, 0)
+            self._write1(_PHOFF0 + i, 0)
+            self._write1(_PHOFF0 + q, PHOFF_90)
         if tx_hz is not None:
+            tx = self._tx_clk()
             self._write_tx(tx_hz)
-            self._write(_MS0 + 8 * self.tx_clk, _pack(*ms_params(TX_MS, 0, 1)))
-            self._write1(_PHOFF0 + self.tx_clk, 0)
+            self._write(_MS0 + 8 * tx, _pack(*ms_params(TX_MS, 0, 1)))
+            self._write1(_PHOFF0 + tx, 0)

@@ -9,7 +9,7 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
     GP4/5 I2C0 SDA/SCL(無線機ボード J5。将来の Si5351 用)
     GP6  GNSS RESET_N(BBR を消すので通常は駆動しない)
     GP7  状態表示 LED(赤、D2)
-    GP8  (未接続)455 kHz FM IF の入力(RX_SOURCE = "if" のとき。リミッタの 0-3.3 V の方形波)
+    GP8  (未接続)455 kHz FM IF の入力(Si5351 モード用。リミッタの 0-3.3 V の方形波)
     GP9  microSD カード検出
     GP10-15 microSD(SPI: SCK GP10 / MOSI GP11 / MISO GP12 / CS GP15。DAT1/2 = GP13/14)
     GP16-20 LCD ST7789(SPI0: DC GP16 / CS GP17 / SCK GP18 / MOSI GP19、BL GP20)。
@@ -25,13 +25,18 @@ Pico 2 W に載せ替えても使えるよう、無線チップが使う GP23/GP
 
 from micropython import const
 
+# 動作モード(config_local.py で上書きする)
+#   "tnc"     外付け TNC(既定)。無線機の音声出力を ADC(GP26)で受け、送信は PWM の音声(GP3)と
+#             PTT(GP2)で行う。周波数と電波型式は無線機側で決まる
+#   "si5351"  Si5351B を使うフル機能のトランシーバー(未完成)。ディスプレイにそう表示して何もしない
+#             (受信・送信・GNSS・ビーコンは動かない。PTT は切ったまま)
+MODE = "tnc"
+
 PIN_AFSK_OUT = const(3)
 PIN_PTT = const(2)
 PIN_RX_ADC = const(26)
-# 受信の入力: "adc" = GP26 の音声を ADC で取る(hw.afsk_rx)、
-#             "if"  = GP8 の 455 kHz FM IF(リミッタの方形波)を PIO でエッジの時刻から
-#                     復調する(hw.fm_if_rx)
-RX_SOURCE = "adc"
+# Si5351 モード用(未完成。外付け TNC モードでは使わない)。455 kHz FM IF(hw.fm_if_rx)を
+# PIO でエッジの時刻から復調する入力
 PIN_RX_IF = const(8)
 RX_IF_METHOD = "pll"  # "pll"(DPLL。乱れたエッジに強い)/ "count"(周期の逆数計数)
 PIN_BEACON_SW = const(21)  # 内部プルアップ。Low(GND に落とす)でビーコン送出オン(未接続はオフ)
@@ -76,12 +81,20 @@ TX_TAIL_MS = const(30)
 # 送信波形のバッファの長さ(起動時に 1 回だけ確保して使い回す。1 ms あたり 38.4 バイト)。
 # ビーコン(Mic-E、コメント付き)は約 0.7 秒。これより長いパケットは送れない
 TX_BUFFER_MS = const(1500)
+# FX.25(RS で誤り訂正を付ける)で送るか。内側が 128 バイトを超えるフレームは従来の AX.25 で送る。
+# 送信時間は延びる(実測: Mic-E 相当で 715 ms → 913 ms、前置フラグ 300 ms を含む)。
+# 相互運用は FT5D(AX.25 のみ)と Direwolf(FX.25)で確認済み。既定は従来どおり False
+FX25_TX = False
+# BLE(スマホからの設定変更と受信情報の読み取り。docs/ble-protocol.md)。外付け TNC モードだけで動く。
+# 認証(LCD に出る 6 桁のパスキー)が済んだ接続だけが操作できる。BLE が起動できなくても局は動く
+BLE_ENABLED = True
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
-# 自局。ソースに書かない(公開リポジトリに残さず、設定前に送信しないため)。None の間は core.txgate が送信を拒否する。
-# 仮: 電源を切っても残る設定の保存ができるまでは、git 管理外の src/config_local.py で設定する
-# (下のこのファイルの最後を参照。例は tools/config_local.example.py)。
-# 電波を出す前に SSID・経路も含めて確認する
+# Own callsign. Never write it in the source (keeps it out of the public repository and
+# prevents transmitting before it is configured). While None, core.txgate refuses to transmit.
+# Provisional: until settings can be persisted across power cycles, set it in
+# src/config_local.py, which is not tracked by git (see the end of this file; example in
+# tools/config_local.example.py). Check the SSID and path as well before going on the air.
 CALLSIGN = None
 SSID = 7
 TEST_CALL = "Q1TEST"  # 架空のコールサイン。PTT を入れない音声だけのデモで使う
@@ -107,13 +120,15 @@ TX_ENABLED = False
 # 送信周波数(Hz)を書く。電波が出るので、ダミーロードをつないでオーナーが判断したときだけ設定する。
 # tests/ はこの値を見ない(実機テストは常に偽のピンを使う)
 BENCH_TX_HZ = None
-# Si5351B(hw.si5351)。出力の番号は未確定なので None。局にはまだ組み込んでいない
+# Si5351B(hw.si5351)。Si5351 モード(config.MODE = "si5351"、未完成)用。
+# 出力の番号は未確定なので None。局にはまだ組み込んでいない
 SI5351_I2C_ADDR = const(0x60)
 SI5351_TX_CLK = None
 SI5351_LO1_CLK = None
 SI5351_I_CLK = None
 SI5351_Q_CLK = None
-SI5351_RX_OFFSET_HZ = 24_000  # 仮: 低 IF(同調 = 信号 + これ)。lnatest の値で、実際の符号は実機で確認する
+# Provisional: low IF (tuning = signal + this). Value from lnatest; confirm the sign on hardware
+SI5351_RX_OFFSET_HZ = 24_000
 SI5351_APR = 240  # 仮: VCXO の引き込み幅(ppm)。生成例の値でデータシートの上限(+/-240)
 SI5351_IDRV_LO1_MA = 8  # 仮: 出力の駆動電流(2、4、6、8 mA)。CBPro の生成例の値
 SI5351_IDRV_IQ_MA = 8  # 仮

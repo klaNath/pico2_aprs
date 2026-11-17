@@ -40,6 +40,7 @@ class Ui:
         self._map_kind = None  # 小さな地図に最後に描いたもの
         self._dirty_all = True
         self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
+        self._pk_drawn = None  # 全画面で出しているパスキー(None = 通常の画面)
 
     # ---- ボタン
     def _pressed(self):
@@ -63,6 +64,15 @@ class Ui:
     def poll(self, now_ms=None):
         if now_ms is None:
             now_ms = time.ticks_ms()
+        pk = self.status.passkey
+        if pk != self._pk_drawn:  # BLE のペアリング中は、パスキーを全画面で出す
+            self._pk_drawn = pk
+            if pk is None:
+                self._dirty_all = True  # 通常の画面に戻す
+            else:
+                self._draw_passkey(pk)
+        if pk is not None:
+            return
         for k in self._pressed():
             if k == "A":
                 self._move(-1)
@@ -114,6 +124,11 @@ class Ui:
         self._draw_status()
         if lay.wide:
             self._draw_small_map(now_ms)
+
+    def _draw_passkey(self, pk):
+        lay = self.lay
+        self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_passkey(
+            fb, dy, lay.w, lay.h, pk))
 
     def draw_tick(self, now_ms):
         if self.map_mode and not self.lay.wide:

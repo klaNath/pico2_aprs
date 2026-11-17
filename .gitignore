@@ -60,3 +60,16 @@ claude_docs/
 
 # このマシンだけの設定(コールサインなど)。git に入れない
 src/config_local.py
+
+# --- 参考資料(取扱説明書・データシートなど。配布元から入手する) ---
+# hw/ の回路図 PDF(ft818_if.pdf など)は追跡する
+docs/*.pdf
+
+# --- 回路シミュレーション(ltspice-mcp の作業領域・設定、LTspice の出力) ---
+.ltspice-mcp/
+ltspice-mcp.toml
+*.raw
+*.op.raw
+
+# --- KiCad の検査レポート(gen_sch.py / ERC で再生成できる) ---
+*.rpt

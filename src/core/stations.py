@@ -7,6 +7,8 @@
 - 自局(own_call と SSID まで一致)のパケットは、デジピーターで中継されて戻ってきたもの。
   own フラグを立て、地図には出さない(一覧では色を変えて区別する)
 時刻は time.ticks_ms() の値(ラップアラウンドするので差は ticks_diff で取る)。
+microSD から復元した局(core.stationfile)は、復元した時刻を heard_ms に、それまでの経過秒を
+age0_s に持つ(ticks_diff は約 6 日までしか正しくないので、起動前の経過時間は ticks に入れない)。
 """
 
 import time
@@ -21,9 +23,14 @@ MAX_STATIONS = 64
 MAP_STATIONS = 6
 
 
+def station_key(packet):
+    """表のキー: オブジェクト/アイテムは名前、それ以外は送信局(SSID 込み)"""
+    return packet.name if packet.kind in ("object", "item") and packet.name else packet.src
+
+
 class Station:
     __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own",
-                 "level_db", "clip")
+                 "level_db", "clip", "age0_s", "pos_age0_s")
 
     def __init__(self, call, own=False):
         self.call = call
@@ -37,9 +44,18 @@ class Station:
         # 最後に受けたパケットの音量(ピーク、dBFS)とクリップしたか / None = 測っていない
         self.level_db: "Optional[float]" = None
         self.clip = False
+        # 復元した局: heard_ms / pos_ms の時点で、すでにたっていた秒数(受信し直すと 0)
+        self.age0_s = 0
+        self.pos_age0_s = 0
 
     def age_s(self, now_ms):
-        return time.ticks_diff(now_ms, self.heard_ms) // 1000
+        return time.ticks_diff(now_ms, self.heard_ms) // 1000 + self.age0_s
+
+    def pos_age_s(self, now_ms):
+        """最後に位置を受けてからの秒数 / None = 位置を受けていない"""
+        if self.pos_ms is None:
+            return None
+        return time.ticks_diff(now_ms, self.pos_ms) // 1000 + self.pos_age0_s
 
     def stale(self, now_ms):
         return self.age_s(now_ms) >= STALE_S
@@ -59,7 +75,7 @@ class Stations:
         level_db, clip: このパケットの音量(ADC 入力のとき。core.level)"""
         if now_ms is None:
             now_ms = time.ticks_ms()
-        call = packet.name if packet.kind in ("object", "item") and packet.name else packet.src
+        call = station_key(packet)
         st = self.by_call.get(call)
         if st is None:
             st = Station(call, own=call == self.own_call)
@@ -69,6 +85,7 @@ class Stations:
         self.order.insert(0, st)
         st.packet = packet
         st.heard_ms = now_ms
+        st.age0_s = 0
         st.count += 1
         st.level_db = level_db
         st.clip = clip
@@ -76,9 +93,45 @@ class Stations:
             st.lat = packet.lat
             st.lon = packet.lon
             st.pos_ms = now_ms
+            st.pos_age0_s = 0
         while len(self.order) > self.max:
             old = self.order.pop()
             del self.by_call[old.call]
+        self.version += 1
+        return st
+
+    def restore(self, packet, age_s, now_ms, count=1, lat=None, lon=None, pos_age_s=None,
+                level_db=None, clip=False):
+        """保存しておいた局(最後のパケット packet)を表の末尾(いちばん古い側)に加える。
+        新しい順に呼ぶこと。
+        age_s: 最後の受信からの秒数、pos_age_s: 最後に位置を受けてからの秒数。
+        起動後にすでに受信した局は、受信数を足し、位置が無ければ保存した位置を使う(それ以外は今の値)。
+        表がいっぱいなら加えない。加えた/足した Station を返す(加えなければ None)"""
+        call = station_key(packet)
+        st = self.by_call.get(call)
+        if st is not None:
+            st.count += count
+            if st.lat is None and lat is not None and pos_age_s is not None:
+                st.lat, st.lon = lat, lon
+                st.pos_ms = now_ms
+                st.pos_age0_s = pos_age_s
+            self.version += 1
+            return st
+        if len(self.order) >= self.max:
+            return None
+        st = Station(call, own=call == self.own_call)
+        st.packet = packet
+        st.heard_ms = now_ms
+        st.age0_s = age_s
+        st.count = count
+        st.level_db = level_db
+        st.clip = clip
+        if lat is not None and lon is not None and pos_age_s is not None:
+            st.lat, st.lon = lat, lon
+            st.pos_ms = now_ms
+            st.pos_age0_s = pos_age_s
+        self.by_call[call] = st
+        self.order.append(st)
         self.version += 1
         return st
 

@@ -130,7 +130,7 @@ def test_receiver_stop_does_not_wait_forever():
     from hw.afsk_rx import Receiver
 
     rx = Receiver.__new__(Receiver)
-    rx.ring = FakeRing()
+    rx.ring = FakeRing()  # pyright: ignore[reportAttributeAccessIssue]
     rx.running = True
     rx.stopped = False  # Core1 が応答しない
     assert rx.stop(timeout_ms=20) is False
@@ -142,9 +142,18 @@ def _station_for_close(rx):
     st = station.Station.__new__(station.Station)
     st.tx, st.gate = _keyed_tx()
     st.rx = rx
-    st.led = _fake_hw.Any()
-    st.sd = _fake_hw.Any()
+    # Fakes in place of the real hardware types
+    st.led = _fake_hw.Any()  # pyright: ignore[reportAttributeAccessIssue]
+    st.sd = _fake_hw.Any()  # pyright: ignore[reportAttributeAccessIssue]
+    st.gnss = _NoTimeGnss()  # pyright: ignore[reportAttributeAccessIssue]
     return st
+
+
+class _NoTimeGnss:
+    """close() が SD に渡す時刻を聞く(時刻は不明)"""
+
+    class rtc:
+        synced = False
 
 
 class RxChecksPtt:
@@ -312,6 +321,7 @@ def test_config_defaults_do_not_transmit():
     except ImportError:
         assert config.CALLSIGN is None
         assert config.TX_ENABLED is False
+        assert config.MODE == "tnc"  # 既定は外付け TNC
         assert config.BENCH_TX_HZ is None
 
 
@@ -326,6 +336,8 @@ def _station(gate_on=False):
     st = station.Station()
     if gate_on:
         st.gate.callsign, st.gate.allowed, st.gate.freq = CALL, True, FixedFreq(145_000_000)
+    else:  # 既定の状態にする(src/config_local.py でコールサインと送信の許可を設定していても)
+        st.gate.callsign, st.gate.allowed = None, False
     st.call = CALL + "-7"
     st.tx.settle_ms = 0
     st.status.fix, st.status.lat, st.status.lon = 3, 35.68, 139.76
@@ -341,12 +353,49 @@ def test_station_default_never_keys_ptt():
     import config
 
     st = _station()
-    # コールサインと許可をそろえても、周波数が未確定なら入らない
-    st.gate.callsign, st.gate.allowed = CALL, True
+    # 既定(コールサイン未設定、送信は許可されていない)では入らない
     st._beacon(0)
     assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
-    assert st.status.tx_count == 1 and st._refused == "frequency not set"  # dry run として数える
+    assert st.status.tx_count == 1 and st._refused == "callsign not set"  # dry run として数える
+    # コールサインだけでは入らない。許可(TX_ENABLED)も要る
+    st.gate.callsign = CALL
+    st.beacon.reset()
+    st._beacon(0)
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    assert st.status.tx_count == 2 and st._refused == "TX not enabled"
     st.close()
+
+
+def test_tnc_gate_does_not_need_a_frequency():
+    # 外付け TNC モード: 周波数は無線機側で決まる。コールサインと許可だけで開く
+    if not _fake_hw.install():
+        return
+    import config
+    from hw import txctl
+
+    keep = config.CALLSIGN, config.TX_ENABLED
+    try:
+        config.CALLSIGN, config.TX_ENABLED = CALL, True
+        gate = txctl.tnc_gate()
+        assert gate.refuse_reason() is None
+        config.CALLSIGN = None
+        assert txctl.tnc_gate().refuse_reason() == "callsign not set"
+        config.CALLSIGN, config.TX_ENABLED = CALL, False
+        assert txctl.tnc_gate().refuse_reason() == "TX not enabled"
+    finally:
+        config.CALLSIGN, config.TX_ENABLED = keep
+
+
+def test_gate_checks_frequency_unless_told_not_to():
+    # 既定(Si5351 モードなど周波数を Pico が決める側)は、これまでどおり周波数を見る
+    from core.txgate import TxGate
+
+    assert TxGate(Rec(), callsign=CALL, allowed=True).refuse_reason() == "frequency not set"
+    gate = TxGate(Rec(), callsign=CALL, allowed=True, check_freq=False)
+    assert gate.refuse_reason() is None
+    gate.key()
+    assert gate.keyed
+    gate.unkey()
 
 
 def test_station_keys_when_gate_is_open():
@@ -420,7 +469,8 @@ def test_no_immediate_beacon_after_abnormal_restart():
         restart.set_fails(0)
     now = time.ticks_ms()
     st._beacon(now)
-    assert st.status.tx_count == 0 and st.status.next_beacon_s > 0
+    nb = st.status.next_beacon_s
+    assert st.status.tx_count == 0 and nb is not None and nb > 0
     st._beacon(time.ticks_add(now, (config.BEACON_RESTART_HOLD_S + 1) * 1000))
     assert st.status.tx_count == 1
     st.close()
@@ -561,8 +611,9 @@ def test_startup_i2c_failure_halts_with_gp2_low_on_every_restart():
 
     off = 0 if config.PTT_ACTIVE_HIGH else 1
     resets = []
-    keep = _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED
-    _fake_hw.sys.modules["machine"].reset = lambda: resets.append(1)
+    machine = _fake_hw.sys.modules["machine"]
+    keep = machine.reset, config.CALLSIGN, config.TX_ENABLED
+    machine.__dict__["reset"] = lambda: resets.append(1)
     config.CALLSIGN, config.TX_ENABLED = CALL, True  # 送信を許可していても送らない
     restart.set_fails(0)
     try:
@@ -585,7 +636,7 @@ def test_startup_i2c_failure_halts_with_gp2_low_on_every_restart():
             assert set(_fake_hw.Pin.history[config.PIN_PTT]) == {off}  # High を書かない
         assert resets == [] and restart.fails() == 0  # バックオフの経路に入らない
     finally:
-        _fake_hw.sys.modules["machine"].reset, config.CALLSIGN, config.TX_ENABLED = keep
+        machine.__dict__["reset"], config.CALLSIGN, config.TX_ENABLED = keep
 
 
 def test_startup_make_freq_failure_also_halts():
@@ -784,3 +835,143 @@ def test_main_ctrl_c_holds_the_watchdog_with_a_timer():
     before = wdts[-1].feeds
     timers[0].callback(timers[0])
     assert wdts[-1].feeds == before + 1
+
+
+# ---- 動作モード(config.MODE)
+def test_si5351_mode_does_nothing_and_keeps_ptt_off():
+    if not _fake_hw.install():
+        return
+    import config
+    import station
+    from hw import watchdog
+
+    _fake_hw.WDT.instances.clear()
+    _fake_hw.Pin.reset()
+    keep = config.MODE, config.CALLSIGN, config.TX_ENABLED
+    # Must stay idle even when transmitting is allowed
+    config.MODE, config.CALLSIGN, config.TX_ENABLED = "si5351", CALL, True
+    _fake_hw.Pin.state[config.PIN_PTT] = 1  # リセット前の High が残っている場合
+    wd = watchdog.Watchdog()
+    wd.arm(watchdog.STARTUP_MS)
+    shown = []
+    from ui import notice
+
+    keep_show = notice.show
+    notice.show = lambda lines, color, scratch_bytes=0: shown.append(list(lines))
+    try:
+        station.run(duration_ms=300, wdt=wd)
+    finally:
+        notice.show = keep_show
+        config.MODE, config.CALLSIGN, config.TX_ENABLED = keep
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    assert _fake_hw.Pin.state[config.PIN_PTT] == (0 if config.PTT_ACTIVE_HIGH else 1)
+    assert len(shown) == 1 and "NOT COMPLETE" in shown[0]  # 未完成の表示
+    # 局は作られていない(受信・GNSS・SD・ビーコンのピンに触れていない)
+    for pin in (config.PIN_BEACON_SW, config.PIN_STATUS_LED, config.PIN_SD_CS, config.PIN_AFSK_OUT):
+        assert pin not in _fake_hw.Pin.history
+    assert _fake_hw.WDT.instances[-1].feeds >= 2  # 待つ間もフィードする
+
+
+def test_unknown_mode_is_an_error():
+    if not _fake_hw.install():
+        return
+    import config
+    import station
+
+    keep = config.MODE
+    config.MODE = "bogus"
+    try:
+        station.run(duration_ms=0)
+        raise AssertionError("ValueError expected")
+    except ValueError:
+        pass
+    finally:
+        config.MODE = keep
+
+
+# ---- 設定の変更(core.settings、BLE から)
+def test_settings_change_applies_to_running_station_and_switch_still_rules():
+    if not _fake_hw.install():
+        return
+    from test_settings import FakeFs
+
+    import config
+    from core.settings import Settings
+
+    fs = FakeFs()  # フラッシュの /settings.json には書かない
+    s = Settings(config, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
+    st = _station()
+    s.listeners.append(st.apply_settings)
+    try:
+        s.set({"callsign": CALL, "ssid": 9, "tx_enabled": True, "fx25_tx": True,
+               "beacon_moving_s": 45, "beacon_still_s": 900, "beacon_move_m": 30})
+        assert st.gate.callsign == CALL and st.gate.allowed is True
+        assert st.call == CALL + "-9" and st.status.callsign == st.call
+        assert st.stations.own_call == st.call
+        assert st.tx.fx is not None
+        assert (st.beacon.moving_s, st.beacon.still_s, st.beacon.move_m) == (45, 900, 30.0)
+        # 設定で送信を許可しても、ビーコンスイッチがオフなら送らない
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        st._beacon(0)
+        assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == [] and st.status.tx_count == 0
+        # スイッチをオンにすると送る(偽のピン)
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        st._beacon(0)
+        assert st.status.tx_count == 1 and st.tx.fx_used == 1
+        assert len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        # 送信の許可を取り消すと、次のビーコンは dry run
+        s.set({"tx_enabled": False})
+        assert st.gate.allowed is False and st.tx.fx is not None
+        st.beacon.reset()
+        st._beacon(0)
+        assert st.status.tx_count == 2 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+    finally:
+        s.reset()  # config を元に戻す(ほかのテストのため)
+        st.close()
+
+
+def test_station_feeds_remote_status_tx_and_stations():
+    if not _fake_hw.install():
+        return
+    import time
+
+    from test_remote import Link
+    from test_settings import FakeFs
+
+    import config
+    from aprs.packet import parse_frame
+    from core.remote import Remote
+    from core.settings import Settings
+    from tnc.ax25 import Frame
+
+    fs = FakeFs()
+    s = Settings(config, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
+    st = _station()
+    link = Link()
+    st.remote = r = Remote(s, link.write, st.remote_status, st.remote_stations)
+    r.attach()
+    try:
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        st._beacon(0)
+        d = st.remote_status()
+        assert d["sw"] is False and d["tx_ready"] is False and d["last_tx_s"] is None
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        st._beacon(time.ticks_ms())  # ゲートが拒否する(既定): dry run
+        d = st.remote_status()
+        assert d["sw"] is True and d["tx_ready"] is False and d["tx_refuse"] == "callsign not set"
+        assert d["last_tx_s"] == 0 and d["lat"] == 35.68
+        st.gate.callsign, st.gate.allowed = CALL, True
+        assert st.remote_status()["tx_ready"] is True
+        st.stations.update(parse_frame(Frame.parse("Q1AAA-9>APRS:!3540.12N/13945.67E>x")), 0)
+        r.handle(b'{"op": "stations.list", "id": 3}')
+        r.poll(0)
+        ms = link.take()
+        kinds = [m["t"] for m in ms]
+        assert "tx" in kinds and kinds.count("station") == 1 and "stations.end" in kinds
+        tx = [m for m in ms if m["t"] == "tx"][0]
+        assert tx["dry"] is True and tx["tnc2"].startswith(CALL + "-7>")
+        stn = [m for m in ms if m["t"] == "station"][0]
+        assert stn["src"] == "Q1AAA-9" and stn["count"] == 1 and abs(stn["lat"] - 35.668) < 0.001
+        assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    finally:
+        st.close()

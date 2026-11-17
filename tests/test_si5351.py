@@ -7,6 +7,9 @@ GENERATED は ClockBuilder Pro の生成例(親の docs/Si5351B-RevB-Registers_1
 from core.txgate import TxGate, TxRefused
 from hw.si5351 import Si5351B, Si5351Error, ms_params, rx_ratio, tx_ratio, vcxo_param
 
+# si5351 モードは未完成で使っていないので止めておく。実装を進めるときにこの行を消して復活させる
+SKIP = "si5351 mode is not complete (remove SKIP to re-enable)"
+
 GENERATED = {
     0x02: 0x13, 0x03: 0x00, 0x04: 0x00, 0x07: 0x01, 0x0F: 0x00, 0x10: 0x4F,
     0x11: 0x8C, 0x12: 0x0F, 0x13: 0x0F, 0x14: 0x6F, 0x15: 0x8C, 0x16: 0x8C,

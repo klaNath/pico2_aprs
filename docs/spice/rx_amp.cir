@@ -1,0 +1,22 @@
+* RX (hw/ft818_if の回路図と同じ部品番号): DATA OUT -> C5 -> U1A (x3.2) -> R7/C7 -> GP26
+* 理想オペアンプ。ZS は無線機 DATA OUT の出力インピーダンス(取説に記載なし)
+* RMAIN はメイン基板の R1(GP26 から GND へ 10k)。外したときは 1G にする
+.param ZS=10k RMAIN=10k
+V1 in 0 AC 1
+Rs in s {ZS}
+C5 s n 1u
+R4 n vbias 100k
+R8 vcc vbias 47k
+R9 vbias 0 47k
+C8 vbias 0 1u
+Vcc vcc 0 3.3
+* op-amp: + = n, - = fb
+E1 o 0 n fb 1e5
+R5 o fb 22k
+R6 fb g 10k
+C6 g 0 10u
+R7 o adc 2.2k
+C7 adc 0 10n
+Rmain adc 0 {RMAIN}
+.ac dec 50 10 100k
+.end

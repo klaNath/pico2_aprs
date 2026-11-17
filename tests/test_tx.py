@@ -21,7 +21,7 @@ class FakePin:
         self.v = v
 
 
-def _tx(max_ms=config.TX_BUFFER_MS):
+def _tx(max_ms=config.TX_BUFFER_MS, fx25=False):
     from hw import txctl
     from hw.afsk_tx import AfskTx
 
@@ -30,8 +30,42 @@ def _tx(max_ms=config.TX_BUFFER_MS):
     # 偽のピンなので、架空のコールサインと周波数で条件をそろえる
     gate = TxGate(pin, callsign="Q1TEST", allowed=True, freq=FixedFreq(145_000_000))
     tx = AfskTx(config.PIN_AFSK_OUT, gate, config.FS, config.PWM_TOP,
-                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, max_ms=max_ms)
+                config.TX_AMPLITUDE, config.TX_DELAY_MS, config.TX_TAIL_MS, max_ms=max_ms,
+                fx25=fx25)
     return tx, pin
+
+
+def test_hw_tx_fx25_build():
+    import gc
+
+    tx, _pin = _tx(fx25=True)
+    try:
+        f = bytes(Frame.parse("JA1XYZ-9>APRS,WIDE1-1:!3540.12N/13945.67E>Pico2 TX test").encode())
+        t0 = time.ticks_us()
+        n = tx.build([f])  # 内側が 128 バイト以下: FX.25
+        tb = time.ticks_diff(time.ticks_us(), t0)
+        assert tx.fx_used == 1
+        gc.collect()
+        free = gc.mem_free()
+        tx.build([f])
+        assert free - gc.mem_free() < 2048  # 2 回目以降は大きな確保をしない
+        fx = tx.fx
+        tx.fx = None  # 同じバッファで従来の AX.25 の長さを測る(2 つ目の AfskTx は確保しない)
+        try:
+            n_plain = tx.build([f])
+        finally:
+            tx.fx = fx
+        assert tx.fx_used == 0
+        print("fx25 %d ms of audio (plain %d ms), build %d ms"
+              % (n * 1000 // config.FS, n_plain * 1000 // config.FS, tb // 1000))
+        assert n > n_plain
+        assert n <= tx.nmax
+        # 128 バイトを超える内側は従来の AX.25 のまま
+        big = bytes(Frame.parse("JA1XYZ-9>APRS,WIDE1-1:>" + "x" * 104).encode())  # 130 バイト
+        nb = tx.build([big])
+        assert tx.fx_used == 0 and nb > 0
+    finally:
+        tx.close()
 
 
 def test_hw_tx_timing_and_ptt():
@@ -87,5 +121,23 @@ def test_hw_tx_buffer_reused():
             raise AssertionError("ValueError expected")
         except ValueError:
             pass
+    finally:
+        tx.close()
+
+
+def test_hw_tx_set_fx25_switches_without_reallocating():
+    tx, _pin = _tx(fx25=False)
+    try:
+        f = bytes(Frame.parse("JA1XYZ-9>APRS,WIDE1-1:!3540.12N/13945.67E>Pico2 TX test").encode())
+        assert tx.fx is None
+        n_plain = tx.build([f])
+        tx.set_fx25(True)  # 設定の変更(core.settings)で実行中に切り替える
+        enc = tx.fx
+        assert enc is not None
+        assert tx.build([f]) > n_plain and tx.fx_used == 1
+        tx.set_fx25(False)
+        assert tx.fx is None and tx.build([f]) == n_plain and tx.fx_used == 0
+        tx.set_fx25(True)
+        assert tx.fx is enc  # 作り直さない
     finally:
         tx.close()

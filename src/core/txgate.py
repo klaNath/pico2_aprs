@@ -1,16 +1,21 @@
-"""送信の出口。PTT はここだけで操作する。ハードウェアに依存しないので PC でもテストできる。
+"""The transmit exit. PTT is operated only here. Hardware independent, so it is testable on a PC.
 
-ピンは偽物に差し替えられる(hw.txctl が本物のピンを渡す)。
-    TxGate     条件がそろったときだけ PTT を入れる。既定はすべて拒否
-    AudioOnly  音声(GP3)だけを出す試験用。PTT には触らない
-送信の条件(コールサインが未設定なら送信しない、144〜146MHz の外では送信しない):
-    コールサインが設定されている / 送信が許可されている / 周波数が確定して帯域内にある
-周波数と電波型式ごとの送信可否の表(法令の使用区別とバンドプラン)は、内容を一次資料で確認してから refuse_reason() に加える。
-順序(周波数源の出力は送信の間だけ有効にする):
-    開始: 条件の確認(周波数源の tx_ready を含む)-> 送受切替 -> 送信クロック有効 -> PTT
-    終了: PTT -> 送信クロック無効 -> 送受切替
-入れている時間の上限(APRS 1 回で 5 秒。docs/tx-time-limit.md)もここで持つ。expired() を見て止めるのは呼び出し側(hw.afsk_tx)。
-ファームウェアが止まったときの保護ではない(それはウォッチドッグの役目)。
+Pins can be replaced with fakes (hw.txctl passes the real pins).
+    TxGate     keys PTT only when all conditions hold. Refuses everything by default
+    AudioOnly  test helper that outputs audio (GP3) only. Never touches PTT
+Transmit conditions (no transmission without a callsign, none outside 144-146 MHz):
+    callsign is set / transmitting is allowed / frequency is fixed and inside the band
+External TNC mode (default, hw.txctl.tnc_gate) does not check the frequency (check_freq=False).
+The radio decides frequency and emission type and the Pico cannot know them, so they are the
+owner's responsibility. Si5351 mode (unfinished) checks the frequency.
+A table of allowed frequencies per emission type (legal band usage and band plan) is to be
+added to refuse_reason() only after its contents are checked against primary sources.
+Order (the frequency source's output is enabled only while transmitting):
+    start: check conditions (including the source's tx_ready) -> T/R switch -> TX clock on -> PTT
+    end:   PTT -> TX clock off -> T/R switch
+The key-down time limit (5 s per APRS transmission, docs/tx-time-limit.md) is also kept here.
+The caller (hw.afsk_tx) watches expired() and stops.
+This is not a protection against firmware hangs (that is the watchdog's job).
 """
 
 import time
@@ -50,17 +55,19 @@ def display_call(call, ssid=0):
 
 
 class UnsetFreq:
-    """周波数源のスタブ(仮)。Si5351 のドライバができるまで、周波数は常に未確定とする。
+    """Frequency source stub (provisional). Until the Si5351 driver exists, the frequency is
+    always unknown.
 
-    ドライバは同じ形にする:
-        tx_hz()   確定した送信周波数(未確定なら None)
-        tx_ready()  送信クロックを出してよい状態か(PLL のロック検出とは限らない)
-        tx_on() / tx_off()  送信クロックの出力を有効 / 無効にする
-    ドライバへの注意:
-        Pico のリセットでは Si5351 は初期化されず、設定と出力が残る。TxGate は作るときに tx_off() を
-        呼ぶので、ここで I2C に書けるようにしておく
-        CBPro の一覧は CLK_OEB = 0 で、そのまま書くと送信クロックも有効になる。0x0003 をそのまま書かない
-        送信クロックの番号は固定しない(config.SI5351_TX_CLK)"""
+    Drivers take the same shape:
+        tx_hz()   the fixed transmit frequency (None if not fixed)
+        tx_ready()  whether the TX clock may be output (not necessarily PLL lock detection)
+        tx_on() / tx_off()  enable / disable the TX clock output
+    Notes for drivers:
+        A Pico reset does not reset the Si5351; its settings and outputs remain. TxGate calls
+        tx_off() when constructed, so I2C must be writable at that point
+        The CBPro register list has CLK_OEB = 0, so writing it as is also enables the TX
+        clock. Do not write 0x0003 as is
+        Do not hard-code the TX clock number (config.SI5351_TX_CLK)"""
 
     def tx_hz(self):
         return None
@@ -96,14 +103,19 @@ class FixedFreq:
 
 class TxGate:
     def __init__(self, pin, active_high=True, callsign=None, allowed=False, freq=None, tr=None,
-                 max_ms=APRS_MAX_MS):
-        """callsign: 自局(SSID なし)。allowed: 送信の許可(config.TX_ENABLED)
-        freq: tx_hz() を持つ周波数源(省略時は UnsetFreq = 常に拒否)
-        tr: 送受切替(アンテナ切替の方式が未決なので差し込む形だけ)。tx() と rx() を持つ。None なら何もしない"""
+                 max_ms=APRS_MAX_MS, check_freq=True):
+        """callsign: own callsign (without SSID). allowed: transmit permission (config.TX_ENABLED)
+        freq: frequency source with tx_hz() (default UnsetFreq = always refuse)
+        tr: T/R switch (only a plug-in point, since the antenna switching scheme is undecided).
+            Has tx() and rx(). None does nothing
+        check_freq: if False, do not check that the frequency is fixed and in band. For external
+        TNC mode (the radio decides the frequency, which the Pico cannot know). The callsign,
+        permission and time limit still apply the same way"""
         self._pin = pin
         self._on = 1 if active_high else 0
         self.callsign = callsign
         self.allowed = allowed
+        self.check_freq = check_freq
         self.freq = freq if freq is not None else UnsetFreq()
         self.tr = tr
         self.max_ms = max_ms
@@ -122,6 +134,8 @@ class TxGate:
             return "callsign not set"
         if not self.allowed:
             return "TX not enabled"
+        if not self.check_freq:
+            return None
         hz = self.freq.tx_hz()
         if hz is None:
             return "frequency not set"

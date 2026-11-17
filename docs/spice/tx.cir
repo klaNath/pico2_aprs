@@ -1,0 +1,20 @@
+* TX (hw/ft818_if の回路図と同じ部品番号): GP3 PWM -> R1/C1 -> R2/C2 -> C3 -> R3 (+R13) -> RV1 -> C4 -> 無線機
+* WIPE   RV1 の位置 (0..1)
+* R13V   JP2 を閉じたとき 0.01 (FT-818)、開いたとき 33k (FT3D/FT5D)
+* RLOAD  無線機の入力。FT-818 DATA IN = 10k(仮定)。
+*        FT3D/FT5D = マイク入力(2k と仮定)と PTT の 2k(R12)の並列 = 1k
+.param WIPE=1 R13V=0.01 RLOAD=10k
+V1 in 0 AC 1
+R1 in a 2.2k
+C1 a 0 10n
+R2 a b 2.2k
+C2 b 0 10n
+C3 b c 1u
+R3 c d0 10k
+R13 d0 d {R13V}
+Rvt d w {2k*(1-WIPE)+0.01}
+Rvb w 0 {2k*WIPE+0.01}
+C4 w out 1u
+Rload out 0 {RLOAD}
+.ac dec 50 10 1MEG
+.end
