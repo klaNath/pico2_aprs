@@ -4,3 +4,4 @@ mpremote>=1.28
 mpy-cross==1.29.*
 ruff>=0.6
 pyright>=1.1.380
+bleak>=1.0

@@ -402,6 +402,10 @@ def run(duration_ms=None, wdt=None):
     station = Station(wdt, settings)
     try:
         station.start()
+        # GNSS の探索(最長約 13 秒)と BLE の起動(CYW43 の BT 初期化)を合わせると STARTUP_MS を
+        # 超えうるので、BLE の前に張り直してフィードする
+        station.wdt.arm(watchdog.STARTUP_MS)
+        station.wdt.feed()
         station.start_ble()
         station.wdt.arm(watchdog.LOOP_MS)
         t0 = time.ticks_ms()

@@ -53,12 +53,17 @@ class FakeBle:
         self.notify_fail = 0  # この回数だけ gatts_notify が OSError
         self.rx = b""
         self.passkeys = []
+        self.irq_fn = None
+        self.loaded = None
         self.disconnected = []
         self.buf_size = None
 
     def active(self, v=None):
         if v is None:
             return self.active_
+        if v and not self.active_:
+            # パッチ済みの BTstack は起動中に ER/IR とボンドを読む(irq が先に要る)
+            self.loaded = None if self.irq_fn is None else self.irq_fn(29, (0x10, 0, b"SMER"))
         self.active_ = v
 
     def irq(self, fn):
@@ -136,7 +141,7 @@ def make(fs=None, shown=None):
     fb = FakeBle()
     shown = shown if shown is not None else []
     b = B.Ble(r, on_passkey=shown.append, bonds_path="/ble_bonds.json", ble=fb, opener=fs.open,
-              remove=fs.remove, rename=fs.rename, urandom=lambda n: b"\x40\xe2\x01\x00")
+              remove=fs.remove, rename=fs.rename)
     b.start()
     return b, fb, r, cfg, fs, shown
 
@@ -284,8 +289,8 @@ def test_line_buffer_edges():
 def test_passkey_is_shown_while_pairing():
     b, fb, _r, _cfg, _fs, shown = make()
     connect(b, fb, auth=False)
-    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 0)
-    assert fb.passkeys == [(1, 3, 123456)] and shown == [123456] and b.passkey == 123456
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 123456)  # BTstack が作った値
+    assert shown == [123456] and b.passkey == 123456 and fb.passkeys == []
     fb.ev(B.IRQ_ENCRYPTION_UPDATE, 1, True, True, True, 16)
     assert shown == [123456, None] and b.passkey is None  # 済んだら消す
 
@@ -293,9 +298,33 @@ def test_passkey_is_shown_while_pairing():
 def test_passkey_is_cleared_when_pairing_fails():
     b, fb, _r, _cfg, _fs, shown = make()
     connect(b, fb, auth=False)
-    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 0)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 123456)
     fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
     assert shown == [123456, None] and fb.adv is not None  # 切れたら広告を再開
+
+
+def test_passkey_is_cleared_when_pairing_is_cancelled():
+    b, fb, _r, _cfg, _fs, shown = make()
+    connect(b, fb, auth=False)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 42)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_NONE, 0)
+    assert shown == [42, None] and b.passkey is None
+
+
+def test_passkey_for_another_connection_is_ignored():
+    b, fb, _r, _cfg, _fs, shown = make()
+    connect(b, fb, auth=False)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 2, B.PASSKEY_ACTION_DISPLAY, 42)
+    assert shown == [] and b.passkey is None
+
+
+def test_saved_secrets_are_readable_while_bluetooth_starts():
+    fs = FakeFs()
+    b, fb, *_ = make(fs)
+    fb.ev(B.IRQ_SET_SECRET, 0x10, b"SMER", b"k" * 16)
+    b._save_secrets(force=True)
+    b2, fb2, *_ = make(fs)
+    assert fb2.loaded == b"k" * 16  # irq() を active(True) より前に結んでいる
 
 
 def test_disconnect_detaches_and_restarts_advertising():
@@ -343,10 +372,94 @@ def test_secrets_are_capped_and_forgotten():
     assert len(b.secrets) == B.MAX_SECRETS
     assert fb.ev(B.IRQ_GET_SECRET, 2, 0, b"k0") is None  # 古いものから消える
     assert fb.ev(B.IRQ_GET_SECRET, 2, 0, b"k%d" % (B.MAX_SECRETS + 4)) == b"v"
+    fb.ev(B.IRQ_SET_SECRET, B.SECRET_TYPE_TLV, b"SMER", b"er")  # 本機の鍵(ボンドではない)
     b._save_secrets(force=True)
     assert "/ble_bonds.json" in fs.files
-    b.forget_all()
-    assert fs.files == {} and b.secrets == []
+    assert b.forget_all() is False  # BLE が動いている間は消せない(BTstack の表とずれる)
+    assert len(b.secrets) == B.MAX_SECRETS
+    b.stop()
+    assert b.forget_all() is True
+    assert b.secrets == [(B.SECRET_TYPE_TLV, b"SMER", b"er")]  # ER/IR は残す
+    doc = json.loads(fs.files["/ble_bonds.json"])
+    assert len(doc["secrets"]) == 1 and "/ble_bonds.json.tmp" not in fs.files
+
+
+def test_eviction_keeps_er_ir_and_drops_cccd_first():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    T = B.SECRET_TYPE_TLV
+    fb.ev(B.IRQ_SET_SECRET, T, b"SMER", b"er")
+    fb.ev(B.IRQ_SET_SECRET, T, b"SMIR", b"ir")
+    fb.ev(B.IRQ_SET_SECRET, T, b"BTD\x00", b"bond")
+    fb.ev(B.IRQ_SET_SECRET, T, b"BTC\x01", b"ccc1")
+    for i in range(B.MAX_SECRETS - 4):
+        fb.ev(B.IRQ_SET_SECRET, 2, b"k%d" % i, b"v")
+    assert len(b.secrets) == B.MAX_SECRETS
+    assert fb.ev(B.IRQ_SET_SECRET, 2, b"new", b"v") is True
+    keys = [k for _t, k, _v in b.secrets]
+    assert b"BTC\x01" not in keys  # 通知の設定から消える
+    assert b"SMER" in keys and b"SMIR" in keys and b"BTD\x00" in keys
+    assert fb.ev(B.IRQ_SET_SECRET, 2, b"new2", b"v") is True
+    keys = [k for _t, k, _v in b.secrets]
+    assert b"SMER" in keys and b"SMIR" in keys and b"BTD\x00" not in keys  # 次は古いもの
+    # ER/IR しか無ければ保存しない
+    b.secrets = [(T, b"SMER", b"er"), (T, b"SMIR", b"ir")]
+    assert b._evict_index() is None
+
+
+def test_secret_changed_while_saving_is_saved_again():
+    b, fb, _r, _cfg, fs, _shown = make()
+    fb.ev(B.IRQ_SET_SECRET, 2, b"k1", b"v1")
+    real_open = fs.open
+    changed = []
+
+    def open_and_change(path, mode):  # 書いている途中で IRQ が鍵を変える
+        if "w" in mode and not changed:
+            changed.append(path)
+            fb.ev(B.IRQ_SET_SECRET, 2, b"k2", b"v2")
+        return real_open(path, mode)
+
+    b._open = open_and_change
+    b._save_secrets(force=True)
+    assert changed and b._secrets_dirty_ms is not None  # まだ保存が要る
+    b._save_secrets(force=True)
+    assert b._secrets_dirty_ms is None
+    assert len(json.loads(fs.files["/ble_bonds.json"])["secrets"]) == 2
+
+
+def test_failed_pairing_clears_passkey():
+    b, fb, _r, _cfg, _fs, shown = make()
+    connect(b, fb, auth=False)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 123456)
+    assert shown == [123456]
+    fb.ev(B.IRQ_ENCRYPTION_UPDATE, 1, False, False, False, 0)  # パスキーの入力違い
+    assert shown == [123456, None] and b.passkey is None
+
+
+def test_exception_in_on_passkey_does_not_escape_irq():
+    def broken(_passkey):
+        raise RuntimeError("lcd")
+
+    b, fb, _r, _cfg, _fs, _shown = make()
+    b.on_passkey = broken
+    connect(b, fb, auth=False)
+    assert fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 123456) is None
+    assert b.passkey == 123456 and b.irq_errors == 1
+    fb.ev(B.IRQ_ENCRYPTION_UPDATE, 1, True, True, True, 16)  # 状態の更新は続く
+    assert b.authenticated and b.passkey is None
+
+
+def test_disconnect_during_stop_does_not_advertise():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    connect(b, fb)
+
+    def disconnect_now(conn):  # 切断のイベントが gap_disconnect の中で届く
+        fb.disconnected.append(conn)
+        fb.adv = None
+        fb.ev(B.IRQ_CENTRAL_DISCONNECT, conn, 0, b"\x00" * 6)
+
+    fb.gap_disconnect = disconnect_now
+    b.stop()
+    assert fb.adv is None and not fb.active_
 
 
 def test_broken_bonds_file_is_ignored():

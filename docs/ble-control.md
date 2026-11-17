@@ -102,8 +102,11 @@
 `。行の組み立てと分割は `hw/ble.py`、
   中身の処理は `core/remote.py`
 - ペアリングは DisplayOnly、`bond=True, mitm=True, le_secure=True`。鍵は `/ble_bonds.json`
-  (`_IRQ_GET_SECRET` / `_IRQ_SET_SECRET`)、4 台まで。鍵の消去は USB から
-  (`dev.py exec "import hw.ble; hw.ble.forget_all()"`)
+  (`_IRQ_GET_SECRET` / `_IRQ_SET_SECRET`)、4 台まで。鍵の消去は USB から、BLE を止めた状態で
+  `Ble.forget_all()`(本機の ER/IR は残す。BLE が動いている間は False を返して何もしない。
+  BTstack が起動時に読んだ表とずれるため)
+- MITM と LE Secure の両方を要求するので、パッチ済みファームウェアは LE Secure Connections の
+  パスキー/数値比較だけを受ける(旧方式と Just Works は断る。hw/micropython/README.md)
 - 認証された接続になったら `Remote.attach()`、切れたら `detach()`。受ける 1 行は `remote.LINE_MAX`(512)まで
 - 局のループの `step()` で `Remote.poll()` を呼ぶ(送り待ちを Notify に流し、status を送る)
 

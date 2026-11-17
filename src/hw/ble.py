@@ -12,16 +12,20 @@ BLE の部品(bluetooth.BLE)とファイル操作は引数で差し替えられ�
   バッファに足して、完成した行を持つだけ。処理は poll() で行う
   (局のループは同期的で、ウォッチドッグが 3 秒)
 - 認証された接続(暗号化 + MITM のパスキー)になるまで、書き込まれたバイトは捨て、通知も送らない
-- 本機の入出力能力は DisplayOnly。パスキー(6 桁)を作って on_passkey(passkey) に渡す(LCD に出す)。
-  終わったら on_passkey(None)
+- 本機の入出力能力は DisplayOnly。パスキー(6 桁)は BTstack が作り、IRQ_PASSKEY_ACTION の
+  3 つ目の値で届く。それを on_passkey(passkey) に渡す(LCD に出す)。終わったら on_passkey(None)
 - ボンディングの鍵は bonds_path(JSON)に置く。ペアリングは稀なので、変わったときだけ書く
   (フラッシュへの書き込みは受信を止めるので、poll() の中で、通信がない間に 1 回だけ)
+
+ファームウェアの前提: MicroPython 1.29 の BTstack 版はペアリングの要求を処理しない。
+hw/micropython/btstack-pairing.patch を当てたファームウェアが必要(hw/micropython/README.md)。
+パッチ済みの BTstack は、ボンドの鍵と ER/IR を IRQ_GET_SECRET/IRQ_SET_SECRET(種類 0x10、
+key はタグ 4 バイト)で読み書きする。既存のボンドを読むので、irq() は active(True) より前に結ぶ。
 """
 
 import binascii
 import json
 import os
-import struct
 import time
 
 import bluetooth  # pyright: ignore[reportMissingImports]
@@ -48,6 +52,7 @@ IRQ_GET_SECRET = const(29)
 IRQ_SET_SECRET = const(30)
 IRQ_PASSKEY_ACTION = const(31)
 
+PASSKEY_ACTION_NONE = const(0)
 PASSKEY_ACTION_DISPLAY = const(3)
 IO_DISPLAY_ONLY = const(0)
 
@@ -68,6 +73,8 @@ MAX_SECRETS = const(24)  # 保存する鍵の数(1 台につき数個。4 台分
 BONDS_PATH = "/ble_bonds.json"
 SAVE_DELAY_MS = const(2000)  # 鍵が変わってから書くまで(続けて変わるのをまとめる)
 PASSKEY_MAX = const(1_000_000)
+SECRET_TYPE_TLV = const(0x10)  # パッチ済み BTstack の TLV(key はタグ 4 バイト)
+KEEP_TAGS = (b"SMER", b"SMIR")  # forget_all で残す(本機の ER/IR。ボンドではない)
 
 
 def adv_payload(name=None, uuid_bytes=None):
@@ -132,7 +139,7 @@ class LineBuffer:
 
 class Ble:
     def __init__(self, remote, on_passkey=None, bonds_path=BONDS_PATH, ble=None, opener=open,
-                 remove=os.remove, rename=os.rename, urandom=os.urandom, log=None):
+                 remove=os.remove, rename=os.rename, log=None):
         """remote: core.remote.Remote(write は start() で結ぶ)。on_passkey(passkey または None):
         LCD にパスキーを出す/消す。ble: bluetooth.BLE のようなもの(試験用)"""
         self.remote = remote
@@ -141,7 +148,6 @@ class Ble:
         self.tmp = bonds_path + ".tmp"
         self._ble: "Any" = ble
         self._open, self._remove, self._rename = opener, remove, rename
-        self._urandom = urandom
         self.log = log or (lambda *a: None)
         self.name = None
         self.conn = None  # 接続中のハンドル
@@ -152,6 +158,8 @@ class Ble:
         self.dropped_writes = 0  # 認証前に書かれて捨てたバイト数
         self.secrets = []  # [(種類, key, value)]
         self._secrets_dirty_ms = None
+        self._secrets_gen = 0  # 鍵が変わるたびに増やす(保存中の変更を取りこぼさない)
+        self.irq_errors = 0  # IRQ の中で起きて握りつぶした例外の数
         self._out = []  # 送り残しのかたまり(bytes)
         self._h_tx = None
         self._h_rx = None
@@ -163,8 +171,8 @@ class Ble:
         if b is None:
             b = self._ble = bluetooth.BLE()
         self._load_secrets()
+        b.irq(self._irq)  # active(True) の中で BTstack がボンドと ER/IR を読むので、先に結ぶ
         b.active(True)
-        b.irq(self._irq)
         b.config(gap_name="PicoAPRS", mtu=MTU_WANTED)
         b.config(bond=True, mitm=True, le_secure=True, io=IO_DISPLAY_ONLY)
         rx = (bluetooth.UUID(NUS_RX),
@@ -180,16 +188,17 @@ class Ble:
         self.log("[ble] advertising as %s" % self.name)
 
     def stop(self):
+        was_running = self.running
+        self.running = False  # 止める途中の切断イベントで広告を再開しない
         if self.conn is not None:
             try:
                 self._ble.gap_disconnect(self.conn)
             except OSError:
                 pass
         self._set_connected(None)
-        if self._ble is not None and self.running:
+        if self._ble is not None and was_running:
             self._ble.gap_advertise(None)
             self._ble.active(False)
-        self.running = False
         self._save_secrets(force=True)
 
     def _advertise(self):
@@ -199,6 +208,19 @@ class Ble:
 
     # ---- IRQ(解析や応答はしない)
     def _irq(self, event, data):
+        # ハンドラが例外を出すと、MicroPython はハンドラを外してしまう(以後ボンドの保存も
+        # 接続もできない)。ここで止める
+        try:
+            return self._irq_body(event, data)
+        except Exception as e:  # noqa: BLE001
+            self.irq_errors += 1
+            try:
+                self.log("[ble] irq %d error: %r" % (event, e))
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+    def _irq_body(self, event, data):
         if event == IRQ_CENTRAL_CONNECT:
             self._set_connected(data[0])
         elif event == IRQ_CENTRAL_DISCONNECT:
@@ -219,14 +241,17 @@ class Ble:
         elif event == IRQ_ENCRYPTION_UPDATE:
             conn, encrypted, authenticated = data[0], data[1], data[2]
             if conn == self.conn:
-                self._set_authenticated(bool(encrypted and authenticated))
+                ok = bool(encrypted and authenticated)
+                self._set_authenticated(ok)
+                if not ok:
+                    self._clear_passkey()  # パスキーの入力違いなどで失敗した
         elif event == IRQ_PASSKEY_ACTION:
             conn, action = data[0], data[1]
-            if action == PASSKEY_ACTION_DISPLAY:
-                self.passkey = struct.unpack("<I", self._urandom(4))[0] % PASSKEY_MAX
-                self._ble.gap_passkey(conn, action, self.passkey)
-                if self.on_passkey is not None:
-                    self.on_passkey(self.passkey)
+            if action == PASSKEY_ACTION_DISPLAY and conn == self.conn:
+                self.passkey = data[2] % PASSKEY_MAX  # BTstack が作った値(パッチ済みファームウェア)
+                self._call_on_passkey(self.passkey)
+            elif action == PASSKEY_ACTION_NONE:
+                self._clear_passkey()  # ペアリングが取り消された
         elif event == IRQ_GET_SECRET:
             return self._get_secret(data[0], data[1], data[2])
         elif event == IRQ_SET_SECRET:
@@ -262,8 +287,17 @@ class Ble:
     def _clear_passkey(self):
         if self.passkey is not None:
             self.passkey = None
-            if self.on_passkey is not None:
-                self.on_passkey(None)
+            self._call_on_passkey(None)
+
+    def _call_on_passkey(self, passkey):
+        """LCD の描画などで例外が出ても、BLE の状態の更新は続ける"""
+        if self.on_passkey is None:
+            return
+        try:
+            self.on_passkey(passkey)
+        except Exception as e:  # noqa: BLE001
+            self.irq_errors += 1
+            self.log("[ble] on_passkey error: %r" % (e,))
 
     # ---- 鍵(ボンディング)
     def _get_secret(self, sec_type, index, key):
@@ -289,15 +323,35 @@ class Ble:
                     del self.secrets[i]
                 else:
                     self.secrets[i] = (t, k, bytes(value))
-                self._secrets_dirty_ms = time.ticks_ms()
+                self._mark_dirty()
                 return True
         if value is None:
             return False
         if len(self.secrets) >= MAX_SECRETS:
-            del self.secrets[0]  # 古いものから消す
+            i = self._evict_index()
+            if i is None:
+                return False  # 消せるものがない(本機の ER/IR だけ): 保存しない
+            del self.secrets[i]
         self.secrets.append((sec_type, key, bytes(value)))
-        self._secrets_dirty_ms = time.ticks_ms()
+        self._mark_dirty()
         return True
+
+    def _evict_index(self):
+        """上限のときに消す鍵。本機の ER/IR は消さない(消すとすべてのボンドが使えなくなる)。
+        通知の設定(BTstack の CCCD、タグ BTC)を古いものから先に消し、なければほかの古いもの"""
+        other = None
+        for i, (t, k, _v) in enumerate(self.secrets):
+            if t == SECRET_TYPE_TLV and k in KEEP_TAGS:
+                continue
+            if t == SECRET_TYPE_TLV and k[:3] == b"BTC":
+                return i
+            if other is None:
+                other = i
+        return other
+
+    def _mark_dirty(self):
+        self._secrets_gen += 1
+        self._secrets_dirty_ms = time.ticks_ms()
 
     def _load_secrets(self):
         self.secrets = []
@@ -321,9 +375,10 @@ class Ble:
             now = time.ticks_ms() if now is None else now
             if time.ticks_diff(now, self._secrets_dirty_ms) < SAVE_DELAY_MS:
                 return
+        gen = self._secrets_gen  # 書いている間に IRQ で変わったら、もう一度書く
         doc = {"version": 1, "secrets": [
             (t, binascii.hexlify(k).decode(), binascii.hexlify(v).decode())
-            for t, k, v in self.secrets]}
+            for t, k, v in list(self.secrets)]}
         f = self._open(self.tmp, "wb")
         try:
             f.write(json.dumps(doc).encode())
@@ -334,18 +389,23 @@ class Ble:
         except OSError:
             pass
         self._rename(self.tmp, self.bonds_path)
-        self._secrets_dirty_ms = None
-        self.log("[ble] bonds saved (%d)" % len(self.secrets))
+        if self._secrets_gen == gen:
+            self._secrets_dirty_ms = None
+        self.log("[ble] bonds saved (%d)" % len(doc["secrets"]))
 
     def forget_all(self):
-        """保存した鍵をすべて消す(USB から: dev.py exec "import ...; ble.forget_all()")"""
-        self.secrets = []
-        self._secrets_dirty_ms = None
-        for p in (self.bonds_path, self.tmp):
-            try:
-                self._remove(p)
-            except OSError:
-                pass
+        """ボンドをすべて消す。BTstack は起動時に読んだ表を持っているので、BLE を止めている
+        ときだけ消せる(動いていれば False)。ER/IR(本機の鍵)は残す"""
+        if self.running:
+            return False
+        self.secrets = [s for s in self.secrets if s[0] == SECRET_TYPE_TLV and s[1] in KEEP_TAGS]
+        self._mark_dirty()
+        self._save_secrets(force=True)
+        try:
+            self._remove(self.tmp)
+        except OSError:
+            pass
+        return True
 
     # ---- 送信(remote.write として使う)
     def write(self, data):
