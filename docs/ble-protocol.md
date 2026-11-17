@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.2 (2026-11-16) / protocol version `proto`: 1
+- Document version: 0.3 (2026-11-17) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -12,11 +12,11 @@ Each section heading carries one of these markers.
 
 | Marker | Meaning |
 |---|---|
-| **[Fixed]** | Implemented on the device and verified by tests on a PC (with a fake BLE link). Changes must start with this document |
+| **[Fixed]** | Implemented on the device and verified: by tests on a PC (with a fake BLE link), and for the BLE layer (§2–§5) also over real BLE. Changes must start with this document |
 | **[Provisional]** | The direction is decided, but it is not implemented on the device, or not yet verified over real BLE. Values may change |
 | **[Open]** | Not decided yet. The Web app should be built so that it survives a change |
 
-Status as of 2026-11-16: message handling (§6–§9) is implemented. The BLE layer (advertising, GATT, pairing, line splitting) is **not implemented yet**, so §2–§4 are entirely provisional.
+Status as of 2026-11-17: everything is implemented on the device. The BLE layer (advertising, GATT, pairing, line splitting) was verified on real hardware with nRF Connect on Android and with `bleak` on Windows. **It has not been tried from a Web app in Chrome yet**, so the pairing flow (§4) stays provisional. On Windows, see the known issue in §10.
 
 ## 1. Scope
 
@@ -31,23 +31,24 @@ What the app cannot do: command a transmission (such as "send a beacon now"), AP
 
 **Transmit safety**: the device emits a radio signal only when the **physical beacon switch on the unit is on** and the device's transmit gate allows it (a callsign is set and `tx_enabled` is true). Changing settings from the app cannot bypass the switch. The app should show `status.tx_ready` (§8.1) prominently.
 
-## 2. Finding the device [Provisional]
+## 2. Finding the device [Fixed]
 
 | Item | Value |
 |---|---|
 | Service UUID in the advertisement | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` (NUS) |
-| Name (scan response) | `PicoAPRS-XXXX` (XXXX is the lower 2 bytes of the MAC address in hex) **[Open]** |
-| Concurrent connections | 1 |
-| Advertising interval | **[Open]** |
+| Name (scan response) | `PicoAPRS-XXXX` (XXXX is the lower 2 bytes of the MAC address in uppercase hex, such as `PicoAPRS-2574`) |
+| Address | Public (the same on every start) |
+| Concurrent connections | 1. The device stops advertising while connected, so while another phone or PC is connected it cannot be found |
+| Advertising interval | 100 ms |
 
-With Web Bluetooth, filter by service UUID. The name format may change, so do not filter by name.
+With Web Bluetooth, filter by service UUID. Show the name to the user to tell units apart, but do not filter by it.
 
 ```js
 const NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS] }] });
 ```
 
-## 3. GATT [Provisional]
+## 3. GATT [Fixed]
 
 The device uses the same UUIDs as the Nordic UART Service (NUS).
 
@@ -69,10 +70,18 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
   3. The device's LCD shows a 6-digit passkey
   4. The user types it into the dialog
 - On later connections the stored bonding key is used and no passkey is shown
-- Until the connection is authenticated, the device does not process commands and does not send notifications. **A command written before authentication is silently dropped.** The app should start notifications first, then send `hello`, and resend it after a few seconds if there is no reply
-- The device stores keys for up to 4 peers (oldest removed first). Keys can be erased only over the device's USB. If the app can no longer reconnect after the device erased its keys, ask the user to "forget" the device in Android's Bluetooth settings
+- Until the connection is authenticated, the device does not process commands and does not send notifications. **A command written before authentication is silently dropped** (no `err` is returned). The app should start notifications first, then send `hello`, and resend it after a few seconds if there is no reply
+- The device refuses pairing methods without MITM protection (Just Works) and legacy (non-Secure-Connections) pairing
+- The device stores keys for up to 4 peers (oldest removed first). Keys can be erased only over the device's USB. If the app can no longer reconnect after the device erased its keys, ask the user to "forget" the device in the phone's or PC's Bluetooth settings
 
-**[Open]**: whether the Web Bluetooth implementation in Android Chrome shows the pairing dialog as described above (to be tested on real hardware). If it does not, the procedure may become "pair in the Android settings first".
+Verified on real hardware (2026-11-17):
+
+| Central | Result |
+|---|---|
+| Android, nRF Connect | The pairing dialog appears when bonding is started. Passkey pairing succeeds. Reconnects without a passkey, also after the device is powered off and on |
+| Windows 11, `bleak` with WinRT passkey pairing (`tools/ble_cli.py pair`) | Passkey pairing succeeds. Reconnects without a passkey. See the known issue in §10 |
+
+**[Open]**: whether the Web Bluetooth implementation in Chrome (Android and Windows) shows the pairing dialog as described above. If it does not, the procedure may become "pair in the OS Bluetooth settings first".
 
 ## 5. Framing
 
@@ -82,10 +91,11 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
 - The device accepts lines of up to **512 bytes**, excluding the newline. A longer line is discarded and an `err` (`too_long`) is returned
 - JSON sent by the device has no guaranteed key order and may contain spaces (`{"t": "status", ...}`)
 
-### 5.2 Splitting across BLE writes and notifications [Provisional]
+### 5.2 Splitting across BLE writes and notifications [Fixed]
 
-- **App → device**: a line may be split at any point and sent in any number of writes. The device concatenates until `\n`. For now keep each write to **20 bytes or fewer** (works with the minimum MTU of 23). The limit may be raised after the device implementation and measurements **[Open]**
+- **App → device**: a line may be split at any point and sent in any number of writes. The device concatenates until `\n`. Keep each write to **20 bytes or fewer**. This works with the minimum MTU of 23, and Web Bluetooth does not tell the app the negotiated MTU. Write with response (`writeValueWithResponse`) and wait for each write to finish before the next one
 - **Device → app**: one line may arrive across several notifications, and one notification may contain a line boundary. The app must concatenate the received bytes, cut at each `\n`, and parse each line as JSON
+- A notification carries at most **MTU − 3 bytes, and never more than 244 bytes**. The device accepts an MTU of up to 517. Which MTU is used depends on the central: in the tests, Windows raised it to 517 about 1 second after connecting, and Android stayed at 23 unless the app asked for more. The app does not need to know the MTU
 - A notification boundary may fall in the middle of a UTF-8 character. Decode after cutting out a line (or use `TextDecoder` with `stream: true`)
 
 ```js
@@ -135,6 +145,7 @@ App                                      Device
 ```
 
 - If `proto` in `hello` differs from the version the app knows, do not continue; tell the user
+- The device sends the first `status` as soon as the connection is authenticated. That can happen before the app has started notifications, so the first `status` may be missed. If the app needs the state right away, send `{"op":"status"}`; otherwise the next periodic `status` arrives within 5 seconds
 
 ## 7. Requests [Fixed]
 
@@ -359,17 +370,25 @@ The schema is an aid to input; the device makes the final decision (an invalid v
 - The device changes its behavior immediately on `settings.set`. Putting a confirmation dialog in front of the action that sets `tx_enabled` to true is recommended
 - Use fictitious values for callsigns in examples and test data (such as `Q1TEST`, starting with Q and not a real callsign)
 
+### 10.1 Known issue: Windows stops receiving notifications
+
+Seen on 2026-11-17 on one Windows 11 PC with a **Bluetooth 4.0** adapter, using `bleak` (not yet tried in Chrome):
+
+- A response made of a single notification works every time (60 requests in a row). But when the device sends **several notifications back to back** (for example `settings.schema`, which is about 1.1 KB), the first such response arrives in full, and **partway through a later one, notifications stop arriving**
+- After that, Windows does not process anything from the device, even after reconnecting or restarting the device. **Only turning Bluetooth off and on in Windows recovers it**
+- The device sends everything correctly. Android received the same traffic in full every time, with MTU 23 and with MTU 517. Changing the notification size (20–514 bytes), adding 50 ms between notifications, or limiting the MTU to 23 did not help on Windows
+
+For now, develop and test the Web app on **Android**. Whether Windows works with a newer adapter (Bluetooth 5.x) has not been tested yet (U8). If the app must support Windows, expect the connection to stop answering, and tell the user to turn Bluetooth off and on.
+
 ## 11. Open items
 
 | # | Item | Section | When it will be decided |
 |---|---|---|---|
-| U1 | Name format and advertising interval | §2 | Implementation of the device's BLE layer (task 3) |
-| U2 | Whether to add the Device Information Service | §3 | Task 3 |
-| U3 | Whether Android Chrome shows the pairing dialog. If not, the procedure changes | §4 | Hardware verification in task 3 |
-| U4 | Upper limit of an app → device write (20 bytes for now) | §5.2 | After MTU is measured in task 3 |
-| U5 | Whether to put the firmware version in `hello` | §7.1 | Tasks 3–4 |
+| U2 | Whether to add the Device Information Service | §3 | When the Web app needs it |
+| U3 | Whether Chrome (Android, Windows) shows the pairing dialog. If not, the procedure changes | §4 | First test from the Web app |
+| U5 | Whether to put the firmware version in `hello` | §7.1 | When the Web app needs it |
 | U6 | How much reception is lost while `settings.set` saves | §7.2 | Task 7 (measurement) |
-| U7 | Whether to silently drop pre-authentication commands or return an `err` | §4 | Task 3 |
+| U8 | Whether Windows with a Bluetooth 5.x adapter avoids the issue in §10.1 | §10.1 | Test with a USB Bluetooth 5.x adapter |
 
 When an item is decided, remove it from this table, write it into the body, and record it in §12.
 
@@ -377,5 +396,6 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.3 | 2026-11-17 | BLE layer verified on real hardware: §2, §3, §5.2 fixed. Advertising interval 100 ms, public address. Notifications capped at 244 bytes. App writes fixed at 20 bytes or fewer. Pre-authentication commands are silently dropped. Added the hardware results to §4, the note about the first `status` to §6.2, and the Windows known issue (§10.1). Closed U1, U4, U7; added U8 |
 | 0.2 | 2026-11-16 | Added the `busy` error. Pairing and bonding confirmed available in the firmware |
 | 0.1 | 2026-11-16 | First version. Message handling (§6–§9) is fixed to match the implementation; the BLE layer (§2–§5.2) is provisional |
