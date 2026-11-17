@@ -40,7 +40,7 @@ def full_status():
     st.lat, st.lon, st.grid = 35.5, 139.5, "PM95SM00"
     st.beacon_on, st.next_beacon_s = True, 599
     st.rx_count, st.tx_count = 123, 45
-    st.callsign = "JK1BBJ-7"
+    st.callsign = "Q1TEST-7"
     return st
 
 
@@ -81,7 +81,7 @@ def test_status_lines_wide():
                      "08:48:33 JST     PM95SM00",
                      "N35 30.00 E139 30.00",
                      "BCN ON 9:59  RX 123 TX 45",
-                     "JK1BBJ-7"]
+                     "Q1TEST-7"]
     assert all(len(s) <= 25 for s in lines)
     assert len(lines[2]) + len(" [RX]") <= 25  # 送受信中の印と重ならない
     st = Status()
@@ -96,9 +96,9 @@ def test_status_lines_compact():
     assert lay.status_cols == 20
     assert lines == ["NO FIX 0/0  --:--:--", "position unknown", "BCN OFF", "RX 0  TX 0",
                      "GRID --------"]
-    st.callsign = "JK1BBJ-15"  # 自局のコールサイン-SSID と Grid を 1 行に
+    st.callsign = "Q1TEST-15"  # 自局のコールサイン-SSID と Grid を 1 行に
     lines = [s for s, _ in status_lines(st, lay.status_cols, lay.status_rows)]
-    assert lines[4] == "JK1BBJ-15   --------" and len(lines[4]) <= lay.status_cols
+    assert lines[4] == "Q1TEST-15   --------" and len(lines[4]) <= lay.status_cols
 
 
 def test_detail_distance_line():
