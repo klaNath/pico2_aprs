@@ -217,9 +217,10 @@ class Remote:
         self._event("status", s)
 
     def _flush(self):
+        # write の中で切断の IRQ が来ると detach() が送り待ちを空にする(attached が False になる)
         while True:
             if self._resp:
-                if not self.write(self._resp[0]):
+                if not self.write(self._resp[0]) or not self.attached:
                     return
                 self._resp.pop(0)
                 continue
@@ -238,7 +239,7 @@ class Remote:
                 self._resp.append(encode(p))
                 continue
             if self._events:
-                if not self.write(self._events[0][1]):
+                if not self.write(self._events[0][1]) or not self.attached:
                     return
                 self._events.pop(0)
                 continue

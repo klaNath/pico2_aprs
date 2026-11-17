@@ -227,5 +227,22 @@ def test_detach_clears_queues():
     assert [m["t"] for m in link.take()] == ["status"]
 
 
+def test_disconnect_inside_write_does_not_raise():
+    """送っている途中(write の中)で切断の IRQ が来て detach() されても、例外にしない"""
+    for op in ("hello", None):  # 応答の送り待ち / イベント(status)の送り待ち
+        r, link, _src, _cfg, _fs = make()
+
+        def write(b, r=r, link=link):
+            link.lines.append(json.loads(b))
+            r.detach()  # IRQ が write の中で走った
+            return True
+
+        r.write = write
+        if op:
+            r.handle(b'{"op": "hello", "id": 1}')
+        r.poll(R.STATUS_MS + 1)  # status も送り待ちにする
+        assert len(link.take()) == 1 and not r.attached
+
+
 def test_printable():
     assert R.printable(b"ab\x00~\x7f") == "ab<0x00>~<0x7F>"
