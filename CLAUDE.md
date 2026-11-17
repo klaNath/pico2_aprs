@@ -4,29 +4,42 @@
 
 ## ターゲット
 
-- ボード: Raspberry Pi Pico 2(RP2350, Arm Cortex-M33 デュアルコア, SRAM 520KB, フラッシュ 4MB)
-- ファームウェア: MicroPython(正確なバージョンは `python tools/dev.py info` で確認する)
-    - カスタムされたファームウェアを使用。ROMFSを1MB設定。標準のライブラリに加えてmicropython-libから `sdcard` と `datetime` を読み込みビルドしている
+- ボード: Raspberry Pi Pico 2 W(RP2350, Arm Cortex-M33 デュアルコア, SRAM 520KB, フラッシュ 4MB, 無線チップ CYW43439 を BLE に使う)
+    - 無線チップが使う GP23/24/25/29 と ADC3 は使わない(Pico 2 でも同じ配線で動く。BLE は無効になる)
+- ファームウェア: MicroPython 1.29 のカスタムビルド `RPI_PICO2_W_ROMFS2`(正確なバージョンは `python tools/dev.py info` で確認する)
+    - ROMFS を 1MB 設定。標準のライブラリに加えて micropython-lib から `sdcard` と `datetime` を読み込みビルドしている
+    - BTstack にペアリング(LE Secure Connections のパスキー)とボンドの保存を足すパッチを当てている。BLE のペアリングにはこのファームウェアが要る。ボード定義は `hw/RPI_PICO2_W_ROMFS2/`、パッチとビルド手順は `hw/micropython/`(README.md)。ビルドは WSL のツリーで行い、書き込み(BOOTSEL)はユーザーが行う
     - ROMFS が有効であるため、必要ならばライブラリなどをROMFSへDeployし高速化を図ってください
-- オンボード LED は `Pin("LED", Pin.OUT)`
+- オンボード LED は `Pin("LED", Pin.OUT)`(Pico 2 W では無線チップ経由。GP25 ではない)。基板の状態表示 LED は GP7
 - PC とは USB シリアルで接続。操作は全て `tools/dev.py`(mpremote のラッパー)経由
-- 自局のコールサインをソース、テスト、サンプルに書かない。設定は git 管理外の `src/config_local.py` に書く(仮、電源を切っても残る設定の保存ができるまでの方法。`tools/config_local.example.py` を参照)。テストと例示には架空の値を使い、架空であることを明記する
+- 自局のコールサインをソース、テスト、サンプルに書かない。開発用の設定は git 管理外の `src/config_local.py` に書く(`tools/config_local.example.py` を参照)。テストと例示には架空の値(`Q1TEST` など)を使い、架空であることを明記する
+- 設定の優先順位: `src/config.py`(既定値)< `src/config_local.py` < デバイスの `/settings.json`(BLE の `settings.set` で保存。電源を切っても残る)。スマホから変えられる項目は docs/ble-protocol.md §9
 
 ## 動作モード(`config.MODE`、`src/config_local.py` で上書き)
 
 - `"tnc"`(既定): 無線機の外付け TNC。受信は GP26 の音声(ADC)、送信は GP3 の音声(PWM)と PTT(GP2)。周波数と電波型式は無線機側で決まるので、送信ゲート(`hw.txctl.tnc_gate`)は周波数を見ない。コールサインと `TX_ENABLED` がそろったときだけ送信する
 - `"si5351"`: Si5351B を使うフル機能のトランシーバー。**未完成**。`src/transceiver.py` が LCD に「NOT COMPLETE」と出して待つだけで、受信・送信・GNSS・ビーコンは動かない(PTT は切ったまま、Si5351 にも触れない)。455 kHz FM IF 受信(`hw/fm_if_rx.py`、`PIN_RX_IF`)と `SI5351_*` の設定はこのモード用
 - 切り替えは電源投入時の設定のみ(実行中には切り替えない)
+- BLE(`config.BLE_ENABLED`)は `"tnc"` モードだけで動く
 
 ## ディレクトリ構成
 
-- `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント
+- `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント(`station.main()` を呼ぶ)
+    - `src/station.py` … 局(tnc モード)の本体。`src/transceiver.py` は si5351 モード(未完成)
+    - `src/config.py` … ピン割り当てと動作設定。`src/boot.py`、`src/wdt_bridge.py` … 起動時のウォッチドッグのつなぎ
+    - `src/core/` … ハードウェアに依存しない処理(送信ゲート `txgate`、ビーコン、局の表、設定 `settings`、BLE のコマンド処理 `remote` など)
+    - `src/hw/` … ハードウェアのドライバ(AFSK 送受信、GNSS、LCD、microSD、BLE `ble`、ウォッチドッグなど)
+    - `src/modem/` … 復調器と FX.25。`src/ui/` … LCD の画面
     - `src/aprs/` … APRS の解析と Mic-E エンコード(自作)
     - `src/tnc/` … micro-aprs 由来のコード(**生成物。手で編集しない**、下記「サブモジュール由来のコード」)
     - `src/maxm10/`、`src/micropyGPS.py` … MAX-M10 ドライバと NMEA パーサ(**生成物。手で編集しない**)
-- `tests/` … テスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー。実機でも PC でも動く。実機専用のテストは `test_hw_*` と名付ける(PC ではスキップ)
-- `tools/dev.py` … ビルド・実行・デバッグ用 CLI(PC 側で動く通常の Python)
+    - `src/*_demo.py`、`src/*_test.py`、`src/m10_check.py` など … 個別の確認用スクリプト(`release` では除く。dev.py の `RELEASE_EXCLUDE`)
+- `tests/` … テスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー。実機でも PC でも動く。実機専用のテストは `test_hw_*` と名付ける(PC ではスキップ)。モジュールに `SKIP = "理由"` を書くと、そのモジュールは PC でも実機でも飛ばす(今は未完成の si5351 モードの `test_si5351`。実装を進めるときに `SKIP` を消す)
+- `tools/dev.py` … ビルド・実行・デバッグ用 CLI(PC 側で動く通常の Python)。`tools/host_test.py` は `test --host` の土台(MicroPython の代わりの関数)
 - `tools/vendor.py` … サブモジュールから `src/` の生成物を作る(対応表は vendor.py の `SOURCES`)
+- `tools/ble_cli.py` … PC から BLE で本機につなぐ検証ツール(bleak)。`tools/afsk_bench.py` … 復調器のベンチ
+- `docs/` … 設計メモ。BLE は `ble-protocol.md`(Web アプリ向けの仕様、英語)と `ble-control.md`(本機側の設計)
+- `hw/` … 基板のネットリスト、無線機のインターフェース、ファームウェアのボード定義とパッチ
 - `third_party/` … サブモジュール
     - `micro-aprs/` … フォーク klaNath/micro-aprs、ブランチ `pico2-subset`、GPL-3.0 → `src/tnc/`
     - `micropython-maxm10/` … klaNath/micropython-maxm10、ブランチ `pico2-aprs`、MIT → `src/maxm10/`
@@ -62,7 +75,7 @@ python tools/dev.py test --host       # 2a. PC(CPython)上で tests/ を実行(�
 python tools/dev.py test              # 2b. デバイス上で tests/ を実行
 python tools/dev.py run -t 15         # 3. src/main.py を実行して出力を見る
 python tools/dev.py run src/xxx.py -t 10   # 個別スクリプトの実行
-python tools/dev.py exec "import app; print(app.Blinker)" -t 10   # 対話の代わりのコード片実行
+python tools/dev.py exec "import config; print(config.MODE)" -t 10   # 対話の代わりのコード片実行
 python tools/dev.py check             # lint + test --host + test をまとめて
 python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC のみ、数分かかる。モデムを変えたら回す)
 python tools/dev.py build             # check のあと、本体だけ(デモを除く)の ROMFS イメージを作る(書き込みなし)
@@ -96,6 +109,15 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 - **局を止めたあと**: dev.py で接続すると、動いていた局(フラッシュの release 版)は Ctrl-C で止まり、ソフトリセットでは `main.py` が走らないので、局は止まったまま(LCD も消える)。作業を終えるときは `dev.py monitor --reset -s 20` で局を起動し直す。
 - **応答しない / 起動ループ**: まず `dev.py rm-main`(要確認)。それでも駄目ならユーザーに USB の抜き差しを頼む。最終手段は BOOTSEL でファームウェア再書き込み(ユーザー作業)。
 
+## BLE
+
+- 仕様は docs/ble-protocol.md(Web アプリとの取り決め。変えるときはまずここを直す)、本機の作りは docs/ble-control.md
+- ペアリングは LCD に出る 6 桁のパスキー。ボンドの鍵はデバイスの `/ble_bonds.json`(LTK を含む。中身をそのまま表示したり外へ出したりしない)。消すのは USB から、BLE を止めた状態で `Ble.forget_all()`
+- PC からの確認: `python tools/ble_cli.py pair`(初回。パスキーは標準入力)、`hello` / `get` / `stations` / `listen -s 30` など。本機は同時に 1 台しかつながず、つながっている間は広告を止める(スマホがつながったままだと PC から見つからない)
+- **Windows の既知の問題**(docs/ble-control.md §7): 開発用の PC(Bluetooth 4.0)では、通知が続く応答の 2 回目の途中から受信が止まり、Windows の Bluetooth を入れ直すまで戻らない。本機は正常(Android では起きない)。BLE の動作確認は Android(nRF Connect)で行う
+- nRF Connect(Android)から書くときは TEXT を使う。改行を付けられないので、`ble_cli.py` か、改行で終わる書き込みのできるツールで確かめる
+- `bluetooth.irq` のハンドラの中の `print` は失われることがある。IRQ では記録だけして、ループで表示する
+
 ## MicroPython で書くときの注意(CPython との違い)
 
 - 時間は `time.ticks_ms()` / `time.ticks_diff(a, b)` / `time.ticks_add()` を使う(ラップアラウンドするので引き算しない)。待ちは `time.sleep_ms()`。
@@ -111,9 +133,21 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 
 ## 配線メモ(ユーザーが追記する)
 
+正は `src/config.py` の先頭の説明と `PIN_*`(基板 `hw/Pico_MicroSD_M10_Board_rev1.net`)。配線を変えたら config.py を直し、この表も合わせる。
+
 | 用途 | GPIO | 接続先 | 備考 |
 |------|------|--------|------|
-| オンボード LED | LED (GP25) | — | |
-| オーディオ出力 | GP03 | 出力アナログフロントエンド | |
-| PTTスイッチ | GP02 | — | |
-| オーディオ入力 | GP26 | 入力アナログフロントエンド | |
+| GNSS UART0 | GP00 (TX) / GP01 (RX) | u-blox MAX-M10M | |
+| PTT | GP02 | 無線機ボード J5-1 | `core/txgate.py` のゲートだけが操作する |
+| オーディオ出力 | GP03 | 出力アナログフロントエンド(J5-2) | PWM |
+| I2C0 | GP04 (SDA) / GP05 (SCL) | 無線機ボード J5 | 将来の Si5351 用 |
+| GNSS RESET_N | GP06 | MAX-M10M | 通常は駆動しない |
+| 状態表示 LED | GP07 | 赤 LED | |
+| FM IF 入力 | GP08 | (未接続) | si5351 モード用 |
+| microSD | GP09 (検出) / GP10–12, GP15 (SPI) | microSD | |
+| LCD ST7789 | GP16–20 | LCD | DC / CS / SCK / MOSI / BL |
+| ビーコンスイッチ | GP21 | 外部スイッチ J1 | 内部プルアップ。GND に落とすとオン |
+| GNSS PPS | GP22 | MAX-M10M | 駆動しない |
+| オーディオ入力 | GP26 (ADC0) | 入力アナログフロントエンド | |
+| 電源電圧の監視 | GP27 (ADC1) | 分圧抵抗 | rev1 では未実装 |
+| オンボード LED | `"LED"` | 無線チップ経由 | Pico 2 W では GP25 ではない |
