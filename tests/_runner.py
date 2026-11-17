@@ -4,6 +4,8 @@ tests/test_*.py の中の test_* 関数を実行し、最後に
     RESULT: OK (n passed, 0 failed)  /  RESULT: FAIL (...)
 を出力する。dev.py はこの行で成否を判定する。
 PC 上(tools/host_test.py、host=True)では test_hw_* を実機専用としてスキップする。
+モジュールに SKIP = "理由" があれば、そのモジュールのテストは PC でも実機でも全部スキップする
+(いまは使わない機能のテストを止めておく。復活させるときは SKIP を消す)。
 """
 
 import gc
@@ -32,13 +34,16 @@ def main(pattern="", host=False):
             print("ERROR import", modname)
             sys.print_exception(e)  # type: ignore[attr-defined]
             continue
+        reason = getattr(mod, "SKIP", None)
+        if reason:
+            print("SKIP", modname + ":", reason)
         for name in sorted(dir(mod)):
             if not name.startswith("test_"):
                 continue
             fn = getattr(mod, name)
             if not callable(fn):
                 continue
-            if host and name.startswith("test_hw_"):
+            if reason or (host and name.startswith("test_hw_")):
                 skipped += 1
                 continue
             gc.collect()
@@ -56,7 +61,7 @@ def main(pattern="", host=False):
     gc.collect()
     if not host:
         print("mem_free:", gc.mem_free())
-    extra = ", %d skipped (hw)" % skipped if skipped else ""
+    extra = ", %d skipped" % skipped if skipped else ""
     print(
         "RESULT: %s (%d passed, %d failed%s)"
         % ("OK" if failed == 0 else "FAIL", passed, failed, extra)
