@@ -72,17 +72,18 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
 - On later connections the stored bonding key is used and no passkey is shown
 - Until the connection is authenticated, the device does not process commands and does not send notifications. RX accepts writes only on an authenticated connection, so a write before authentication is refused by the GATT layer (Insufficient Authentication), which is what makes the phone start pairing. Any bytes that still reach the device before authentication are **silently dropped** (no `err` is returned)
 - **How the app learns that authentication completed**: start notifications on TX first (that does not need authentication), then write `hello`. As soon as the connection is authenticated, the device sends a `status` event (§6.2), so the first `status` (or the `hello` response) is the signal. If neither arrives, resend `hello` after a few seconds. Do not tear the connection down before the time limit below while the user may still be typing the passkey
-- **Time limits**: the device has no passkey timeout of its own. While the passkey is shown, pairing is limited by the Bluetooth Security Manager timeout (30 s without a pairing message, from the Bluetooth Core Specification; the phone may have its own limit; not measured yet) and by this rule: **if a connection is not authenticated within 60 seconds of connecting, the device disconnects it** and advertises again. When pairing fails or the link drops, the passkey disappears from the LCD. A new attempt needs a new connection and shows a new passkey
+- **Time limits**: the device has no passkey timeout of its own. While the passkey is shown, pairing is limited by the Bluetooth Security Manager timeout (30 s without a pairing message, from the Bluetooth Core Specification; the phone may have its own limit. **Measured: the passkey disappeared from the LCD 30 s after it was shown when none was entered**, Android nRF Connect, 2026-11-18) and by this rule: **if a connection is not authenticated within 60 seconds of connecting, the device disconnects it** and advertises again (measured: 60 s, with a connection from nRF Connect that never started bonding). When pairing fails or the link drops, the passkey disappears from the LCD. A new attempt needs a new connection and shows a new passkey
 - While any central is connected, authenticated or not, the device does not advertise (§2), so other phones cannot find it. The 60-second limit keeps an abandoned, unauthenticated connection from hiding the device
 - A central that already has a bond reconnects without a passkey (verified on Android and Windows, below)
 - The device refuses pairing methods without MITM protection (Just Works) and legacy (non-Secure-Connections) pairing
 - The device stores keys for up to 4 peers (oldest removed first). Keys can be erased only over the device's USB. If the app can no longer reconnect after the device erased its keys, ask the user to "forget" the device in the phone's or PC's Bluetooth settings
 
-Verified on real hardware (2026-11-17):
+Verified on real hardware (2026-11-17; time limits 2026-11-18):
 
 | Central | Result |
 |---|---|
 | Android, nRF Connect | The pairing dialog appears when bonding is started. Passkey pairing succeeds. Reconnects without a passkey, also after the device is powered off and on |
+| Android, nRF Connect, no bond | Connected without bonding and left idle: the device disconnected after 60 s. Bonding started but no passkey entered: the passkey disappeared from the LCD after 30 s |
 | Windows 11, `bleak` with WinRT passkey pairing (`tools/ble_cli.py pair`) | Passkey pairing succeeds. Reconnects without a passkey. See the known issue in §10 |
 
 **[Open]**: whether the Web Bluetooth implementation in Chrome (Android and Windows) shows the pairing dialog as described above. If it does not, the procedure may become "pair in the OS Bluetooth settings first".
@@ -428,7 +429,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
-| 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected |
+| 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected. Time limits measured on hardware (60 s cut, 30 s passkey) |
 | 0.3 | 2026-11-17 | BLE layer verified on real hardware: §2, §3, §5.2 fixed. Advertising interval 100 ms, public address. Notifications capped at 244 bytes. App writes fixed at 20 bytes or fewer. Pre-authentication commands are silently dropped. Added the hardware results to §4, the note about the first `status` to §6.2, and the Windows known issue (§10.1). Closed U1, U4, U7; added U8 |
 | 0.2 | 2026-11-16 | Added the `busy` error. Pairing and bonding confirmed available in the firmware |
 | 0.1 | 2026-11-16 | First version. Message handling (§6–§9) is fixed to match the implementation; the BLE layer (§2–§5.2) is provisional |
