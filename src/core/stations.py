@@ -1,6 +1,8 @@
 """受信した局の表。表示(一覧・詳細・地図)はここから読む。
 
 - 局はコールサイン(SSID 込み)ごとに 1 件。新しく受信した順に並ぶ
+- オブジェクト/アイテムは名前ごとに 1 件(obj が True)。局とは別に数えるので、局と同じ名前の
+  オブジェクトも別の件になる。オブジェクトだけを送った送信局は表に入らない
 - 最後の受信から STALE_S(60 分)を過ぎた局は「古い」扱い(一覧では色を変える。消さない)
 - 表の上限 MAX_STATIONS を超えたら、いちばん古い局から捨てる(メモリを一定に保つ)
 - 位置を持つパケットを受けたら位置を更新する。位置の無いパケットでは前の位置を残す
@@ -23,18 +25,24 @@ MAX_STATIONS = 64
 MAP_STATIONS = 6
 
 
+def is_object(packet):
+    return packet.kind in ("object", "item") and bool(packet.name)
+
+
 def station_key(packet):
-    """表のキー: オブジェクト/アイテムは名前、それ以外は送信局(SSID 込み)"""
-    return packet.name if packet.kind in ("object", "item") and packet.name else packet.src
+    """表のキー: 局は送信局(SSID 込み)の str。オブジェクト/アイテムは ("obj", 名前)
+    (局と同じ名前のオブジェクトを別の件にする)"""
+    return ("obj", packet.name) if is_object(packet) else packet.src
 
 
 class Station:
-    __slots__ = ("call", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own",
+    __slots__ = ("call", "obj", "packet", "heard_ms", "pos_ms", "count", "lat", "lon", "own",
                  "level_db", "clip", "age0_s", "pos_age0_s")
 
-    def __init__(self, call, own=False):
-        self.call = call
-        self.own = own  # 自局のパケット(デジピーターからのエコー)
+    def __init__(self, call, own=False, obj=False):
+        self.call = call  # 表示名(局はコールサイン、オブジェクトは名前)
+        self.obj = obj  # オブジェクト/アイテム
+        self.own = own  # 自局のパケット(デジピーターからのエコー)。オブジェクトでは立てない
         self.packet = None  # 最後に受けた aprs.packet.Packet
         self.heard_ms: "Any" = 0  # time.ticks_ms() の値(スタブでは専用の型)
         self.pos_ms: "Any" = None  # 最後に位置を受けた時刻(ticks_ms)
@@ -47,6 +55,10 @@ class Station:
         # 復元した局: heard_ms / pos_ms の時点で、すでにたっていた秒数(受信し直すと 0)
         self.age0_s = 0
         self.pos_age0_s = 0
+
+    def key(self):
+        """表のキー(station_key と同じ形)"""
+        return ("obj", self.call) if self.obj else self.call
 
     def age_s(self, now_ms):
         return time.ticks_diff(now_ms, self.heard_ms) // 1000 + self.age0_s
@@ -75,11 +87,11 @@ class Stations:
         level_db, clip: このパケットの音量(ADC 入力のとき。core.level)"""
         if now_ms is None:
             now_ms = time.ticks_ms()
-        call = station_key(packet)
-        st = self.by_call.get(call)
+        key = station_key(packet)
+        st = self.by_call.get(key)
         if st is None:
-            st = Station(call, own=call == self.own_call)
-            self.by_call[call] = st
+            st = self._new(packet)
+            self.by_call[key] = st
         else:
             self.order.remove(st)
         self.order.insert(0, st)
@@ -96,7 +108,7 @@ class Stations:
             st.pos_age0_s = 0
         while len(self.order) > self.max:
             old = self.order.pop()
-            del self.by_call[old.call]
+            del self.by_call[old.key()]
         self.version += 1
         return st
 
@@ -107,8 +119,8 @@ class Stations:
         age_s: 最後の受信からの秒数、pos_age_s: 最後に位置を受けてからの秒数。
         起動後にすでに受信した局は、受信数を足し、位置が無ければ保存した位置を使う(それ以外は今の値)。
         表がいっぱいなら加えない。加えた/足した Station を返す(加えなければ None)"""
-        call = station_key(packet)
-        st = self.by_call.get(call)
+        key = station_key(packet)
+        st = self.by_call.get(key)
         if st is not None:
             st.count += count
             if st.lat is None and lat is not None and pos_age_s is not None:
@@ -119,7 +131,7 @@ class Stations:
             return st
         if len(self.order) >= self.max:
             return None
-        st = Station(call, own=call == self.own_call)
+        st = self._new(packet)
         st.packet = packet
         st.heard_ms = now_ms
         st.age0_s = age_s
@@ -130,10 +142,15 @@ class Stations:
             st.lat, st.lon = lat, lon
             st.pos_ms = now_ms
             st.pos_age0_s = pos_age_s
-        self.by_call[call] = st
+        self.by_call[key] = st
         self.order.append(st)
         self.version += 1
         return st
+
+    def _new(self, packet):
+        if is_object(packet):
+            return Station(packet.name, obj=True)
+        return Station(packet.src, own=packet.src == self.own_call)
 
     def latest(self):
         return self.order[0] if self.order else None

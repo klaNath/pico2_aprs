@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.3 (2026-11-17) / protocol version `proto`: 1
+- Document version: 0.4 (2026-11-18) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -70,7 +70,11 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
   3. The device's LCD shows a 6-digit passkey
   4. The user types it into the dialog
 - On later connections the stored bonding key is used and no passkey is shown
-- Until the connection is authenticated, the device does not process commands and does not send notifications. **A command written before authentication is silently dropped** (no `err` is returned). The app should start notifications first, then send `hello`, and resend it after a few seconds if there is no reply
+- Until the connection is authenticated, the device does not process commands and does not send notifications. RX accepts writes only on an authenticated connection, so a write before authentication is refused by the GATT layer (Insufficient Authentication), which is what makes the phone start pairing. Any bytes that still reach the device before authentication are **silently dropped** (no `err` is returned)
+- **How the app learns that authentication completed**: start notifications on TX first (that does not need authentication), then write `hello`. As soon as the connection is authenticated, the device sends a `status` event (§6.2), so the first `status` (or the `hello` response) is the signal. If neither arrives, resend `hello` after a few seconds. Do not tear the connection down before the time limit below while the user may still be typing the passkey
+- **Time limits**: the device has no passkey timeout of its own. While the passkey is shown, pairing is limited by the Bluetooth Security Manager timeout (30 s without a pairing message, from the Bluetooth Core Specification; the phone may have its own limit; not measured yet) and by this rule: **if a connection is not authenticated within 60 seconds of connecting, the device disconnects it** and advertises again. When pairing fails or the link drops, the passkey disappears from the LCD. A new attempt needs a new connection and shows a new passkey
+- While any central is connected, authenticated or not, the device does not advertise (§2), so other phones cannot find it. The 60-second limit keeps an abandoned, unauthenticated connection from hiding the device
+- A central that already has a bond reconnects without a passkey (verified on Android and Windows, below)
 - The device refuses pairing methods without MITM protection (Just Works) and legacy (non-Secure-Connections) pairing
 - The device stores keys for up to 4 peers (oldest removed first). Keys can be erased only over the device's USB. If the app can no longer reconnect after the device erased its keys, ask the user to "forget" the device in the phone's or PC's Bluetooth settings
 
@@ -111,6 +115,16 @@ tx.addEventListener("characteristicvaluechanged", (ev) => {
   }
 });
 ```
+
+### 5.3 Partial lines and resynchronizing [Fixed]
+
+If a write fails in the middle of a line (GATT error, timeout, a dismissed pairing dialog, a short link loss), the device may already hold the first part of the line.
+
+- The device's receive buffer is cleared **when a central connects, when it disconnects, and when the connection becomes authenticated**. A new connection always starts clean
+- The device does **not** drop a partial line after idle time. It keeps it until the next `\n` (or the end of the connection)
+- An empty line (a bare `\n`, also `\r\n`) is ignored silently; it produces no response
+- **Resync procedure**: after a failed write, send a single `\n` before the next request. If the device held a fragment, it answers with one `bad_json` (no `id`); if it held nothing, nothing comes back. The next line starts clean
+- A failed write may still have reached the device. If the fragment happens to be a complete JSON object (the failed write carried only the `\n`), the extra `\n` completes it and the device executes it, so a response with the **old `id`** arrives. Ignore responses whose `id` the app is no longer waiting for
 
 ## 6. Message conventions [Fixed]
 
@@ -230,7 +244,7 @@ Sent both as a response to a request and as an event. It is sent as an event:
 | `tx_enabled` | bool | Value of the `tx_enabled` setting |
 | `tx_ready` | bool | **Whether the next beacon will actually go on the air.** True when `sw` is on and the transmit conditions are met (callsign set, `tx_enabled`). When false, a beacon is a dry run (recorded only, no radio output) |
 | `tx_refuse` | str | Why the transmit conditions are not met. Omitted when they are. `"callsign not set"`, `"TX not enabled"`, `"TX clock off failed"`. **A display string; more values may be added** |
-| `call` | str | Own callsign-SSID. While the callsign is unset, a placeholder display name |
+| `call` | str | Own callsign-SSID, as in the settings (`callsign`, plus `-ssid` when `ssid` is not 0). **Omitted while the callsign is unset** (the LCD shows a placeholder, which is not sent) |
 | `last_tx_s` | int | Seconds since the last beacon was built (dry runs included). Omitted if none since startup |
 | `next_beacon_s` | int | Seconds until the next beacon; 0 = now. Omitted when the switch is off, there is no fix, or the time is unknown |
 | `rx_count`, `tx_count` | int | Packets received and transmitted since startup (the transmit count includes dry runs) |
@@ -251,15 +265,18 @@ One per successfully decoded received packet.
 | Key | Type | Description |
 |---|---|---|
 | `tnc2` | str | The whole packet in TNC2 format (`SRC>DST,PATH:information`). Bytes in the information field that are not printable ASCII (below 0x20 or 0x7F and above) are written as `<0xHH>` (two uppercase hex digits). Japanese text in UTF-8 and the like becomes `<0xE3><0x81>...` |
-| `src` | str | Sender. For objects and items it is still the sending station (read the object name from `tnc2`) |
+| `src` | str | Sender (callsign-SSID). Always the station that sent the packet, also for objects and items. For third-party traffic (`}`), the device parses the inner packet, so `src` is the **inner** sender (the outer header is in `tnc2`) |
+| `obj` | str | Object or item name. Only when `kind` is `"object"` or `"item"` |
 | `kind` | str | Type from the device's parser: `"position"`, `"mice"`, `"object"`, `"item"`, `"message"`, `"status"`, `"other"`. **More may be added.** Treat an unknown value as `"other"` |
-| `lat`, `lon` | float | When the packet contains a position |
-| `sym` | str | Symbol (2 characters: symbol table + symbol), when known |
+| `lat`, `lon` | float | When the packet contains a position. This is the position **in the packet**: for `kind` `"object"` and `"item"` it is the object's position, not the sender's. The device reads positions only from position reports, Mic-E, objects and items (not from a locator in a status text) |
+| `sym` | str | Symbol (2 characters: symbol table + symbol), when known. For objects and items, the object's symbol |
 | `lvl_db` | float | Receive level of this packet (dBFS, peak of the last 1 second) |
 | `clip` | bool | True if the input was saturated. Omitted otherwise |
 | `utc` | str | Time received. Omitted if unknown |
 
 `src`, `kind`, `lat`, and so on are omitted for packets the device could not parse (`tnc2` is always present). The app should parse `tnc2` itself to get further detail (comment, speed, and so on).
+
+To keep one table from `stations.list` and later `rx` events the way the device does (§8.4): when `obj` is present, update the object row named `obj`; otherwise update the station row `src`. Keep the two kinds apart, because an object may have the same name as a station.
 
 ### 8.3 `tx` (event)
 
@@ -273,14 +290,22 @@ One each time the device builds a beacon (dry runs included).
 
 ### 8.4 `station`
 
+Each row is **either a station or an object/item**:
+
+- A station row is keyed by the sender's callsign-SSID. It counts the packets that station sent, except objects and items. A station that has only sent objects or items has no row of its own
+- An object/item row is keyed by the object or item name and carries `"obj": true`. It counts the object or item reports with that name, from any sender
+- An object with the same name as a station is a separate row (one without `obj`, one with `"obj": true`)
+- For third-party traffic (`}`), the row is that of the inner sender (or of the inner object). The outer station (for example an IGate) is not counted
+
 | Key | Type | Description |
 |---|---|---|
-| `src` | str | Station (for objects and items, their name) |
+| `src` | str | Station callsign-SSID, or the object/item name when `obj` is true |
+| `obj` | bool | True for an object or item. Omitted otherwise |
 | `last_s` | int | Seconds since last heard |
 | `count` | int | Number of times heard (may include counts from before startup) |
 | `lat`, `lon` | float | Last received position. Omitted if none |
 | `lvl_db` | float | Receive level of the last packet. Omitted if none |
-| `own` | bool | True for own station (own packet that came back via a digipeater). Omitted otherwise |
+| `own` | bool | True for own station (own packet that came back via a digipeater). Never set on an object row. Omitted otherwise |
 
 ### 8.5 When sending cannot keep up
 
@@ -300,7 +325,7 @@ When BLE cannot send fast enough, items queue up on the device.
 |---|---|---|
 | `bad_json` | Not readable as JSON, or not an object | absent |
 | `too_long` | A line exceeded 512 bytes | absent |
-| `busy` | The device could not keep up and dropped a line (too many sent in a short time). Wait a moment and resend | absent |
+| `busy` | The device could not keep up and dropped one or more lines (too many sent in a short time). Wait a moment and resend (see below) | absent |
 | `unknown_op` | Unknown `op` (`msg` holds the first 32 characters of the received `op`) | present |
 | `invalid` | A settings value is invalid (`key` is the item, `msg` is the condition). Nothing was changed | present |
 | `io` | Could not save to flash. Nothing was changed | present |
@@ -308,13 +333,20 @@ When BLE cannot send fast enough, items queue up on the device.
 
 `msg` is an English string for display and its wording may change. The app should decide by `code` and `key`.
 
+Guarantees of `busy`:
+
+- The device keeps up to 4 complete lines waiting to be processed (it processes them in its loop, about every 20 ms). A line that completes while 4 are waiting is **discarded without being parsed or executed**: the newest line is dropped, and the lines already waiting are kept
+- No response with the dropped line's `id` will follow, so **resending is always safe**, for every `op` (`settings.set` and `settings.reset` included: nothing was changed)
+- `busy` comes after the responses to the lines that were already waiting. One `busy` may stand for several dropped lines
+- An app that sends one request at a time and waits for its response never gets `busy`
+
 ## 9. Settings items
 
 ### 9.1 Item list [Fixed]
 
 | Key | Type | Range / format | Description |
 |---|---|---|---|
-| `callsign` | str / null | Uppercase letters and digits, 3–6 characters, at least one digit. No SSID | Own callsign. null means unset, and the device never transmits |
+| `callsign` | str / null | Uppercase letters and digits, 3–6 characters, at least one digit. No SSID. **Lowercase letters, surrounding whitespace, or an SSID are rejected** with `invalid`. The device does not convert or trim, so the stored value is exactly the value sent | Own callsign. null means unset, and the device never transmits |
 | `ssid` | int | 0–15 | SSID |
 | `symbol` | str | 2 characters. The 1st is the symbol table (`/`, `\`, `0`–`9`, `A`–`Z`); the 2nd is `!`–`~` | Symbol |
 | `path` | list[str] | 0–2 entries. Each is of the form `WIDE1-1` (1–6 letters/digits with an optional `-0`–`-15`). Lowercase is converted to uppercase. No trailing `*` | Digipeater path |
@@ -385,7 +417,7 @@ For now, develop and test the Web app on **Android**. Whether Windows works with
 | # | Item | Section | When it will be decided |
 |---|---|---|---|
 | U2 | Whether to add the Device Information Service | §3 | When the Web app needs it |
-| U3 | Whether Chrome (Android, Windows) shows the pairing dialog. If not, the procedure changes | §4 | First test from the Web app |
+| U3 | Whether Chrome (Android, Windows) shows the pairing dialog, at which call, and what Web Bluetooth reports for a wrong or dismissed passkey. If no dialog appears, the procedure changes | §4 | First test from the Web app (issue #5) |
 | U5 | Whether to put the firmware version in `hello` | §7.1 | When the Web app needs it |
 | U6 | How much reception is lost while `settings.set` saves | §7.2 | Task 7 (measurement) |
 | U8 | Whether Windows with a Bluetooth 5.x adapter avoids the issue in §10.1 | §10.1 | Test with a USB Bluetooth 5.x adapter |
@@ -396,6 +428,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected |
 | 0.3 | 2026-11-17 | BLE layer verified on real hardware: §2, §3, §5.2 fixed. Advertising interval 100 ms, public address. Notifications capped at 244 bytes. App writes fixed at 20 bytes or fewer. Pre-authentication commands are silently dropped. Added the hardware results to §4, the note about the first `status` to §6.2, and the Windows known issue (§10.1). Closed U1, U4, U7; added U8 |
 | 0.2 | 2026-11-16 | Added the `busy` error. Pairing and bonding confirmed available in the firmware |
 | 0.1 | 2026-11-16 | First version. Message handling (§6–§9) is fixed to match the implementation; the BLE layer (§2–§5.2) is provisional |

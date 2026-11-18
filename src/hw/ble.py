@@ -12,6 +12,8 @@ BLE の部品(bluetooth.BLE)とファイル操作は引数で差し替えられ�
   バッファに足して、完成した行を持つだけ。処理は poll() で行う
   (局のループは同期的で、ウォッチドッグが 3 秒)
 - 認証された接続(暗号化 + MITM のパスキー)になるまで、書き込まれたバイトは捨て、通知も送らない
+- つながってから AUTH_TIMEOUT_MS たっても認証されなければ、本機から切る(接続中は広告を止める
+  ので、放っておかれた接続があるとほかの端末から見つからない)。切断のイベントで広告を再開する
 - 本機の入出力能力は DisplayOnly。パスキー(6 桁)は BTstack が作り、IRQ_PASSKEY_ACTION の
   3 つ目の値で届く。それを on_passkey(passkey) に渡す(LCD に出す)。終わったら on_passkey(None)
 - ボンディングの鍵は bonds_path(JSON)に置く。ペアリングは稀なので、変わったときだけ書く
@@ -77,6 +79,7 @@ MAX_SECRETS = const(24)  # 保存する鍵の数(1 台につき数個。4 台分
 BONDS_PATH = "/ble_bonds.json"
 SAVE_DELAY_MS = const(2000)  # 鍵が変わってから書くまで(続けて変わるのをまとめる)
 PASSKEY_MAX = const(1_000_000)
+AUTH_TIMEOUT_MS = const(60_000)  # つながってから認証されるまでの上限(パスキーを打つ時間を含む)
 SECRET_TYPE_TLV = const(0x10)  # パッチ済み BTstack の TLV(key はタグ 4 バイト)
 KEEP_TAGS = (b"SMER", b"SMIR")  # forget_all で残す(本機の ER/IR。ボンドではない)
 
@@ -155,6 +158,8 @@ class Ble:
         self.log = log or (lambda *a: None)
         self.name = None
         self.conn = None  # 接続中のハンドル
+        self.connected_ms: "Any" = 0  # 接続した時刻(ticks_ms。スタブでは専用の型)
+        self._kicked = False  # 認証の時間切れで切断を要求した(切断のイベントを待っている)
         self.authenticated = False
         self.mtu = DEFAULT_MTU
         self.passkey = None
@@ -265,6 +270,8 @@ class Ble:
     def _set_connected(self, conn):
         was = self.conn
         self.conn = conn
+        self.connected_ms = time.ticks_ms()
+        self._kicked = False
         self.mtu = DEFAULT_MTU
         self.lines.clear()
         self._out = []
@@ -433,12 +440,26 @@ class Ble:
                 return
             self._out.pop(0)
 
+    def _check_auth_timeout(self, now):
+        conn = self.conn
+        if conn is None or self._kicked:
+            return
+        if time.ticks_diff(now, self.connected_ms) < AUTH_TIMEOUT_MS:
+            return
+        self._kicked = True  # 切断のイベントが来るまで、もう一度は要求しない
+        self.log("[ble] not authenticated in %d s, disconnecting" % (AUTH_TIMEOUT_MS // 1000))
+        try:
+            self._ble.gap_disconnect(conn)
+        except OSError:
+            pass
+
     # ---- 局のループから
     def poll(self, now):
         if not self.running:
             return
         self._save_secrets(now=now)
         if not self.authenticated:
+            self._check_auth_timeout(now)
             return
         self._flush_out()
         ln = self.lines

@@ -484,3 +484,77 @@ def test_stop_disconnects_and_flushes_bonds():
     assert fb.disconnected == [1] and not fb.active_ and not r.attached
     assert "/ble_bonds.json" in fs.files
     b.poll(0)  # 止めたあとは何もしない
+
+
+def test_unauthenticated_link_is_dropped_after_timeout():
+    b, fb, _r, _cfg, _fs, shown = make()
+    connect(b, fb, auth=False)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_DISPLAY, 123456)
+    t0 = b.connected_ms
+    b.poll(time.ticks_add(t0, B.AUTH_TIMEOUT_MS - 1))  # パスキーを打っている間は切らない
+    assert fb.disconnected == []
+    b.poll(time.ticks_add(t0, B.AUTH_TIMEOUT_MS))
+    assert fb.disconnected == [1]
+    b.poll(time.ticks_add(t0, B.AUTH_TIMEOUT_MS + 1000))  # 切断のイベントを待つ間は 1 回だけ
+    assert fb.disconnected == [1]
+    fb.adv = None
+    fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+    assert b.conn is None and fb.adv is not None and shown == [123456, None]
+
+
+def test_authenticated_link_is_kept():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    connect(b, fb)
+    b.poll(time.ticks_add(b.connected_ms, 10 * B.AUTH_TIMEOUT_MS))
+    assert fb.disconnected == [] and b.authenticated
+
+
+def test_reconnect_starts_with_an_empty_line_buffer():
+    """書きかけの行(書き込みの失敗や切断)は、つなぎ直すと消える(仕様書 §5.3)"""
+    b, fb, _r, _cfg, _fs, _shown = make()
+    link = Link(fb)
+    connect(b, fb)
+    b.poll(0)
+    link.lines()
+    fb.write(1, b'{"op":"hel')
+    fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+    connect(b, fb, conn=2)
+    fb.write(2, b'{"op":"hello","id":2}\n')
+    b.poll(1)
+    assert [(m["t"], m.get("id")) for m in link.lines()] == [("hello", 2), ("status", None)]
+
+
+def test_bare_newline_resynchronizes():
+    """書き込みに失敗したら \n を送る: 断片は id のない bad_json、空行は何も返さない(§5.3)"""
+    b, fb, _r, _cfg, _fs, _shown = make()
+    link = Link(fb)
+    connect(b, fb)
+    b.poll(0)
+    link.lines()
+    fb.write(1, b'{"op":"settings.re')  # 途中で失敗した書き込み
+    fb.write(1, b"\n")
+    fb.write(1, b"\n")  # 断片が無ければ無視される
+    fb.write(1, b'{"op":"hello","id":3}\n')
+    b.poll(1)
+    ms = link.lines()
+    assert [(m["t"], m.get("code"), m.get("id")) for m in ms] == [
+        ("err", "bad_json", None), ("hello", None, 3)]
+
+
+def test_busy_line_is_never_executed():
+    """busy で捨てた行は実行せず、その id の応答も来ない。busy はそれまでの応答のあと(§8.6)"""
+    b, fb, _r, cfg, _fs, _shown = make()
+    link = Link(fb)
+    connect(b, fb)
+    b.poll(0)
+    link.lines()
+    for i in range(B.LINES_MAX):
+        fb.write(1, b'{"op":"hello","id":%d}\n' % i)
+    fb.write(1, b'{"op":"settings.set","id":99,"values":{"ssid":9}}\n')  # 5 行目: 捨てる
+    fb.write(1, b'{"op":"settings.set","id":98,"values":{"ssid":8}}\n')  # 6 行目: 捨てる
+    b.poll(1)
+    ms = [m for m in link.lines() if m["t"] != "status"]
+    assert [m.get("id") for m in ms] == list(range(B.LINES_MAX)) + [None]
+    assert ms[-1]["code"] == "busy" and cfg.SSID != 9 and cfg.SSID != 8
+    b.poll(2)
+    assert [m for m in link.lines() if m["t"] != "status"] == []  # 遅れて来る応答もない
