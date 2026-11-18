@@ -160,6 +160,7 @@ class Station:
         ble, self.ble, self.remote = self.ble, None, None
         if ble is None:
             return
+        self.status.ble = None
         self.status.passkey = None
         try:
             ble.stop()
@@ -254,6 +255,8 @@ class Station:
                 sys.print_exception(e)
                 print("[ble] stopped after an error")
                 self._stop_ble()
+        b = self._ble_state()
+        self.status.ble = None if b == "off" else b  # 右上のアイコン(ui)
         self.sd.poll(self.utc(), now)
         self.status.sd = self.sd.state
         if self._rx_ms is not None:

@@ -9,7 +9,8 @@
 poll() を Core0 のループから 50 ms 程度ごとに呼ぶ。描画は変化のあった領域だけ。
 時計・経過時間は 1 秒ごと。小さな地図は局の地図(MAP)と衛星の位置(SKY)を切り替え
 (周期は views.small_map_kind)、切り替えのときと MAP_TICK_S ごとに描き直す。
-右上の測位状態の丸は 0.5 秒ごとに点灯・消灯する(1 Hz の点滅、丸の部分だけ描き直す)。
+右上のバッジ(BLE の状態アイコンと、測位状態の色の枠)は、枠が 0.5 秒ごとに点灯・消灯し(1 Hz の点滅)、
+BLE の広告中はアイコンが ADV_FRAME_MS ごとにコマ送りする。変わったときバッジの部分だけ描き直す。
 """
 
 import time
@@ -20,6 +21,8 @@ from ui import views
 
 MAP_TICK_S = 5
 METER_MS = 200  # 受信音量の縦棒を描き直す間隔
+ADV_FRAME_MS = 400  # BLE の広告中のアニメーションの 1 コマ
+ADV_FRAMES = 12  # コマの番号の周期(ui.ble_icons の 4 コマと 3 コマの公倍数)
 
 
 class Ui:
@@ -37,6 +40,8 @@ class Ui:
         self._seen_version = -1
         self._last_sec = -1
         self._blink = True
+        self._ble = None  # バッジに最後に描いた BLE の状態
+        self._frame = 0  # 広告中のアニメーションのコマ
         self._map_kind = None  # 小さな地図に最後に描いたもの
         self._dirty_all = True
         self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
@@ -91,6 +96,13 @@ class Ui:
         blink = (time.ticks_diff(now_ms, 0) // 500) % 2 == 0
         blink_changed = blink != self._blink
         self._blink = blink
+        ble = self.status.ble
+        frame = 0
+        if ble == "adv" or ble == "conn":
+            frame = (time.ticks_diff(now_ms, 0) // ADV_FRAME_MS) % ADV_FRAMES
+        badge_changed = blink_changed or ble != self._ble or frame != self._frame
+        self._ble = ble
+        self._frame = frame
         if self._dirty_all or changed:
             self.draw_all(now_ms)
         elif tick:
@@ -98,7 +110,7 @@ class Ui:
             if self.lay.wide and (sec % MAP_TICK_S == 0
                                   or views.small_map_kind(self.st, now_ms, sec) != self._map_kind):
                 self._draw_small_map(now_ms)
-        elif blink_changed and not (self.map_mode and not self.lay.wide):
+        elif badge_changed and not (self.map_mode and not self.lay.wide):
             self._draw_badge()
         if self.lay.meter_w and time.ticks_diff(now_ms, self._meter_ms) >= METER_MS:
             self._draw_meter(now_ms)
@@ -140,7 +152,7 @@ class Ui:
         lay = self.lay
         shown = self.selected if self.selected is not None else self.st.latest()
         self.scr.region(lay.right_x, 0, lay.right_w, lay.detail_h, lambda fb, dy: views.draw_detail(
-            fb, dy, lay, shown, self.status, now_ms, self._blink))
+            fb, dy, lay, shown, self.status, now_ms, self._blink, self._frame))
 
     def draw_status_now(self):
         """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)"""
@@ -156,8 +168,9 @@ class Ui:
 
     def _draw_badge(self):
         lay = self.lay
-        self.scr.region(lay.w - views.BADGE, 0, views.BADGE, views.BADGE,
-                        lambda fb, dy: views.draw_badge(fb, 0, dy, self.status, self._blink))
+        self.scr.region(lay.w - lay.badge, 0, lay.badge, lay.badge,
+                        lambda fb, dy: views.draw_badge(fb, 0, dy, lay, self.status, self._blink,
+                                                        self._frame))
 
     def _draw_status(self):
         lay = self.lay

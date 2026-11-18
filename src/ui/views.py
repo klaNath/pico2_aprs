@@ -11,6 +11,7 @@ import math
 
 from core import geo, level
 from hw.rgb565 import rgb
+from ui import ble_icons
 
 try:
     from typing import Sequence  # noqa: F401  (型注釈用。MicroPython には無い)
@@ -45,10 +46,11 @@ SYSTEMS = {
 CNO_MAX = 50  # 棒グラフの上端の C/N0(dBHz)
 # 受信音量(core.level.grade)-> 色
 METER_COLOR = {"clip": RED, "high": YELLOW, "ok": GREEN, "low": ORANGE, "none": GRAY}
-BADGE = 2 * CH  # 右上の測位状態の丸の大きさ
+# 右上のバッジ: BLE の状態アイコン(ICON x ICON)を角丸の四角(幅 FRAME、色 = 測位状態)で囲む
+FRAME = 2
 METER_W = 7  # 受信音量の縦棒の幅(左 2px が適正範囲の目印、右 5px が棒)
 BIG = 3  # 320x240 の詳細欄のコールサインの拡大率(24x24 ドット)
-BIG_ROW = CH * BIG + 3  # 大きなコールサインの行の高さ
+BIG_ROW = CH * BIG + 5  # 大きなコールサインの行の高さ(右上のバッジ 28px の下に 1px 空ける)
 
 KIND_LABEL = {
     "position": "Position",
@@ -86,6 +88,8 @@ class Status:
         self.tx_active = False
         self.rx_recent = False
         self.passkey: "int | None" = None  # BLE のペアリング中のパスキー(全画面で表示)
+        # BLE: "adv" = 広告中、"conn" = 接続済みで認証前、"auth" = 認証済み / None = BLE を使わない
+        self.ble: "str | None" = None
         # 受信音声の音量(core.level.Level)/ None = 表示しない(IF 入力など)
         self.level: "level.Level | None" = None
 
@@ -101,6 +105,8 @@ class Layout:
         self.cols = self.right_w // CH
         # 下段に自局の状態・衛星の棒グラフ・小さな地図を出すか(320x240 など)
         self.wide = width >= 320 and height >= 200
+        self.icon = 24 if self.wide else 20  # BLE のアイコンの一辺(ui.ble_icons にある大きさ)
+        self.badge = self.icon + 2 * FRAME  # 右上のバッジの一辺
         if self.wide:
             self.detail_h = 122  # 13 行 + 区切り線。一覧も同じ高さ
             self.list_h = self.detail_h
@@ -167,7 +173,7 @@ def _wrap(text, cols, nlines):
 def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0):
     """最新局(または選択局)の詳細 -> [(文字列, 色), ...]。テストしやすいよう描画と分けてある。
 
-    head_cols: 1・2 行目の幅(右上の丸を避ける)。None なら cols。
+    head_cols: 1〜3 行目の幅(右上のバッジを避ける)。None なら cols。
     big_cols > 0: 1 行目はコールサインだけ(大きな文字で big_cols 文字まで)。経過時間は 2 行目
     (距離と方位の行)の右端に置き、2 行目は大きな文字の下なので cols いっぱいに使う。
     """
@@ -201,7 +207,7 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0)
     if big_cols:
         pos = (_two(pos[0], age, cols), pos[1])
     lines.append(pos)
-    lines.append((_clip(kind, cols), CYAN))
+    lines.append((_clip(kind, cols if big_cols else hc), CYAN))
     if st.lat is not None:
         lines.append((geo.fmt_latlon(st.lat, st.lon), WHITE))
     mv = []
@@ -264,10 +270,10 @@ def draw_meter(fb, dy, w, h, lv):
         fb.fill_rect(2, meter_y(lv.peak_db, h) + dy, w - 2, 2, RED if lv.clip else WHITE)
 
 
-def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True):
-    big_cols = (lay.right_w - BADGE - 2) // (CH * BIG) if lay.wide else 0
+def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True, frame=0):
+    big_cols = (lay.right_w - lay.badge - 1) // (CH * BIG) if lay.wide else 0
     lines = detail_lines(st, status.lat, status.lon, now_ms, lay.cols,
-                         lay.cols - (BADGE + CH - 1) // CH, big_cols)
+                         lay.cols - (lay.badge + CH - 1) // CH, big_cols)
     y0 = 0
     if big_cols and st is not None:
         s, c = lines.pop(0)
@@ -277,7 +283,7 @@ def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True):
     for i, (s, c) in enumerate(lines[:max_lines]):
         fb.text(s, 0, y0 + i * ROW + dy, c)
     fb.fill_rect(0, lay.detail_h - 2 + dy, lay.right_w, 2, BORDER)
-    draw_badge(fb, lay.right_w - BADGE, dy, status, blink_on)
+    draw_badge(fb, lay.right_w - lay.badge, dy, lay, status, blink_on, frame)
 
 
 _big_cache = {}  # 最後に作った大きな文字 1 つ: {(文字列, 色): (1 bit の framebuf, パレット)}
@@ -315,7 +321,8 @@ def draw_big(fb, text, x, y, color):
 
 
 def badge_color(status):
-    """測位状態の丸の色: 赤 = 測位なし、橙 = 2D、緑 = 3D、水色 = 3D で SBAS / SLAS の補正を使用中"""
+    """測位状態(右上のバッジの枠)の色:
+    赤 = 測位なし、橙 = 2D、緑 = 3D、水色 = 3D で SBAS / SLAS の補正を使用中"""
     if status.fix < 2:
         return RED
     if status.fix == 2:
@@ -323,11 +330,55 @@ def badge_color(status):
     return CYAN if "SBAS" in status.aug or "SLAS" in status.aug else GREEN
 
 
-def draw_badge(fb, x, y, status, on):
-    """右上の測位状態の丸(BADGE x BADGE)。on=False は消灯(1 Hz で点滅させる)"""
-    r = BADGE // 2 - 1
+_icon_fbs = {}  # アイコンのバイト列の id -> framebuf(作るのは最初の 1 回だけ。全部で 6 KB 程度)
+
+
+def ble_icon(ble, n, frame=0):
+    """Status.ble -> 一辺 n のアイコン(ui.ble_icons の RGB565 のバイト列)/ None = 出さない。
+
+    認証済みは接続中のアイコン。広告中と認証前(ペアリング中など)は
+    広告のアニメーションの frame コマ目
+    """
+    if ble is None:
+        return None
+    if ble == "auth":
+        return ble_icons.CONN_24 if n == 24 else ble_icons.CONN_20
+    frames = ble_icons.ADV_24 if n == 24 else ble_icons.ADV_20
+    return frames[frame % len(frames)]
+
+
+def _icon_fb(data, n):
+    import framebuf
+
+    fb = _icon_fbs.get(id(data))
+    if fb is None:
+        fb = _icon_fbs[id(data)] = framebuf.FrameBuffer(bytearray(data), n, n, framebuf.RGB565)
+    return fb
+
+
+def _round_frame(fb, x, y, n, color):
+    """一辺 n、幅 2px の角丸の四角(角は 1 段欠く)"""
+    fb.hline(x + 2, y, n - 4, color)
+    fb.hline(x + 1, y + 1, n - 2, color)
+    fb.hline(x + 1, y + n - 2, n - 2, color)
+    fb.hline(x + 2, y + n - 1, n - 4, color)
+    fb.vline(x, y + 2, n - 4, color)
+    fb.vline(x + 1, y + 1, n - 2, color)
+    fb.vline(x + n - 2, y + 1, n - 2, color)
+    fb.vline(x + n - 1, y + 2, n - 4, color)
+
+
+def draw_badge(fb, x, y, lay, status, on, frame=0):
+    """右上のバッジ(lay.badge 四方): 中に BLE の状態アイコン、枠の色が測位状態。
+
+    on=False は枠を消す(1 Hz で点滅させる)。アイコンは点滅させない。BLE を使わないときは枠だけ。
+    frame: 広告中のアニメーションのコマ
+    """
     if on:
-        fb.ellipse(x + BADGE // 2, y + BADGE // 2, r, r, badge_color(status), True)
+        _round_frame(fb, x, y, lay.badge, badge_color(status))
+    data = ble_icon(status.ble, lay.icon, frame)
+    if data is not None:
+        fb.blit(_icon_fb(data, lay.icon), x + FRAME, y + FRAME)
 
 
 def gnss_text(status, cols):

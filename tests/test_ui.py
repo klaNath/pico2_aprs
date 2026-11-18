@@ -19,6 +19,7 @@ from ui.views import (
     Layout,
     Status,
     badge_color,
+    ble_icon,
     detail_lines,
     draw_signals,
     gnss_text,
@@ -112,6 +113,57 @@ def test_detail_distance_line():
     # 右上の丸を避けるとき(1・2 行目の幅を詰める)
     lines = [t for t, _ in detail_lines(st, TOKYO[0], TOKYO[1], 1000, 30, 27)]
     assert len(lines[0]) == 27 and lines[1] == "DIST 3.2km  DIR SW" and len(lines[2]) <= 30
+
+
+def test_badge_fits_next_to_big_callsign():
+    from ui.views import BIG, BIG_ROW, CH, ROW
+
+    lay = Layout(320, 240)
+    assert (lay.icon, lay.badge) == (24, 28)
+    # 大きなコールサイン 9 文字 + 1px + バッジが右上の欄に収まり、2 行目はバッジの下
+    assert 9 * CH * BIG + 1 + lay.badge <= lay.right_w
+    assert BIG_ROW > lay.badge
+    assert (lay.detail_h - 1 - BIG_ROW) // ROW == 10  # 大きな文字の下の行数は前と同じ
+    small = Layout(240, 135)
+    assert (small.icon, small.badge) == (20, 24) and 3 * ROW >= small.badge  # 1〜3 行目が避ける
+
+
+def test_detail_head_lines_avoid_badge():
+    s = Stations()
+    s.update(parse_frame(Frame.parse("JA1AAA-15>APRS,JA1DIG*:!3539.53N/13944.70E>test")), 1000)
+    lines = [t for t, _ in detail_lines(s.latest(), TOKYO[0], TOKYO[1], 13_000, 20, 17)]
+    assert all(len(t) <= 17 for t in lines[:3]) and lines[2].startswith("Position")
+
+
+def test_ble_icon_states():
+    from ui import ble_icons
+
+    assert ble_icon(None, 24) is None  # BLE を使わない: 出さない
+    assert ble_icon("auth", 24) is ble_icons.CONN_24 and ble_icon("auth", 20) is ble_icons.CONN_20
+    # 広告中と認証前は広告のアニメーション(コマが回る)
+    adv = [ble_icon("adv", 24, f) for f in range(5)]
+    assert adv[:4] == list(ble_icons.ADV_24) and adv[4] is adv[0]
+    assert ble_icon("conn", 24, 2) is ble_icons.ADV_24[2]
+    assert len(set(adv[:4])) == 4
+    assert ble_icon("adv", 20, 3) is ble_icons.ADV_20[0]
+
+
+def test_ble_icons_data():
+    from ui import ble_icons
+
+    for n, frames, conn in ((24, ble_icons.ADV_24, ble_icons.CONN_24),
+                            (20, ble_icons.ADV_20, ble_icons.CONN_20)):
+        assert all(len(d) == 2 * n * n for d in frames + (conn,))
+    # framebuf の並び(上位バイトが先)で読むと、広告中のアイコンは青が強い(並びが逆なら崩れる)
+    d = ble_icons.ADV_24[3]
+    lit = blue = 0
+    for i in range(0, len(d), 2):
+        v = (d[i] << 8) | d[i + 1]
+        r, b = (v >> 11) << 3, (v & 31) << 3
+        if v:
+            lit += 1
+            blue += b > r
+    assert lit > 100 and blue * 10 >= lit * 9
 
 
 def test_badge_color():
@@ -316,3 +368,63 @@ def test_hw_ui_switches_to_passkey_and_back():
     st.passkey = None
     ui.poll(4100)
     assert len(scr.regions) > n + 1  # 通常の画面に戻る(全体を描き直す)
+
+
+def test_hw_draw_badge_frame_and_icon():
+    import framebuf
+
+    from ui.views import draw_badge
+
+    lay = Layout(320, 240)
+    n = lay.badge
+    buf = bytearray(2 * n * n)
+    fb = framebuf.FrameBuffer(buf, n, n, framebuf.RGB565)
+
+    def render(ble, on, frame=0):
+        fb.fill(0)
+        st = Status()
+        st.fix, st.ble = 3, ble
+        draw_badge(fb, 0, 0, lay, st, on, frame)
+        return bytes(buf)
+
+    assert not any(render(None, False))  # BLE なしで消灯: 何も描かない
+    frame_only = render(None, True)
+    assert fb.pixel(2, 0) == GREEN and fb.pixel(0, 0) == 0  # 枠は測位状態の色、角は欠く
+    assert fb.pixel(n // 2, n // 2) == 0  # 中は空
+    icon_only = render("auth", False)
+    assert any(icon_only) and fb.pixel(2, 0) == 0  # 消灯中もアイコンは出す
+    assert render("adv", True, 0) != render("adv", True, 1) != frame_only  # コマ送り
+
+
+def test_hw_ui_redraws_badge_for_ble():
+    from ui.controller import ADV_FRAME_MS, Ui
+
+    class Scr:
+        width, height = 320, 240
+
+        def __init__(self):
+            self.regions = []
+
+        def region(self, x, y, w, h, draw, bg=0):
+            self.regions.append((x, y, w, h))
+
+        def fill(self, color):
+            pass
+
+    scr = Scr()
+    st = Status()
+    ui = Ui(scr, Stations(), st, ())
+    ui.poll(1000)
+    badge = (320 - 28, 0, 28, 28)
+    del scr.regions[:]
+    ui.poll(1010)
+    assert scr.regions == []  # 変化なし
+    st.ble = "adv"
+    ui.poll(1020)
+    assert scr.regions == [badge]  # 状態が変わった: バッジだけ
+    del scr.regions[:]
+    t = (1020 // ADV_FRAME_MS + 1) * ADV_FRAME_MS  # 次のコマ(点滅の切り替えとは別の時刻)
+    if t % 500 == 0:
+        t += ADV_FRAME_MS
+    ui.poll(t)
+    assert badge in scr.regions
