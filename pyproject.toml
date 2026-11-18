@@ -30,7 +30,8 @@ reportUnnecessaryTypeIgnoreComment = "information"
 line-length = 100
 target-version = "py38"
 # サブモジュールからの生成物は各リポジトリの書式のまま(src/tnc は自分で書いたので検査する)
-extend-exclude = ["typings", "src/maxm10", "src/micropyGPS.py"]
+# tools/icons/make_icons.py はアイコンの作者の原本(PIL で描く)のまま
+extend-exclude = ["typings", "src/maxm10", "src/micropyGPS.py", "tools/icons/make_icons.py"]
 # MicroPython viper のポインタ型(実行時の組み込み名)
 builtins = ["ptr", "ptr8", "ptr16", "ptr32", "uint"]
 
