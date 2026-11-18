@@ -1,7 +1,11 @@
 """GNSS 受信機 u-blox MAX-M10M(UART0)。maxm10 で通信し、micropyGPS で NMEA を解析する。
 
 begin() でボーレートを確かめ(必要なら 115200 にして BBR に保存。ハードリセットはしない)、
-あとは poll(status) を Core0 のループから呼ぶ(受信済みの分を読んで解析するだけで、待たない)。
+あとは poll(status) を Core0 のループから呼ぶ(受信済みの分から最大 POLL_BYTES を読んで解析する
+だけで、待たない)。1 回の量を限るのは、毎秒の NMEA と UBX のまとまり(約 1.7 KB、解析に約 100 ms)を
+何回かのループに分け、その間に画面などが動けるようにするため。20 ms ごとのループなら毎秒 10 KB 以上
+読める。
+NMEA は 1 文ずつ micropyGPS.update_line で解析する(1 文字ずつの update より約 4 倍速い)。
 有効な RMC を受けたら RTC を UTC に合わせる(最初の 1 回と、その後 1 時間ごと)。
 衛星ごとの強度と補強(QZSS・SBAS・SLAS)のため、UBX NAV-SAT を毎秒出させる。この設定は
 RAM 層だけに書く(BBR の保存済み設定は変えない。電源を切れば元に戻り、begin() のたびに書く)。
@@ -20,6 +24,8 @@ try:
     from typing import Callable  # noqa: F401  (型注釈用。MicroPython には無い)
 except ImportError:
     pass
+
+POLL_BYTES = 256  # poll() 1 回で読む上限(1 回の解析を数十 ms に抑える)
 
 
 def _set_rtc(utc_s):
@@ -54,19 +60,16 @@ class M10:
     def _on_nmea(self, line):
         if self.on_nmea is not None:
             self.on_nmea(line)
-        update = self.gps.update
-        for b in line:
-            r = update(chr(b))
-            if r:
-                self.sentences += 1
-                if r[2:] == "RMC":
-                    self._rmc = True
-                    self.rtc.on_rmc(self.gps)  # 受けた直後に合わせる(遅れを小さく)
+        r = self.gps.update_line(line)
+        if r:
+            self.sentences += 1
+            if r[2:] == "RMC":
+                self._rmc = True
+                self.rtc.on_rmc(self.gps)  # 受けた直後に合わせる(遅れを小さく)
 
     def poll(self, status=None):
-        """受信済みの分を解析し、status があれば更新する。RMC を受けたら True"""
-        while self.dev.update():
-            pass
+        """受信済みの分から最大 POLL_BYTES を解析し、status があれば更新する。RMC を受けたら True"""
+        self.dev.update(POLL_BYTES)
         got, self._rmc = self._rmc, False
         if status is not None:
             update_status(status, self.gps)
