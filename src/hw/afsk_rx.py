@@ -149,8 +149,13 @@ class Receiver:
             (Demodulator(fs, max_block=_BLOCK, **PROFILE_NOISE), Deframer(nslots)),
             (Demodulator(fs, max_block=_BLOCK, **PROFILE_HUM), Deframer(nslots)),
         ]
+        self.fs = fs
         self.running = False
         self.stopped = True
+        # 送信中のミュート(mute()/unmute())。Core0 が書き、Core1 が読む
+        self.muted = False
+        self._tail = 0  # ミュート解除のあとに捨てるサンプル数
+        self.muted_samples = 0  # ミュートで捨てたサンプル数(確認用)
         self.lag_max = 0  # 処理の遅れの最大(サンプル数)。リング長に近づいたら危険
         self.overruns = 0  # 処理が間に合わずにリング 1 周分以上を捨てた回数
         self.samples = 0
@@ -187,6 +192,16 @@ class Receiver:
             self.stop()
         self.ring.close()
 
+    def mute(self):
+        """送信の直前に呼ぶ。解除まで入力を捨てる(自局の送信を受信回路が拾って復号しないように)"""
+        self.muted = True
+
+    def unmute(self, tail_ms=0):
+        """送信のあとに呼ぶ。さらに tail_ms の間の入力を捨ててから復調に戻る
+        (無線機の送受切り替えの余韻)。途中まで組み立てたフレームは捨てる"""
+        self._tail = self.fs * tail_ms // 1000
+        self.muted = False
+
     def _loop(self):
         ring = self.ring
         buf = ring.buf
@@ -195,10 +210,32 @@ class Receiver:
         chains = self.chains
         lacc = self._lacc
         rd = ring.position()
+        was_muted = False
+        skip = 0
         try:
             while self.running:
+                if self.muted:  # 送信中: 読み捨てて追従だけする
+                    wr = ring.position()
+                    self.muted_samples = (self.muted_samples + (wr - rd) % n) & 0x3FFFFFFF
+                    rd = wr
+                    was_muted = True
+                    time.sleep_ms(5)
+                    continue
+                if was_muted:  # 解除: 組み立て途中のフレームを捨て、余韻の分も捨てる
+                    was_muted = False
+                    skip = self._tail
+                    for _dem, dfr in chains:
+                        dfr.reset()
                 wr = ring.position()
                 avail = (wr - rd) % n
+                if skip > 0:
+                    k = avail if avail < skip else skip
+                    skip -= k
+                    self.muted_samples = (self.muted_samples + k) & 0x3FFFFFFF
+                    rd = (rd + k) % n
+                    if skip > 0:
+                        time.sleep_ms(5)
+                    continue
                 if avail > self.lag_max:
                     self.lag_max = avail
                 if avail > n - _BLOCK:  # 追いつけない: 1 周分捨てて現在位置から再開

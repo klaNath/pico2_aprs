@@ -28,6 +28,33 @@ def test_hw_rx_keeps_up():
         rx.close()
 
 
+def test_hw_rx_mute_while_sending():
+    # 送信中(mute)は復調に回さず読み捨て、解除後は余韻(tail_ms)の分を捨ててから復調に戻る
+    from hw.afsk_rx import Receiver
+
+    rx = Receiver(config.PIN_RX_ADC, config.FS)
+    try:
+        rx.start()
+        time.sleep_ms(200)
+        rx.mute()
+        time.sleep_ms(50)  # Core1 が今の 1 ブロックを終えるまで
+        s0, m0 = rx.samples, rx.muted_samples
+        time.sleep_ms(500)
+        s1, m1 = rx.samples, rx.muted_samples
+        assert s1 == s0, "demodulated while muted"
+        assert abs((m1 - m0) - config.FS // 2) < config.FS // 10
+        rx.unmute(100)
+        time.sleep_ms(500)
+        s2, m2 = rx.samples, rx.muted_samples
+        print("muted %d, tail %d, then demod %d samples" % (m1 - m0, m2 - m1, s2 - s1))
+        # 余韻の 100 ms 分(+ 解除前に捨てた少し)を捨て、残りは復調した
+        assert config.FS // 10 <= m2 - m1 < config.FS // 10 + config.FS // 20
+        assert s2 - s1 > config.FS * 3 // 10
+        assert not rx.muted and rx.overruns == 0
+    finally:
+        rx.close()
+
+
 def test_hw_level_of_a_sine():
     # 集計の関数(viper)と公開の計算を、振幅 500 のサイン波(直流 2100)で確かめる
     import math

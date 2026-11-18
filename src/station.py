@@ -349,6 +349,7 @@ class Station:
             self.ui.draw_status_now()
             self.led.value(1)
             self.wdt.feed()  # 待ちのループではフィードしない(最長約 2 秒。上限は txgate)
+            self.rx.mute()  # 送信音の回り込みで自局のパケットを復号しないように
             try:
                 self.tx.start(n=n)
                 while not self.tx.finish():
@@ -356,6 +357,7 @@ class Station:
             finally:
                 # Never leave PTT on after an exception or Ctrl-C (no-op on normal completion)
                 self.tx.abort()
+                self.rx.unmute(config.RX_MUTE_TAIL_MS)
                 self.led.value(0)
                 st.tx_active = False
         st.tx_count += 1
