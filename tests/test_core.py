@@ -110,3 +110,23 @@ def test_object_is_tracked_by_name():
     s = Stations()
     st = s.update(P("JA1AAA>APRS:;EVENT    *092345z3540.12N/13945.67E>x"), 0)
     assert st.call == "EVENT"
+    assert st.obj and not st.own
+    assert "JA1AAA" not in s.by_call  # オブジェクトだけを送った局は表に入らない
+    a = s.update(P("JA1AAA>APRS:!3541.00N/13946.00E>a"), 10)
+    assert not a.obj and a.count == 1 and st.count == 1
+
+
+def test_object_named_like_a_station_is_kept_apart():
+    """オブジェクト名が局のコールサインと同じでも別の件(docs/ble-protocol.md §8.4。架空の局)"""
+    s = Stations(max_stations=4, own_call="Q1ME")
+    me = s.update(P("Q1ME>APRS:!3540.00N/13945.00E>my beacon"), 0)
+    o = s.update(P("Q1BBB>APRS:;Q1ME     *092345z3550.00N/13955.00E>x"), 10)
+    i = s.update(P("Q1BBB>APRS:)Q1AAA!3530.00N/13935.00E>item"), 20)
+    a = s.update(P("Q1AAA>APRS:!3541.00N/13946.00E>a"), 30)
+    assert len(s) == 4 and o is not me and i is not a and "Q1BBB" not in s.by_call
+    assert me.own and not me.obj and o.obj and not o.own and o.call == "Q1ME"
+    assert i.obj and i.call == "Q1AAA" and i.lat is not None and i.lat < 35.6
+    assert [x.call for x in s.order] == ["Q1AAA", "Q1AAA", "Q1ME", "Q1ME"]
+    s.update(P("Q1CCC>APRS:>x"), 40)  # 上限で捨てるのは局 Q1ME。同じ名前のオブジェクトは残る
+    assert len(s.by_call) == len(s.order) == 4
+    assert me not in s.order and o in s.order and s.by_call[("obj", "Q1ME")] is o

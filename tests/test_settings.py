@@ -107,7 +107,9 @@ def test_check_converts_to_config_values():
 def test_check_rejects_bad_values():
     assert bad("callsign", "Q1")  # 短い
     assert bad("callsign", "Q1TEST7")  # 長い
-    assert bad("callsign", "q1test")  # 小文字
+    assert bad("callsign", "q1test")  # 小文字(大文字に変えない。docs/ble-protocol.md §9.1)
+    assert bad("callsign", " Q1TEST") and bad("callsign", "Q1TEST ")  # 空白(trim しない)
+    assert bad("callsign", "Q1TEST-7")  # SSID は ssid に分ける
     assert bad("callsign", "QATEST")  # 数字が無い
     assert bad("callsign", 5)
     assert bad("ssid", 16) and bad("ssid", -1) and bad("ssid", 1.0) and bad("ssid", True)

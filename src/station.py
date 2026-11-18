@@ -61,7 +61,7 @@ from core.beacon import Beacon, mice_frame
 from core.level import Level, db_peak
 from core.settings import Settings
 from core.stations import Stations
-from core.txgate import display_call
+from core.txgate import display_call, valid_callsign
 from hw import restart, txctl, watchdog
 from hw.afsk_rx import Receiver
 from hw.afsk_tx import AfskTx
@@ -203,7 +203,8 @@ class Station:
             # スイッチがオンで、ゲートが許可する(次のビーコンで実際に電波を出す)
             "tx_ready": st.beacon_on and why is None,
             "tx_refuse": why,
-            "call": self.call,
+            # 未設定のときは省く(LCD とログは NOCALL。docs/ble-protocol.md §8.1)
+            "call": self.call if valid_callsign(self.gate.callsign) else None,
             "last_tx_s": (None if self._tx_ms is None
                           else time.ticks_diff(time.ticks_ms(), self._tx_ms) // 1000),
             "next_beacon_s": st.next_beacon_s,
@@ -218,7 +219,8 @@ class Station:
         now = time.ticks_ms()
         for s in list(self.stations.order):  # 送る途中で受信して表が変わってもよいように写す
             yield {"src": s.call, "last_s": s.age_s(now), "count": s.count, "lat": s.lat,
-                   "lon": s.lon, "lvl_db": s.level_db, "own": s.own or None}
+                   "lon": s.lon, "lvl_db": s.level_db, "own": s.own or None,
+                   "obj": s.obj or None}
 
     def utc(self):
         return time.time() if self.gnss.rtc.synced else None
@@ -294,6 +296,8 @@ class Station:
                 d = {"tnc2": text, "lvl_db": lvl, "clip": clip or None, "utc_s": self.utc()}
                 if p is not None:
                     d["src"], d["kind"], d["lat"], d["lon"] = p.src, p.kind, p.lat, p.lon
+                    if p.kind in ("object", "item"):
+                        d["obj"] = p.name  # src は送信局のまま(§8.2)
                     if p.table is not None and p.code is not None:
                         d["sym"] = p.table + p.code
                 self.remote.rx(d)

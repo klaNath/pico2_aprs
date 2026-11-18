@@ -960,18 +960,27 @@ def test_station_feeds_remote_status_tx_and_stations():
         d = st.remote_status()
         assert d["sw"] is True and d["tx_ready"] is False and d["tx_refuse"] == "callsign not set"
         assert d["last_tx_s"] == 0 and d["lat"] == 35.68
+        assert "call" not in r._status()  # 未設定のときは省く(LCD の NOCALL は送らない)
         st.gate.callsign, st.gate.allowed = CALL, True
         assert st.remote_status()["tx_ready"] is True
+        assert r._status()["call"] == CALL + "-7"
+        # 受信: オブジェクトは src が送信局のまま、obj に名前。局の表では obj の行(架空の局)
+        q = [bytes(Frame.parse("Q1BBB>APRS:;Q1OBJ    *092345z3550.00N/13955.00E>x").encode())]
+        st.rx.get = lambda now_ms=None: q.pop() if q else None
+        st._receive(0)
         st.stations.update(parse_frame(Frame.parse("Q1AAA-9>APRS:!3540.12N/13945.67E>x")), 0)
         r.handle(b'{"op": "stations.list", "id": 3}')
         r.poll(0)
         ms = link.take()
         kinds = [m["t"] for m in ms]
-        assert "tx" in kinds and kinds.count("station") == 1 and "stations.end" in kinds
+        assert "tx" in kinds and kinds.count("station") == 2 and "stations.end" in kinds
         tx = [m for m in ms if m["t"] == "tx"][0]
         assert tx["dry"] is True and tx["tnc2"].startswith(CALL + "-7>")
-        stn = [m for m in ms if m["t"] == "station"][0]
+        stn, obj = [m for m in ms if m["t"] == "station"]
         assert stn["src"] == "Q1AAA-9" and stn["count"] == 1 and abs(stn["lat"] - 35.668) < 0.001
+        assert "obj" not in stn and obj["src"] == "Q1OBJ" and obj["obj"] is True
+        (rx,) = [m for m in ms if m["t"] == "rx"]
+        assert rx["src"] == "Q1BBB" and rx["obj"] == "Q1OBJ" and rx["kind"] == "object"
         assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
     finally:
         st.close()
