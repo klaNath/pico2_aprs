@@ -51,6 +51,7 @@ FRAME = 2
 METER_W = 7  # 受信音量の縦棒の幅(左 2px が適正範囲の目印、右 5px が棒)
 BIG = 3  # 320x240 の詳細欄のコールサインの拡大率(24x24 ドット)
 BIG_ROW = CH * BIG + 5  # 大きなコールサインの行の高さ(右上のバッジ 28px の下に 1px 空ける)
+AGE_COLS = 4  # 詳細欄の経過時間の枠の文字数('59s' '23h' '100d')
 
 KIND_LABEL = {
     "position": "Position",
@@ -132,6 +133,14 @@ class Layout:
             self.status_w = self.right_w
             self.meter_w = self.meter_x = 0
             self.sats_y = self.status_h  # 棒グラフなし
+        # 詳細欄: 1〜3 行目は右上のバッジを避ける。320x240 は 1 行目が大きなコールサインだけ
+        self.head_cols = self.cols - (self.badge + CH - 1) // CH
+        self.big_cols = (self.right_w - self.badge - 1) // (CH * BIG) if self.wide else 0
+        # 経過時間の枠(詳細欄の中の座標)。毎秒変わるので、詳細欄とは別に描き直す。
+        # 320x240 は 2 行目(距離の行)の右端、240x135 は 1 行目のバッジの左
+        self.age_w = AGE_COLS * CH
+        self.age_x = (self.cols if self.wide else self.head_cols) * CH - self.age_w
+        self.age_y = BIG_ROW if self.wide else 0
         self.list_rows = (self.list_h - ROW) // ROW  # 見出し 1 行を除く
         self.status_cols = self.status_w // CH
         self.status_rows = self.status_h // ROW
@@ -170,10 +179,16 @@ def _wrap(text, cols, nlines):
     return out
 
 
+def _call_color(st, now_ms):
+    return MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW
+
+
 def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0):
     """最新局(または選択局)の詳細 -> [(文字列, 色), ...]。テストしやすいよう描画と分けてある。
+    経過時間は含まない(毎秒変わるので detail_age で別に描く)。その場所の AGE_COLS 文字と
+    1 文字の隙間は空けておく。
 
-    head_cols: 1〜3 行目の幅(右上のバッジを避ける)。None なら cols。
+    head_cols: 1〜3 行目の幅(右上のバッジを避ける)。None なら cols。1 行目の右端は経過時間。
     big_cols > 0: 1 行目はコールサインだけ(大きな文字で big_cols 文字まで)。経過時間は 2 行目
     (距離と方位の行)の右端に置き、2 行目は大きな文字の下なので cols いっぱいに使う。
     """
@@ -182,14 +197,12 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0)
     hc = cols if head_cols is None else head_cols
     p = st.packet
     lines = []
-    age = geo.fmt_age(st.age_s(now_ms))
-    call_color = MAGENTA if st.own else GRAY if st.stale(now_ms) else YELLOW
+    call_color = _call_color(st, now_ms)
     if big_cols:
         lines.append((_clip(st.call, big_cols), call_color))
-        hc = cols - len(age) - 1  # 2 行目の右端は経過時間
+        hc = cols - AGE_COLS - 1  # 2 行目の右端は経過時間
     else:
-        head = _clip(st.call, hc - len(age) - 1)
-        lines.append((head + " " * (hc - len(head) - len(age)) + age, call_color))
+        lines.append((_clip(st.call, hc - AGE_COLS - 1), call_color))
     kind = KIND_LABEL.get(p.kind, p.kind)
     if p.kind == "mice" and p.mice_msg:
         kind += " " + p.mice_msg
@@ -205,7 +218,7 @@ def detail_lines(st, own_lat, own_lon, now_ms, cols, head_cols=None, big_cols=0)
     else:
         pos = ("no position", GRAY)
     if big_cols:
-        pos = (_two(pos[0], age, cols), pos[1])
+        pos = (_clip(pos[0], hc), pos[1])
     lines.append(pos)
     lines.append((_clip(kind, cols if big_cols else hc), CYAN))
     if st.lat is not None:
@@ -270,19 +283,42 @@ def draw_meter(fb, dy, w, h, lv):
         fb.fill_rect(2, meter_y(lv.peak_db, h) + dy, w - 2, 2, RED if lv.clip else WHITE)
 
 
-def draw_detail(fb, dy, lay, st, status, now_ms, blink_on=True, frame=0):
-    big_cols = (lay.right_w - lay.badge - 1) // (CH * BIG) if lay.wide else 0
-    lines = detail_lines(st, status.lat, status.lon, now_ms, lay.cols,
-                         lay.cols - (lay.badge + CH - 1) // CH, big_cols)
+def detail_body(lay, st, status, now_ms):
+    """詳細欄の経過時間を除いた行(detail_lines)。前に描いたものと同じなら描き直さなくてよい"""
+    return detail_lines(st, status.lat, status.lon, now_ms, lay.cols, lay.head_cols, lay.big_cols)
+
+
+def detail_age(st, own_lat, now_ms, big):
+    """詳細欄の経過時間 -> (文字列, 色) / None(局なし)。色は置く行に合わせる:
+    big(320x240)は距離の行の色、それ以外はコールサインの色"""
+    if st is None:
+        return None
+    if big:
+        color = GREEN if st.lat is not None and own_lat is not None else GRAY
+    else:
+        color = _call_color(st, now_ms)
+    return geo.fmt_age(st.age_s(now_ms)), color
+
+
+def draw_age(fb, x, y, lay, age):
+    """経過時間(detail_age の結果)を lay.age_w 幅の枠の右寄せで"""
+    if age is not None:
+        _right(fb, age[0], x + lay.age_w, y, age[1])
+
+
+def draw_detail(fb, dy, lay, lines, st, status, now_ms, blink_on=True, frame=0):
+    """詳細欄の全体。lines は detail_body の結果"""
     y0 = 0
-    if big_cols and st is not None:
-        s, c = lines.pop(0)
+    if lay.big_cols and st is not None:
+        s, c = lines[0]
         draw_big(fb, s, 0, dy, c)
+        lines = lines[1:]
         y0 = BIG_ROW
     max_lines = (lay.detail_h - 1 - y0) // ROW
     for i, (s, c) in enumerate(lines[:max_lines]):
         fb.text(s, 0, y0 + i * ROW + dy, c)
     fb.fill_rect(0, lay.detail_h - 2 + dy, lay.right_w, 2, BORDER)
+    draw_age(fb, lay.age_x, lay.age_y + dy, lay, detail_age(st, status.lat, now_ms, lay.wide))
     draw_badge(fb, lay.right_w - lay.badge, dy, lay, status, blink_on, frame)
 
 

@@ -7,7 +7,8 @@
     Y: 選択を解除して最新局の自動表示に戻す
 ボタンが無い(pins が空)ときは選択も画面切り替えもしない。320x240 では小さな地図が常に出ている。
 poll() を Core0 のループから 50 ms 程度ごとに呼ぶ。描画は変化のあった領域だけ。
-時計・経過時間は 1 秒ごと。小さな地図は局の地図(MAP)と衛星の位置(SKY)を切り替え
+時計・経過時間は 1 秒ごと。詳細欄はほかの行が変わっていなければ、経過時間の枠とバッジだけ描き直す
+(詳細欄全体は約 55 ms、枠とバッジは数 ms)。小さな地図は局の地図(MAP)と衛星の位置(SKY)を切り替え
 (周期は views.small_map_kind)、切り替えのときと MAP_TICK_S ごとに描き直す。
 右上のバッジ(BLE の状態アイコンと、測位状態の色の枠)は、枠が 0.5 秒ごとに点灯・消灯し(1 Hz の点滅)、
 BLE の広告中はアイコンが ADV_FRAME_MS ごとにコマ送りする。変わったときバッジの部分だけ描き直す。
@@ -46,6 +47,7 @@ class Ui:
         self._dirty_all = True
         self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
         self._pk_drawn = None  # 全画面で出しているパスキー(None = 通常の画面)
+        self._detail_drawn = None  # 詳細欄に最後に描いた行(views.detail_body)
 
     # ---- ボタン
     def _pressed(self):
@@ -145,14 +147,32 @@ class Ui:
     def draw_tick(self, now_ms):
         if self.map_mode and not self.lay.wide:
             return
-        self._draw_detail(now_ms)
+        shown, lines = self._detail(now_ms)
+        if lines != self._detail_drawn:
+            self._draw_detail(now_ms, shown, lines)
+        else:  # 毎秒変わるのは経過時間とバッジだけ(詳細欄全体の 1/30 ほどの面積)
+            self._draw_age(now_ms, shown)
+            self._draw_badge()
         self._draw_status()
 
-    def _draw_detail(self, now_ms):
-        lay = self.lay
+    def _detail(self, now_ms):
         shown = self.selected if self.selected is not None else self.st.latest()
+        return shown, views.detail_body(self.lay, shown, self.status, now_ms)
+
+    def _draw_detail(self, now_ms, shown=None, lines=None):
+        if lines is None:
+            shown, lines = self._detail(now_ms)
+        lay = self.lay
+        self._detail_drawn = lines
         self.scr.region(lay.right_x, 0, lay.right_w, lay.detail_h, lambda fb, dy: views.draw_detail(
-            fb, dy, lay, shown, self.status, now_ms, self._blink, self._frame))
+            fb, dy, lay, lines, shown, self.status, now_ms, self._blink, self._frame))
+
+    def _draw_age(self, now_ms, shown):
+        """詳細欄の経過時間の枠だけ描き直す"""
+        lay = self.lay
+        age = views.detail_age(shown, self.status.lat, now_ms, lay.wide)
+        self.scr.region(lay.right_x + lay.age_x, lay.age_y, lay.age_w, views.CH,
+                        lambda fb, dy: views.draw_age(fb, 0, dy, lay, age))
 
     def draw_status_now(self):
         """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)"""
