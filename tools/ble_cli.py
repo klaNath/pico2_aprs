@@ -6,6 +6,8 @@
     python tools/ble_cli.py get | schema | stations
     python tools/ble_cli.py set comment=Hello beacon_still_s=900 tx_enabled=false
     python tools/ble_cli.py reset
+    python tools/ble_cli.py set beacon_mode=manual   # 手動のモード(自動では送らない)
+    python tools/ble_cli.py send                      # 今すぐビーコンを送る(スイッチがオンのとき)
     python tools/ble_cli.py listen -s 60              # status / rx / tx イベントを表示
 
 接続先は --name(既定 PicoAPRS 始まり)か --address で選ぶ。仕様は docs/ble-protocol.md。
@@ -198,7 +200,8 @@ async def main_async(args):
         else:
             kw = {}
             op = {"hello": "hello", "get": "settings.get", "schema": "settings.schema",
-                  "stations": "stations.list", "reset": "settings.reset", "set": "settings.set"}[args.cmd]
+                  "stations": "stations.list", "reset": "settings.reset", "set": "settings.set",
+                  "send": "beacon.send"}[args.cmd]
             if args.cmd == "set":
                 kw["values"] = {k: parse_value(v) for k, v in (kv.split("=", 1) for kv in args.kv)}
             for m in await s.request(op, **kw):
@@ -215,7 +218,7 @@ def main():
     ap.add_argument("--pair", action="store_true", help="接続後にペアリングしてから実行")
     ap.add_argument("--repair", action="store_true", help="Windows 側のボンドを消してからペアリングし直す")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for c in ("scan", "pair", "hello", "get", "schema", "stations", "reset"):
+    for c in ("scan", "pair", "hello", "get", "schema", "stations", "reset", "send"):
         sub.add_parser(c)
     sp = sub.add_parser("set")
     sp.add_argument("kv", nargs="+", metavar="key=value")

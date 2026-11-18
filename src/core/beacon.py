@@ -6,6 +6,9 @@
     離れていなければ STILL_S ごとに送る
 スイッチをオフにすると前回の記録を消す(次にオンにしたらすぐ送る)。
 異常で再起動した直後は hold() で最初の 1 回を遅らせる(スイッチの操作でも解除しない)。
+この規則は自動のモード(config.BEACON_MODE = "auto")のときだけ使う。手動のモードでは
+next_s() を呼ばない。BLE の beacon.send(station.Station.send_now)は hold に従わずに送り、
+sent() を呼ぶので、自動のモードでは送った時点から次を数え直す。
 """
 
 import time

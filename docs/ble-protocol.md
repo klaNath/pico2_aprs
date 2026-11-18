@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.4 (2026-11-18) / protocol version `proto`: 1
+- Document version: 0.5 (2026-11-19) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -26,10 +26,11 @@ What the app can do (first phase):
 - Receive each decoded packet as it arrives (only while connected; the app is not expected to persist them)
 - Get the list of stations heard so far, when connecting
 - Read, change, and reset settings (changes are saved to the device's flash and survive power cycles)
+- Send a position beacon now (`beacon.send`, §7.5), and choose whether the device also sends beacons by itself (`beacon_mode`, §9.1)
 
-What the app cannot do: command a transmission (such as "send a beacon now"), APRS messaging, serve map data, KISS, or update firmware.
+What the app cannot do: send arbitrary packets or text, APRS messaging, serve map data, KISS, or update firmware.
 
-**Transmit safety**: the device emits a radio signal only when the **physical beacon switch on the unit is on** and the device's transmit gate allows it (a callsign is set and `tx_enabled` is true). Changing settings from the app cannot bypass the switch. The app should show `status.tx_ready` (§8.1) prominently.
+**Transmit safety**: the device emits a radio signal only when the **physical beacon switch on the unit is on** and the device's transmit gate allows it (a callsign is set and `tx_enabled` is true). This also holds for `beacon.send`: the app cannot bypass the switch, either by a command or by changing settings. The app should show `status.tx_ready` (§8.1) prominently.
 
 ## 2. Finding the device [Fixed]
 
@@ -173,6 +174,7 @@ App                                      Device
 | `settings.set` | `values`: {key: value, …} | `settings` | Change and save. **All or nothing**: if any one value is invalid, nothing changes |
 | `settings.reset` | none | `settings` | Delete the saved settings and return to the device's defaults |
 | `stations.list` | none | `station` × n, `stations.end` | Stations heard (newest first) |
+| `beacon.send` | none | `beacon` | Send a position beacon now (§7.5) |
 
 ### 7.1 `hello`
 
@@ -219,6 +221,31 @@ App                                      Device
 - If a packet is received while the list is being sent, its `rx` event arrives afterwards (the list is a snapshot from the time of the request)
 - The fields are described in §8.4
 
+### 7.5 `beacon.send`
+
+Sends one position beacon (Mic-E, the same frame as the automatic beacon) right away. Works in both beacon modes (§9.1).
+
+```json
+{"op": "beacon.send", "id": 7}
+{"t": "beacon", "id": 7, "dry": false}
+{"t": "tx", "tnc2": "Q1TEST-7>SU4PX0,WIDE1-1:`CIXl <0x1C>[/\"4!}Pico2 APRS", "dry": false, "utc": "2026-11-16T03:04:05Z"}
+```
+
+- The device checks the conditions below in this order. If one is not met, it returns `err` (§8.6) and sends nothing:
+
+  | Condition | `code` when not met |
+  |---|---|
+  | The unit's beacon switch is on (`status.sw`) | `switch_off` |
+  | The device has a 2D or 3D fix and knows the time (`status.fix` ≥ 2 and `utc` present) | `no_fix` |
+  | At least 10 seconds have passed since the last beacon (automatic, sent by command, or dry run) | `too_soon`, with `wait_s` |
+
+- When the conditions are met, the device builds the beacon and transmits it, then replies. The reply comes **after the transmission ends** (about 1–2 seconds; the device does not process other requests in the meantime). `dry` is true when the transmit gate refused (`status.tx_ready` was false because the callsign is unset or `tx_enabled` is false): the beacon was recorded but not transmitted, just like an automatic dry run
+- The `beacon` response carries only `dry`. The packet itself follows in the `tx` event (§8.3), right after the response
+- In the `"auto"` beacon mode, the automatic schedule restarts from this beacon (the next automatic beacon comes `beacon_moving_s` or `beacon_still_s` later)
+- After an abnormal restart, the device holds back its first automatic beacon for a while. `beacon.send` is not held back
+- `frame_too_long`: the beacon does not fit in the device's transmit buffer (the comment is too long for the current settings, such as with FX.25). Nothing was sent. Shorten the comment
+- An `err` with `internal` means the transmission failed inside the device. The device then restarts (as it does for a failure of an automatic beacon), so the connection will drop
+
 ## 8. Responses and events [Fixed]
 
 ### 8.1 `status`
@@ -227,7 +254,7 @@ Sent both as a response to a request and as an event. It is sent as an event:
 
 - right after connecting
 - every 5 seconds
-- when any of `fix`, `sw`, `tx_ready`, `tx_enabled`, or `call` changes (at the latest about 20 ms later, in the device's loop)
+- when any of `fix`, `sw`, `tx_ready`, `tx_enabled`, `call`, or `beacon_mode` changes (at the latest about 20 ms later, in the device's loop)
 
 ```json
 {"t": "status", "utc": "2026-11-16T03:04:05Z", "fix": 3, "sats": 9, "lat": 35.68124, "lon": 139.76712,
@@ -242,12 +269,13 @@ Sent both as a response to a request and as an event. It is sent as an event:
 | `sats` | int | Number of satellites used in the fix |
 | `lat`, `lon` | float | Own position. Only when `fix` is 2 or more |
 | `sw` | bool | Whether the unit's physical beacon switch is on |
+| `beacon_mode` | str | Value of the `beacon_mode` setting: `"auto"` or `"manual"` (§9.1) |
 | `tx_enabled` | bool | Value of the `tx_enabled` setting |
-| `tx_ready` | bool | **Whether the next beacon will actually go on the air.** True when `sw` is on and the transmit conditions are met (callsign set, `tx_enabled`). When false, a beacon is a dry run (recorded only, no radio output) |
+| `tx_ready` | bool | **Whether the next beacon will actually go on the air.** True when `sw` is on and the transmit conditions are met (callsign set, `tx_enabled`). When false, a beacon is a dry run (recorded only, no radio output), or with `sw` off, `beacon.send` is refused. Does not depend on `beacon_mode` |
 | `tx_refuse` | str | Why the transmit conditions are not met. Omitted when they are. `"callsign not set"`, `"TX not enabled"`, `"TX clock off failed"`. **A display string; more values may be added** |
 | `call` | str | Own callsign-SSID, as in the settings (`callsign`, plus `-ssid` when `ssid` is not 0). **Omitted while the callsign is unset** (the LCD shows a placeholder, which is not sent) |
-| `last_tx_s` | int | Seconds since the last beacon was built (dry runs included). Omitted if none since startup |
-| `next_beacon_s` | int | Seconds until the next beacon; 0 = now. Omitted when the switch is off, there is no fix, or the time is unknown |
+| `last_tx_s` | int | Seconds since the last beacon was built (automatic or `beacon.send`, dry runs included). Omitted if none since startup |
+| `next_beacon_s` | int | Seconds until the next automatic beacon; 0 = now. Omitted when the switch is off, there is no fix, the time is unknown, or `beacon_mode` is `"manual"` (look at `beacon_mode` to tell these apart) |
 | `rx_count`, `tx_count` | int | Packets received and transmitted since startup (the transmit count includes dry runs) |
 | `lvl_db` | float | RMS level of the received audio (dBFS). Shows the noise level even with no signal |
 | `sd` | str | microSD state: `"no card"`, `"wait"` (waiting for time), `"log NNNN"` (file number being logged), `"error"`, `"closed"`. **A display string** |
@@ -281,7 +309,7 @@ To keep one table from `stations.list` and later `rx` events the way the device 
 
 ### 8.3 `tx` (event)
 
-One each time the device builds a beacon (dry runs included).
+One each time the device builds a beacon: automatic or sent by `beacon.send` (dry runs included).
 
 ```json
 {"t": "tx", "tnc2": "Q1TEST-7>SU4PX0,WIDE1-1:`CIXl <0x1C>[/\"4!}Pico2 APRS", "dry": false, "utc": "2026-11-16T03:04:05Z"}
@@ -330,7 +358,11 @@ When BLE cannot send fast enough, items queue up on the device.
 | `unknown_op` | Unknown `op` (`msg` holds the first 32 characters of the received `op`) | present |
 | `invalid` | A settings value is invalid (`key` is the item, `msg` is the condition). Nothing was changed | present |
 | `io` | Could not save to flash. Nothing was changed | present |
-| `internal` | An internal device error (`msg` holds the detail). The device keeps running | present |
+| `internal` | An internal device error (`msg` holds the detail). The device keeps running, except after a failed transmission in `beacon.send` (§7.5) | present |
+| `switch_off` | `beacon.send`: the unit's beacon switch is off. Nothing was sent | present |
+| `no_fix` | `beacon.send`: no 2D/3D fix, or the time is not known yet. Nothing was sent | present |
+| `too_soon` | `beacon.send`: less than 10 seconds since the last beacon. `wait_s` (int) is the seconds left. Nothing was sent | present |
+| `frame_too_long` | `beacon.send`: the beacon does not fit in the transmit buffer. Nothing was sent | present |
 
 `msg` is an English string for display and its wording may change. The app should decide by `code` and `key`.
 
@@ -356,11 +388,12 @@ Guarantees of `busy`:
 | `beacon_moving_s` | int | 30–3600 | Beacon interval **while moving** (seconds) |
 | `beacon_still_s` | int | 60–7200 | Beacon interval **while not moving** (seconds) |
 | `beacon_move_m` | float | 1–1000 | Counted as "moving" when farther than this from the position of the previous beacon (m) |
+| `beacon_mode` | str | `"auto"` or `"manual"` | `"auto"`: the device sends beacons by itself by the rule below. `"manual"`: it sends only on `beacon.send` (§7.5). In both modes the switch must be on |
 | `tx_enabled` | bool | | Transmit permission. Even when true, the device does not transmit while the unit's switch is off |
 | `fx25_tx` | bool | | Transmit with FX.25 (with forward error correction) |
 
 - Types are strict: `1.0` or `true` is not accepted for an int item. An integer is accepted for a float item
-- Beacon rule: with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving
+- Beacon rule (`beacon_mode` `"auto"`): with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving. Turning the switch off and on starts over (the next beacon is immediate). When `beacon_mode` changes from `"manual"` to `"auto"`, the rule continues from the last beacon; if there was none since startup or since the switch was last turned on, a beacon is sent immediately
 - Items may be added later. Build the screen from the result of `settings.schema`, and either hide unknown items or handle them with a generic input
 
 ### 9.2 Shape of `settings.schema` [Fixed]
@@ -389,6 +422,7 @@ Guarantees of `busy`:
 | `len` | Fixed string length |
 | `max_len` | Maximum string length |
 | `max_items` | Maximum number of list entries |
+| `choices` | For `"str"`: the only accepted values (list). Show a selection. When absent, any string matching the other conditions is accepted |
 | `pattern` | A guide to the string format (regular expression). Some conditions cannot be expressed, such as "contains a digit" for `callsign` |
 
 The schema is an aid to input; the device makes the final decision (an invalid value returns `err` with `invalid`).
@@ -401,6 +435,7 @@ The schema is an aid to input; the device makes the final decision (an invalid v
 - After reconnecting, repeat the flow in §6.2 from the beginning (the device sends the state from scratch on every connection)
 - Reception history is not persisted. Put an upper limit on how many entries the screen keeps (the device sends an `rx` for every received packet; in a busy area that can be dozens per minute)
 - The device changes its behavior immediately on `settings.set`. Putting a confirmation dialog in front of the action that sets `tx_enabled` to true is recommended
+- `beacon.send` puts a signal on the air at once. Make it a deliberate action (for example a button that is disabled while `tx_ready` is false, or a confirmation), and do not send it automatically or repeatedly from the app. Do not send other requests while waiting for its response
 - Use fictitious values for callsigns in examples and test data (such as `Q1TEST`, starting with Q and not a real callsign)
 
 ### 10.1 Known issue: Windows stops receiving notifications
@@ -429,6 +464,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.5 | 2026-11-19 | Added `beacon.send` (§7.5) with the response `beacon` and the error codes `switch_off`, `no_fix`, `too_soon`, `frame_too_long`. Added the setting `beacon_mode` (`"auto"` / `"manual"`, §9.1), `status.beacon_mode`, and `choices` in the schema (§9.2). §1: the app can now command a beacon; the switch still has to be on. `proto` stays 1 (additions only) |
 | 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected. Time limits measured on hardware (60 s cut, 30 s passkey) |
 | 0.3 | 2026-11-17 | BLE layer verified on real hardware: §2, §3, §5.2 fixed. Advertising interval 100 ms, public address. Notifications capped at 244 bytes. App writes fixed at 20 bytes or fewer. Pre-authentication commands are silently dropped. Added the hardware results to §4, the note about the first `status` to §6.2, and the Windows known issue (§10.1). Closed U1, U4, U7; added U8 |
 | 0.2 | 2026-11-16 | Added the `busy` error. Pairing and bonding confirmed available in the firmware |

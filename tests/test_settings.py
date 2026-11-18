@@ -20,6 +20,7 @@ class Cfg:
         self.BEACON_MOVING_S = 90
         self.BEACON_STILL_S = 600
         self.BEACON_MOVE_M = 10.0
+        self.BEACON_MODE = "auto"
         self.TX_ENABLED = False
         self.FX25_TX = False
 
@@ -100,6 +101,7 @@ def test_check_converts_to_config_values():
     assert S.check("comment", "hello 73") == b"hello 73"
     assert S.check("beacon_move_m", 25) == 25.0
     assert S.check("tx_enabled", True) is True
+    assert S.check("beacon_mode", "auto") == "auto" and S.check("beacon_mode", "manual") == "manual"
     for key, v in (("ssid", 0), ("ssid", 15), ("beacon_moving_s", 30), ("beacon_still_s", 7200)):
         assert S.check(key, v) == v
 
@@ -122,6 +124,8 @@ def test_check_rejects_bad_values():
     assert bad("beacon_moving_s", 29) and bad("beacon_still_s", 7201)
     assert bad("beacon_move_m", 0.5) and bad("beacon_move_m", "10")
     assert bad("tx_enabled", 1) and bad("fx25_tx", None)
+    assert bad("beacon_mode", "Manual") and bad("beacon_mode", "") and bad("beacon_mode", None)
+    assert bad("beacon_mode", 1) and bad("beacon_mode", ["manual"])
     assert bad("no_such_key", 1)
 
 
@@ -140,6 +144,7 @@ def test_schema_covers_every_item():
     assert by["ssid"]["type"] == "int" and by["ssid"]["min"] == 0 and by["ssid"]["max"] == 15
     assert by["callsign"]["nullable"] is True
     assert by["comment"]["max_len"] == S.MAX_COMMENT
+    assert by["beacon_mode"]["type"] == "str" and by["beacon_mode"]["choices"] == ["auto", "manual"]
     json.dumps(sch)  # そのまま JSON にできる
 
 
@@ -274,8 +279,8 @@ def test_reset_restores_defaults_and_removes_file():
 def test_roundtrip_through_file():
     st, fs, _cfg = make()
     st.set({"callsign": "Q1TEST", "symbol": "\\>", "comment": "a b", "beacon_move_m": 12.5,
-            "fx25_tx": True})
+            "fx25_tx": True, "beacon_mode": "manual"})
     st2, _fs, cfg2 = make(fs)
     st2.load()
     assert st2.values() == st.values()
-    assert cfg2.SYMBOL == ("\\", ">") and cfg2.FX25_TX is True
+    assert cfg2.SYMBOL == ("\\", ">") and cfg2.FX25_TX is True and cfg2.BEACON_MODE == "manual"

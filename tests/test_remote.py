@@ -246,3 +246,64 @@ def test_disconnect_inside_write_does_not_raise():
 
 def test_printable():
     assert R.printable(b"ab\x00~\x7f") == "ab<0x00>~<0x7F>"
+
+
+class Sender:
+    """偽の send_fn(Station.send_now の代わり)。result を返し、呼ばれた数を数える"""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.result
+
+
+def test_beacon_send_without_send_fn_is_unknown():
+    r, link, _src, _cfg, _fs = make()  # send_fn を渡していない(既存の呼び出し)
+    (m,) = req(r, link, op="beacon.send", id=3)
+    assert m["t"] == "err" and m["code"] == "unknown_op" and m["id"] == 3
+
+
+def test_beacon_send_reply_then_tx_event():
+    r, link, _src, _cfg, _fs = make()
+    sent = []
+
+    def send():  # 本物と同じく、送り終えてから戻る(その途中で tx イベントを積む)
+        sent.append(1)
+        r.tx({"tnc2": b"Q1TEST-7>APRS:x", "dry": False})
+        return {"dry": False}
+
+    r.send_fn = send
+    ms = req(r, link, op="beacon.send", id=4)
+    assert sent == [1]
+    assert [m["t"] for m in ms] == ["beacon", "tx"]  # 応答が先(応答は送り待ちの先頭から出る)
+    assert ms[0] == {"t": "beacon", "id": 4, "dry": False}
+
+
+def test_beacon_send_dry_run():
+    r, link, _src, _cfg, _fs = make()
+    r.send_fn = Sender({"dry": True})
+    (m,) = req(r, link, op="beacon.send", id=5)
+    assert m == {"t": "beacon", "id": 5, "dry": True}
+
+
+def test_beacon_send_refusals():
+    r, link, _src, _cfg, _fs = make()
+    for res, extra in ((("switch_off", "beacon switch is off", None), {}),
+                       (("no_fix", "no position fix or time yet", None), {}),
+                       (("too_soon", "wait 4 s", {"wait_s": 4}), {"wait_s": 4}),
+                       (("frame_too_long", "x", None), {})):
+        r.send_fn = s = Sender(res)
+        (m,) = req(r, link, op="beacon.send", id=6)
+        assert s.calls == 1
+        assert m == dict({"t": "err", "id": 6, "code": res[0], "msg": res[1]}, **extra)
+
+
+def test_status_change_on_beacon_mode():
+    r, link, src, _cfg, _fs = make()
+    src.status["beacon_mode"] = "manual"
+    r.poll(1000)
+    (m,) = link.take()
+    assert m["t"] == "status" and m["beacon_mode"] == "manual"
