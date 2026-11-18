@@ -113,7 +113,7 @@ python tools/dev.py release           # build + ROMFS へ書き込み + 起動�
 
 - 仕様は docs/ble-protocol.md(Web アプリとの取り決め。変えるときはまずここを直す)、本機の作りは docs/ble-control.md
 - ペアリングは LCD に出る 6 桁のパスキー。ボンドの鍵はデバイスの `/ble_bonds.json`(LTK を含む。中身をそのまま表示したり外へ出したりしない)。消すのは USB から、BLE を止めた状態で `Ble.forget_all()`
-- PC からの確認: `python tools/ble_cli.py pair`(初回。パスキーは標準入力)、`hello` / `get` / `stations` / `listen -s 30` など。本機は同時に 1 台しかつながず、つながっている間は広告を止める(スマホがつながったままだと PC から見つからない)
+- PC からの確認: `python tools/ble_cli.py pair`(初回。パスキーは標準入力)、`hello` / `get` / `stations` / `listen -s 30` / `send`(今すぐビーコン。スイッチがオンのときだけ送る。電波が出るので `tx_enabled` を確かめてから)など。本機は同時に 1 台しかつながず、つながっている間は広告を止める(スマホがつながったままだと PC から見つからない)
 - **Windows の既知の問題**(docs/ble-control.md §7): 開発用の PC(Bluetooth 4.0)では、通知が続く応答の 2 回目の途中から受信が止まり、Windows の Bluetooth を入れ直すまで戻らない。本機は正常(Android では起きない)。BLE の動作確認は Android(nRF Connect)で行う
 - nRF Connect(Android)から書くときは TEXT を使う。改行を付けられないので、`ble_cli.py` か、改行で終わる書き込みのできるツールで確かめる
 - `bluetooth.irq` のハンドラの中の `print` は失われることがある。IRQ では記録だけして、ループで表示する

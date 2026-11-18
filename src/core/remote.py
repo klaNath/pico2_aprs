@@ -3,7 +3,7 @@
 プロトコルは docs/ble-control.md §5。BLE には依存しない(送受信は hw.ble、テストでは偽物)。
 すべて局のループ(step())から呼ぶ。IRQ からは呼ばない。
 
-    remote = Remote(settings, write, status_fn, stations_fn)
+    remote = Remote(settings, write, status_fn, stations_fn, send_fn=...)
     remote.attach() / detach()   認証された接続ができた / 切れた(接続していない間は何も送らない)
     remote.handle(line)          受けた 1 行(\\n を除いた bytes)
     remote.rx(d) / remote.tx(d)  イベント(局から)
@@ -27,7 +27,7 @@ STATUS_MS = 5000  # 定期の status の間隔
 EVENT_MAX = 8  # イベントの送り待ちの上限(行)
 LINE_MAX = 512  # 受ける 1 行の上限(バイト。hw.ble もこの値で切る)
 # この項目が変わったら、定期を待たずに status を送る
-CHANGE_KEYS = ("fix", "sw", "tx_ready", "tx_enabled", "call")
+CHANGE_KEYS = ("fix", "sw", "tx_ready", "tx_enabled", "call", "beacon_mode")
 
 
 def printable(b):
@@ -64,13 +64,18 @@ def encode(obj):
 
 
 class Remote:
-    def __init__(self, settings, write, status_fn, stations_fn, mode="tnc", log=None):
+    def __init__(self, settings, write, status_fn, stations_fn, mode="tnc", log=None,
+                 send_fn=None):
         """settings: core.settings.Settings。status_fn(): status の中身の dict。
-        stations_fn(): 局の表の要約(dict)を新しい順に返す iterable"""
+        stations_fn(): 局の表の要約(dict)を新しい順に返す iterable。
+        send_fn(): beacon.send(今すぐビーコンを送る)。その場で送り終えてから戻る。
+            送ったら {"dry": bool}、送らなかったら (code, msg, extra の dict)。
+            None なら beacon.send は unknown_op"""
         self.settings = settings
         self.write = write
         self.status_fn = status_fn
         self.stations_fn = stations_fn
+        self.send_fn = send_fn
         self.mode = mode
         self.log = log or (lambda *a: None)
         self.attached = False
@@ -154,6 +159,15 @@ class Remote:
             self._reply(rid, "settings", values=st.values(), changed=changed)
         elif op == "stations.list":
             self._iter = (rid, iter(self.stations_fn()), 0)
+        elif op == "beacon.send" and self.send_fn is not None:
+            r = self.send_fn()
+            if isinstance(r, dict):
+                self.log("[remote] beacon.send%s" % (" (dry)" if r.get("dry") else ""))
+                self._reply(rid, "beacon", **r)
+            else:
+                code, msg, extra = r
+                self.log("[remote] beacon.send refused: %s" % msg)
+                self._reply(rid, "err", code=code, msg=msg, **(extra or {}))
         else:
             self._reply(rid, "err", code="unknown_op", msg=str(op)[:32])
 

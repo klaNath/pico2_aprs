@@ -28,6 +28,7 @@ VERSION = 1
 MAX_COMMENT = 40
 MAX_PATH = 2
 MAX_MESSAGE = 6  # aprs.mice.MESSAGES の番号。7(Emergency)はスマホからは選ばせない
+BEACON_MODES = ("auto", "manual")
 
 
 class SettingsError(ValueError):
@@ -37,7 +38,8 @@ class SettingsError(ValueError):
         self.msg = msg
 
 
-# (キー, config の属性, 型, 引数) 型: "call" "int" "float" "bool" "symbol" "path" "comment"
+# (キー, config の属性, 型, 引数)
+# 型: "call" "int" "float" "bool" "symbol" "path" "comment" "choice"(引数は選べる文字列の tuple)
 ITEMS: tuple = (
     ("callsign", "CALLSIGN", "call", None),
     ("ssid", "SSID", "int", (0, 15)),
@@ -48,6 +50,7 @@ ITEMS: tuple = (
     ("beacon_moving_s", "BEACON_MOVING_S", "int", (30, 3600)),
     ("beacon_still_s", "BEACON_STILL_S", "int", (60, 7200)),
     ("beacon_move_m", "BEACON_MOVE_M", "float", (1.0, 1000.0)),
+    ("beacon_mode", "BEACON_MODE", "choice", BEACON_MODES),
     ("tx_enabled", "TX_ENABLED", "bool", None),
     ("fx25_tx", "FX25_TX", "bool", None),
 )
@@ -64,6 +67,7 @@ _DESC = {
     "beacon_moving_s": "Beacon interval while moving (s)",
     "beacon_still_s": "Beacon interval while not moving (s)",
     "beacon_move_m": "Distance counted as moving (m)",
+    "beacon_mode": "auto = beacon on the timer rules, manual = only on beacon.send",
     "tx_enabled": "Transmit permission (the beacon switch must also be on)",
     "fx25_tx": "Send with FX.25",
 }
@@ -122,6 +126,10 @@ def check(key, v):
             if not 0x20 <= ord(c) <= 0x7E:
                 raise SettingsError(key, "up to %d printable ASCII chars" % arg)
         return v.encode()
+    if kind == "choice":
+        if not isinstance(v, str) or v not in arg:
+            raise SettingsError(key, "one of " + ", ".join(arg))
+        return v
     raise SettingsError(key, "bad item kind")  # ITEMS の誤り
 
 
@@ -163,6 +171,9 @@ def schema():
         elif kind == "comment":
             d["type"] = "str"
             d["max_len"] = arg
+        elif kind == "choice":
+            d["type"] = "str"
+            d["choices"] = list(arg)
         out.append(d)
     return out
 

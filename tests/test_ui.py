@@ -89,6 +89,12 @@ def test_status_lines_wide():
     st = Status()
     lines = [s for s, _ in status_lines(st, 25, 13)]
     assert lines[1] == "--:--:-- JST     --------" and lines[3].startswith("BCN OFF")
+    # 手動のモード: スイッチがオンなら BCN MAN(次回の秒は出さない)、オフなら BCN OFF
+    st = full_status()
+    st.beacon_mode = "manual"
+    assert [s for s, _ in status_lines(st, 25, 13)][3] == "BCN MAN      RX 123 TX 45"
+    st.beacon_on = False
+    assert [s for s, _ in status_lines(st, 25, 13)][3].startswith("BCN OFF")
 
 
 def test_status_lines_compact():

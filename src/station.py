@@ -21,7 +21,9 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
     局の表: SD の stations.txt に 1 分ごと(変わったとき)と終了時に保存し、起動後に GNSS の時刻が
           分かったら読み出して表に加える(core.stationfile)
     TX: when the beacon switch (GP21; on when pulled to GND, off when open or broken) is on
-          and there is a fix, send Mic-E following the rules in core.beacon.
+          and there is a fix, send Mic-E following the rules in core.beacon
+          (config.BEACON_MODE "auto"). In "manual" mode, send only on BLE beacon.send
+          (send_now(); the switch must also be on). beacon.send also works in "auto" mode.
           ゲート(core.txgate)が拒否する間(コールサインが未設定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
@@ -138,6 +140,8 @@ class Station:
         if settings is not None:
             settings.listeners.append(self.apply_settings)
         self._tx_ms = None  # 最後にビーコンを作った ticks_ms(dry run を含む)
+        self._fatal = None  # send_now() の送信中の例外(step() が投げ直す)
+        self.status.beacon_mode = config.BEACON_MODE
 
     def start_ble(self):
         """BLE を始める(config.BLE_ENABLED のとき)。失敗しても局は動かす(スマホから操作できない)"""
@@ -148,7 +152,7 @@ class Station:
             from hw.ble import Ble
 
             self.remote = Remote(self.settings, None, self.remote_status, self.remote_stations,
-                                 log=print)
+                                 log=print, send_fn=self.send_now)
             self.ble = Ble(self.remote, on_passkey=self._on_passkey, log=print)
             self.ble.start()
         except Exception as e:
@@ -183,6 +187,7 @@ class Station:
         self.call = display_call(config.CALLSIGN, config.SSID)
         self.status.callsign = self.call
         self.stations.own_call = self.call
+        self.status.beacon_mode = config.BEACON_MODE  # 手動なら次の _beacon() から自動では送らない
         self._refused = None  # 送信できない理由が変わっていれば、次の送信で記録し直す
         print("[settings] applied %s, TX %s" % (
             ", ".join(changed) if changed else "all", self.gate.refuse_reason() or "enabled"))
@@ -200,6 +205,7 @@ class Station:
             "lat": st.lat if pos else None,
             "lon": st.lon if pos else None,
             "sw": st.beacon_on,
+            "beacon_mode": config.BEACON_MODE,
             "tx_enabled": bool(config.TX_ENABLED),
             # スイッチがオンで、ゲートが許可する(次のビーコンで実際に電波を出す)
             "tx_ready": st.beacon_on and why is None,
@@ -255,6 +261,9 @@ class Station:
                 sys.print_exception(e)
                 print("[ble] stopped after an error")
                 self._stop_ble()
+        if self._fatal is not None:  # beacon.send の送信中の例外(自動の送出と同じく局を止める)
+            e, self._fatal = self._fatal, None
+            raise e
         b = self._ble_state()
         self.status.ble = None if b == "off" else b  # 右上のアイコン(ui)
         self.sd.poll(self.utc(), now)
@@ -311,19 +320,59 @@ class Station:
             print("[rx]", text)
 
     # ---- ビーコン
-    def _beacon(self, now):
+    def _switch_on(self):
+        return self.sw.value() == config.BEACON_SW_ON
+
+    def _position_ok(self):
+        # 時刻も待つ: RMC より先に GLL/GSA を受けると、RTC を合わせる前に測位有効になることがある
         st = self.status
-        on = self.sw.value() == config.BEACON_SW_ON
+        return st.fix >= 2 and st.lat is not None and self.gnss.rtc.synced
+
+    def _beacon(self, now):
+        """自動の送出(config.BEACON_MODE が "auto")。スイッチの状態はどちらのモードでも読む"""
+        st = self.status
+        on = self._switch_on()
         if on != st.beacon_on:
             st.beacon_on = on
             self.beacon.reset()  # 次にオンにしたらすぐ送る
-        # 時刻も待つ: RMC より先に GLL/GSA を受けると、RTC を合わせる前に測位有効になることがある
-        if not on or st.fix < 2 or st.lat is None or not self.gnss.rtc.synced:
+        if not on or config.BEACON_MODE == "manual" or not self._position_ok():
             st.next_beacon_s = None
             return
         st.next_beacon_s = self.beacon.next_s(st.lat, st.lon, now)
         if st.next_beacon_s:
             return
+        self._send_beacon(now)
+
+    def send_now(self):
+        """BLE の beacon.send(core.remote が step() の中から呼ぶ)。条件を確かめて、その場で送る。
+        条件はスイッチがオン、測位と時刻、前回の送信から BEACON_MANUAL_MIN_S 秒。
+        自動のモードでも使え、送った時点から自動の次回を数え直す。
+        再起動直後の hold(自動の送出だけ)には従わない。
+        ゲートが拒否する間は自動と同じく dry run。
+        送ったら {"dry": bool}、送らなかったら (code, msg, extra)(docs/ble-protocol.md §7.5)。
+        送信中の例外は _fatal に置き、step() が投げ直す(remote と BLE の except で消えないように)"""
+        now = time.ticks_ms()
+        if not self._switch_on():
+            return ("switch_off", "beacon switch is off", None)
+        if not self._position_ok():
+            return ("no_fix", "no position fix or time yet", None)
+        if self._tx_ms is not None:
+            left = config.BEACON_MANUAL_MIN_S - time.ticks_diff(now, self._tx_ms) // 1000
+            if left > 0:
+                return ("too_soon", "wait %d s" % left, {"wait_s": left})
+        try:
+            dry = self._send_beacon(now, manual=True)
+        except Exception as e:
+            self._fatal = e
+            return ("internal", "%s: %s" % (type(e).__name__, e), None)
+        if dry is None:
+            return ("frame_too_long", "beacon does not fit in the TX buffer", None)
+        return {"dry": dry}
+
+    def _send_beacon(self, now, manual=False):
+        """ビーコンを作って送る(ゲートが拒否すれば dry run)。dry run なら True、送ったら False、
+        波形のバッファに入りきらず送らなかったら None"""
+        st = self.status
         gps = self.gnss.gps
         f = mice_frame(self.call, config.TX_PATH, st.lat, st.lon, gps.speed, gps.course,
                        gps.altitude if st.fix == 3 else None, config.SYMBOL,
@@ -336,7 +385,9 @@ class Station:
         except ValueError as e:  # TX_BUFFER_MS に入りきらない(コメントが長すぎる)
             print("[tx] not sent:", e)
             self.sd.logger.note("TX skipped: %s" % e)
-            return
+            return None
+        if manual:
+            self.sd.logger.note("TX manual (beacon.send)")
         why = self.gate.refuse_reason()
         self.sd.packet(text, tx=True, utc_s=self.utc(), dry=why is not None)
         if why != self._refused:
@@ -363,15 +414,18 @@ class Station:
         st.tx_count += 1
         if self.remote is not None:
             self.remote.tx({"tnc2": text, "dry": why is not None, "utc_s": self.utc()})
-        print("[tx%s%s] %d ms" % ("" if why is None else " dry", " fx25" if self.tx.fx_used else "",
-                                  n * 1000 // config.FS), text)
+        print("[tx%s%s%s] %d ms" % (" manual" if manual else "", "" if why is None else " dry",
+                                    " fx25" if self.tx.fx_used else "", n * 1000 // config.FS),
+              text)
+        return why is not None
 
     def _report(self):
         st = self.status
         print("[station] fix %dD sats %d/%d rx %d tx %d bcn %s next %s sd %s ble %s "
               "free %d lag %d" % (
             st.fix, st.sats, st.sats_view, st.rx_count, st.tx_count,
-            "on" if st.beacon_on else "off", st.next_beacon_s, self.sd.state, self._ble_state(),
+            ("on" if st.beacon_on else "off") + (" manual" if st.beacon_mode == "manual" else ""),
+            st.next_beacon_s, self.sd.state, self._ble_state(),
             gc.mem_free(), self.rx.lag_max))
         if self.level is not None:
             lv = self.level

@@ -83,6 +83,7 @@ class Status:
         self.lon: "float | None" = None
         self.utc_s: "int | None" = None  # UTC の秒(time.time() と同じ起点)/ None = 時刻不明
         self.beacon_on = False
+        self.beacon_mode = "auto"  # config.BEACON_MODE("manual" なら BCN MAN と出す)
         self.next_beacon_s: "int | None" = None
         self.rx_count = 0
         self.tx_count = 0
@@ -451,7 +452,9 @@ def status_lines(status, cols, rows=4):
     grid = status.grid or "--------"
     pos = geo.fmt_latlon(status.lat, status.lon) if status.lat is not None else "position unknown"
     pos_color = WHITE if status.lat is not None else GRAY
-    if status.beacon_on:
+    if status.beacon_on and status.beacon_mode == "manual":
+        bcn = "BCN MAN"  # 自動では送らない(スマホの指示で送る)
+    elif status.beacon_on:
         nb = status.next_beacon_s
         bcn = "BCN ON" if nb is None else "BCN ON %d:%02d" % (nb // 60, nb % 60)
     else:

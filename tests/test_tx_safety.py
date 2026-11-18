@@ -984,3 +984,214 @@ def test_station_feeds_remote_status_tx_and_stations():
         assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
     finally:
         st.close()
+
+
+# ---- 手動のビーコン(config.BEACON_MODE、BLE の beacon.send = Station.send_now)
+def _refused(st):
+    """send_now() が断ったときの (code, msg, extra)"""
+    r = st.send_now()
+    assert isinstance(r, tuple), r
+    code, msg, extra = r
+    return str(code), str(msg), dict(extra or {})
+
+
+def _manual(on=True):
+    import config
+
+    keep = config.BEACON_MODE
+    config.BEACON_MODE = "manual" if on else "auto"
+    return keep
+
+
+def test_send_now_needs_the_switch():
+    # スマホの指示でも、ビーコンスイッチがオフなら PTT を入れない(どちらのモードでも)
+    if not _fake_hw.install():
+        return
+    import config
+
+    for mode in ("auto", "manual"):
+        keep = config.BEACON_MODE
+        config.BEACON_MODE = mode
+        try:
+            st = _station(gate_on=True)
+            _switch(st, False)
+            assert _refused(st)[0] == "switch_off"
+            assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == [] and st.status.tx_count == 0
+            st.close()
+        finally:
+            config.BEACON_MODE = keep
+
+
+def test_manual_mode_does_not_beacon_by_itself():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    keep = _manual()
+    try:
+        st = _station(gate_on=True)
+        now = time.ticks_ms()
+        for i in range(3):
+            st._beacon(time.ticks_add(now, i * 1000_000))  # 間隔の規則なら送っているはずの時間
+        assert st.status.tx_count == 0 and st.status.next_beacon_s is None
+        assert st.status.beacon_on  # スイッチの状態は読む(LCD と status の sw)
+        assert st.remote_status()["beacon_mode"] == "manual"
+        assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+        assert st.send_now() == {"dry": False}
+        assert st.status.tx_count == 1 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        assert _ptt_is_off() and not st.status.tx_active
+        st.close()
+    finally:
+        config.BEACON_MODE = keep
+
+
+def test_send_now_needs_a_fix_and_time():
+    if not _fake_hw.install():
+        return
+    import config
+
+    st = _station(gate_on=True)
+    st.status.fix = 0
+    assert _refused(st)[0] == "no_fix"
+    st.status.fix = 3
+    st.gnss.rtc.last_ms = None  # 時刻が未確定
+    assert _refused(st)[0] == "no_fix"
+    assert _ptt_on_writes(config.PTT_ACTIVE_HIGH) == [] and st.status.tx_count == 0
+    st.close()
+
+
+def test_send_now_too_soon_survives_switch_toggle():
+    if not _fake_hw.install():
+        return
+    import config
+
+    keep = _manual()
+    try:
+        st = _station(gate_on=True)
+        assert st.send_now() == {"dry": False}
+        code, _msg, extra = _refused(st)
+        assert code == "too_soon" and 0 < extra["wait_s"] <= config.BEACON_MANUAL_MIN_S
+        _switch(st, False)  # スイッチを入れ直しても(beacon.reset())連打の制限は消えない
+        st._beacon(0)
+        _switch(st, True)
+        st._beacon(0)
+        assert _refused(st)[0] == "too_soon"
+        assert st.status.tx_count == 1 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        st._tx_ms = None  # 時間がたったことにする
+        assert st.send_now() == {"dry": False} and st.status.tx_count == 2
+        st.close()
+    finally:
+        config.BEACON_MODE = keep
+
+
+def test_send_now_is_dry_when_gate_refuses():
+    if not _fake_hw.install():
+        return
+    import config
+
+    st = _station(gate_on=False)
+    assert st.send_now() == {"dry": True}
+    assert st.status.tx_count == 1 and _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+    st.close()
+
+
+def test_send_now_in_auto_mode_restarts_the_interval():
+    if not _fake_hw.install():
+        return
+    import time
+
+    keep = _manual(False)
+    try:
+        st = _station(gate_on=True)
+        now = time.ticks_ms()
+        st._beacon(now)  # スイッチを入れて最初の 1 回
+        assert st.status.tx_count == 1
+        st._tx_ms = None  # 連打の制限を外す
+        assert st.send_now() == {"dry": False} and st.status.tx_count == 2
+        st._beacon(time.ticks_ms())
+        assert st.status.tx_count == 2  # 送った時点から数え直す(すぐには送らない)
+        assert st.status.next_beacon_s and st.status.next_beacon_s > 0
+        st.close()
+    finally:
+        import config
+
+        config.BEACON_MODE = keep
+
+
+def test_send_now_ignores_restart_hold():
+    # 再起動直後の hold は自動の送出だけ。人の操作(beacon.send)では送る
+    if not _fake_hw.install():
+        return
+    import time
+
+    from hw import restart
+
+    restart.set_fails(1)
+    try:
+        st = _station(gate_on=True)
+    finally:
+        restart.set_fails(0)
+    st._beacon(time.ticks_ms())
+    assert st.status.tx_count == 0
+    assert st.send_now() == {"dry": False} and st.status.tx_count == 1
+    st.close()
+
+
+def test_send_now_exception_drops_ptt_and_stops_the_station():
+    # 送信中の例外は remote / BLE の except で消さず、step() から上げる(自動の送出と同じ)
+    if not _fake_hw.install():
+        return
+    import time
+
+    keep = _manual()
+    try:
+        st = _station(gate_on=True)
+        finish = st.tx.finish
+
+        def finish_broken():
+            assert not _ptt_is_off()
+            raise RuntimeError("dma")
+
+        st.tx.finish = finish_broken
+        code, msg, _extra = _refused(st)
+        assert code == "internal" and "dma" in msg
+        assert _ptt_is_off() and not st.status.tx_active
+        st.tx.finish = finish
+        try:
+            st.step(time.ticks_ms())
+            raise AssertionError("RuntimeError expected")
+        except RuntimeError as e:
+            assert str(e) == "dma"
+        assert st._fatal is None
+        st.close()
+    finally:
+        import config
+
+        config.BEACON_MODE = keep
+
+
+def test_beacon_mode_setting_applies_to_station():
+    if not _fake_hw.install():
+        return
+    from test_settings import FakeFs
+
+    import config
+    from core.settings import Settings
+
+    fs = FakeFs()
+    s = Settings(config, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
+    st = _station(gate_on=True)
+    s.listeners.append(st.apply_settings)
+    try:
+        s.set({"beacon_mode": "manual"})
+        assert st.status.beacon_mode == "manual"
+        st._beacon(0)
+        assert st.status.tx_count == 0
+        s.set({"beacon_mode": "auto"})
+        st._beacon(0)
+        assert st.status.tx_count == 1  # 自動に戻すと規則どおり(前回が無ければすぐ)
+    finally:
+        s.reset()
+        st.close()

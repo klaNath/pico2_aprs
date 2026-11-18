@@ -114,6 +114,11 @@ BEACON_STILL_S = 600
 BEACON_MOVE_M = 10.0
 # 異常で再起動した直後は、最初のビーコンをこの秒数だけ待つ(再起動の繰り返しで送り続けないように)
 BEACON_RESTART_HOLD_S = 90
+# ビーコンの送り方。"auto" = 上の規則で自動に送る、"manual" = 自動では送らず、スマホ(BLE の
+# beacon.send)の指示のときだけ送る。どちらのモードでも、送るにはビーコンスイッチがオンであること
+BEACON_MODE = "auto"
+# BLE の beacon.send は、前回の送信(自動・手動、dry run を含む)からこの秒数がたつまで受けない
+BEACON_MANUAL_MIN_S = 10
 BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
 BEACON_COMMENT = b"Pico2 APRS"
 # 実際に電波を出すか。False の間はビーコンの時機の管理・画面・SD の記録(TX(dry) の印)だけ動き、
