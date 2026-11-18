@@ -20,6 +20,7 @@ from ui.views import (
     Status,
     badge_color,
     ble_icon,
+    detail_age,
     detail_lines,
     draw_signals,
     gnss_text,
@@ -110,9 +111,9 @@ def test_detail_distance_line():
     assert lines[1] == "DIST 3.2km  DIR SW"  # 自局からの距離と 16 方位はコールサインのすぐ下
     lines = [t for t, _ in detail_lines(st, None, None, 1000, 30)]
     assert lines[1] == "own position unknown"
-    # 右上の丸を避けるとき(1・2 行目の幅を詰める)
+    # 右上の丸を避けるとき(1・2 行目の幅を詰める)。経過時間は行に含めない(別の枠に描く)
     lines = [t for t, _ in detail_lines(st, TOKYO[0], TOKYO[1], 1000, 30, 27)]
-    assert len(lines[0]) == 27 and lines[1] == "DIST 3.2km  DIR SW" and len(lines[2]) <= 30
+    assert lines[0] == "JA1AAA" and lines[1] == "DIST 3.2km  DIR SW" and len(lines[2]) <= 30
 
 
 def test_badge_fits_next_to_big_callsign():
@@ -221,10 +222,27 @@ def test_detail_big_callsign():
     st = s.latest()
     lines = [t for t, _ in detail_lines(st, TOKYO[0], TOKYO[1], 13_000, 30, 27, 9)]
     assert lines[0] == "JA1AAA-15"  # 1 行目はコールサインだけ(大きな文字)
-    assert lines[1] == "DIST 3.2km  DIR SW" + " " * 9 + "12s"  # 経過時間は 2 行目の右端
-    assert len(lines[1]) == 30
+    assert lines[1] == "DIST 3.2km  DIR SW"  # 経過時間は別の枠(2 行目の右端)
     lines = [t for t, _ in detail_lines(st, None, None, 13_000, 30, 27, 9)]
-    assert lines[1].startswith("own position unknown") and lines[1].endswith("12s")
+    assert lines[1] == "own position unknown"
+    assert detail_age(st, TOKYO[0], 13_000, True) == ("12s", GREEN)  # 距離の行の色
+    assert detail_age(st, None, 13_000, True) == ("12s", GRAY)
+    assert detail_age(st, None, 13_000, False) == ("12s", YELLOW)  # コールサインの色
+    assert detail_age(None, None, 13_000, True) is None
+
+
+def test_detail_age_cell_does_not_overlap_text():
+    from ui.views import AGE_COLS, CH
+
+    for w, h in ((320, 240), (240, 135)):
+        lay = Layout(w, h)
+        assert lay.age_w == AGE_COLS * CH
+        if lay.wide:  # 2 行目の右端。距離の行(cols - AGE_COLS - 1 文字まで)の右
+            assert lay.age_x + lay.age_w <= lay.right_w and lay.age_y >= lay.badge
+            assert lay.age_x >= (lay.cols - AGE_COLS - 1) * CH + CH
+        else:  # 1 行目のバッジの左。コールサイン(head_cols - AGE_COLS - 1 文字まで)の右
+            assert lay.age_x + lay.age_w <= lay.right_w - lay.badge and lay.age_y == 0
+            assert lay.age_x >= (lay.head_cols - AGE_COLS - 1) * CH + CH
 
 
 class FakeFb:
@@ -428,3 +446,39 @@ def test_hw_ui_redraws_badge_for_ble():
         t += ADV_FRAME_MS
     ui.poll(t)
     assert badge in scr.regions
+
+
+def test_hw_ui_tick_redraws_only_age_and_badge():
+    from ui.controller import Ui
+
+    class Scr:
+        width, height = 320, 240
+
+        def __init__(self):
+            self.regions = []
+
+        def region(self, x, y, w, h, draw, bg=0):
+            self.regions.append((x, y, w, h))
+
+        def fill(self, color):
+            pass
+
+    scr = Scr()
+    st = Status()
+    st.lat, st.lon = TOKYO
+    s = Stations()
+    s.update(parse_frame(Frame.parse("JA1AAA>APRS:!3539.53N/13944.70E>test")), 1000)
+    ui = Ui(scr, s, st, ())
+    lay = ui.lay
+    detail = (lay.right_x, 0, lay.right_w, lay.detail_h)
+    age = (lay.right_x + lay.age_x, lay.age_y, lay.age_w, 8)
+    badge = (320 - 28, 0, 28, 28)
+    ui.poll(1000)
+    assert detail in scr.regions
+    del scr.regions[:]
+    ui.poll(2000)  # 1 秒たった: 経過時間とバッジだけ(と自局の状態)
+    assert age in scr.regions and badge in scr.regions and detail not in scr.regions
+    del scr.regions[:]
+    st.lat = TOKYO[0] + 0.1  # 自局が動いて距離が変わった: 詳細欄全体
+    ui.poll(3000)
+    assert detail in scr.regions and age not in scr.regions
