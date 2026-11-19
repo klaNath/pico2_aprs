@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.6 (2026-11-19) / protocol version `proto`: 1
+- Document version: 0.7 (2026-11-20) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -67,9 +67,10 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
 - Method: LE Secure Connections, passkey entry with MITM protection (the device is DisplayOnly), with bonding
 - Flow:
   1. The app connects and touches RX, or starts notifications on TX
-  2. Android shows a pairing dialog
+  2. Android starts pairing. The passkey dialog is shown by Android, not by the browser, and it **may appear only as a notification** ("Pairing request ... tap to pair") that the user has to tap (seen in Chrome on Android 11, below)
   3. The device's LCD shows a 6-digit passkey
-  4. The user types it into the dialog
+  4. The user reads it from the LCD and types it into the dialog
+- The app should tell the user both things in its hint text: look for the pairing notification and tap it, then type the 6 digits shown on the device's LCD. Tapping the notification takes part of the 30 s passkey limit below
 - On later connections the stored bonding key is used and no passkey is shown
 - Until the connection is authenticated, the device does not process commands and does not send notifications. RX accepts writes only on an authenticated connection, so a write before authentication is refused by the GATT layer (Insufficient Authentication), which is what makes the phone start pairing. Any bytes that still reach the device before authentication are **silently dropped** (no `err` is returned)
 - **How the app learns that authentication completed**: start notifications on TX first (that does not need authentication), then write `hello`. As soon as the connection is authenticated, the device sends a `status` event (§6.2), so the first `status` (or the `hello` response) is the signal. If neither arrives, resend `hello` after a few seconds. Do not tear the connection down before the time limit below while the user may still be typing the passkey
@@ -79,15 +80,19 @@ The device uses the same UUIDs as the Nordic UART Service (NUS).
 - The device refuses pairing methods without MITM protection (Just Works) and legacy (non-Secure-Connections) pairing
 - The device stores keys for up to 4 peers (oldest removed first). Keys can be erased only over the device's USB. If the app can no longer reconnect after the device erased its keys, ask the user to "forget" the device in the phone's or PC's Bluetooth settings
 
-Verified on real hardware (2026-11-17; time limits 2026-11-18):
+Verified on real hardware (2026-11-17; time limits 2026-11-18; Chrome 2026-11-19, issue #5):
 
 | Central | Result |
 |---|---|
 | Android, nRF Connect | The pairing dialog appears when bonding is started. Passkey pairing succeeds. Reconnects without a passkey, also after the device is powered off and on |
 | Android, nRF Connect, no bond | Connected without bonding and left idle: the device disconnected after 60 s. Bonding started but no passkey entered: the passkey disappeared from the LCD after 30 s |
 | Windows 11, `bleak` with WinRT passkey pairing (`tools/ble_cli.py pair`) | Passkey pairing succeeds. Reconnects without a passkey. See the known issue in §10 |
+| Android 11, Chrome 157, Web app (one run, no bond) | The device appears in the chooser (filter by the NUS service UUID). With TX notifications started before any write, pairing started about 90 ms after `startNotifications()` completed. The passkey dialog did not open by itself: Android posted a "Pairing request" notification, and tapping it opened the dialog. `connect()` had already resolved and the link stayed up while the passkey was pending. After the passkey, `hello`, `status`, `settings.schema` and `settings.get` were all answered. After a page reload and choosing the device again, it reconnected with the bond and no passkey |
 
-**[Open]**: whether the Web Bluetooth implementation in Chrome (Android and Windows) shows the pairing dialog as described above. If it does not, the procedure may become "pair in the OS Bluetooth settings first".
+- The chooser is needed after every page reload in a Chrome without `navigator.bluetooth.getDevices()`
+- In the same session one earlier connection attempt failed (`NetworkError`, link lost after about 1.2 s). It coincided with a firmware update being written to the device and is not a property of the pairing flow
+
+**[Open]**: in Chrome, what Web Bluetooth reports for a wrong or dismissed passkey and for a bond removed on one side only, and the behaviour in Chrome on Windows. The Android flow above works without pairing in the OS Bluetooth settings first.
 
 ## 5. Framing
 
@@ -483,7 +488,7 @@ For now, develop and test the Web app on **Android**. Whether Windows works with
 | # | Item | Section | When it will be decided |
 |---|---|---|---|
 | U2 | Whether to add the Device Information Service | §3 | When the Web app needs it |
-| U3 | Whether Chrome (Android, Windows) shows the pairing dialog, at which call, and what Web Bluetooth reports for a wrong or dismissed passkey. If no dialog appears, the procedure changes | §4 | First test from the Web app (issue #5) |
+| U3 | What Web Bluetooth in Chrome reports for a wrong or dismissed passkey and for a bond removed on one side only; Chrome on Windows. (Android Chrome pairs as described in §4, with the dialog reached through a notification) | §4 | Further tests from the Web app (issue #5) |
 | U5 | Whether to put the firmware version in `hello` | §7.1 | When the Web app needs it |
 | U6 | How much reception is lost while `settings.set` saves | §7.2 | Task 7 (measurement) |
 | U8 | Whether Windows with a Bluetooth 5.x adapter avoids the issue in §10.1 | §10.1 | Test with a USB Bluetooth 5.x adapter |
@@ -494,6 +499,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.7 | 2026-11-20 | §4: results of the first Chrome test (issue #5). On Android the passkey dialog may appear only as a notification the user has to tap; the app's hint text should say so and point to the LCD. Added the Chrome row to the verification table. U3 narrowed to the failure cases and Chrome on Windows |
 | 0.6 | 2026-11-19 | Answers to issues #7 and #8. §7.5: measured time until the reply (at most about 2 s, recommended timeout 5 s, no carrier sense); `frame_too_long` cannot happen with the current setting limits. Added §8.7 for the `beacon` response (`dry` is always a boolean) |
 | 0.5 | 2026-11-19 | Added `beacon.send` (§7.5) with the response `beacon` and the error codes `switch_off`, `no_fix`, `too_soon`, `frame_too_long`. Added the setting `beacon_mode` (`"auto"` / `"manual"`, §9.1), `status.beacon_mode`, and `choices` in the schema (§9.2). §1: the app can now command a beacon; the switch still has to be on. `proto` stays 1 (additions only) |
 | 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected. Time limits measured on hardware (60 s cut, 30 s passkey) |
