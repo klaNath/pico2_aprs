@@ -121,6 +121,18 @@ BEACON_MODE = "auto"
 BEACON_MANUAL_MIN_S = 10
 BEACON_MESSAGE = 1  # aprs.mice.MESSAGES の番号(1 = En Route)
 BEACON_COMMENT = b"Pico2 APRS"
+# APRS メッセージ(core.messages、docs/ble-protocol.md §7.6)。送るのはスマホの msg.send と、
+# 自局宛への ack。ビーコンと同じく、スイッチがオンでゲートが許可するときだけ送る
+MSG_RETRY_S = (30, 60, 120, 240, 240)  # k 回目を送ってから次まで(最後は failed まで)の秒
+MSG_GAP_MS = 3000  # 自局の送信(メッセージ・ack・自動のビーコン)どうしの最小の間隔
+MSG_SHOW_S = 30  # 自局宛を受けたとき、LCD に全画面で出しておく秒数
+# チャネルの使用中の判定(core.level.Channel、§7.9)。受信音声の実効値(dBFS)がこれ以上なら使用中
+# (無線機のスケルチが開いている)。仮の値: スケルチを閉じた/開けた/信号を受けたときの値を
+# 測ってから決める(起動中、10 秒ごとに USB に出る "rx level rms")
+CH_BUSY_DB = -30
+CH_IDLE_MS = 500  # 下回ってからこれだけたったら空き(スケルチテール)
+CH_SLOT_MS = 1000  # 空いてから送るまでの乱数の待ちの上限
+CH_BUSY_MAX_S = 30  # 使用中がこれだけ続いたら、スケルチが開きっぱなしとみなして送る
 # 実際に電波を出すか。False の間はビーコンの時機の管理・画面・SD の記録(TX(dry) の印)だけ動き、
 # PTT と音声は出さない。無線機の接続を確かめてから True にする。
 # True でも、コールサインと周波数がそろわなければ core.txgate が拒否する

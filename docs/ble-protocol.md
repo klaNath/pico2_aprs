@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.7 (2026-11-20) / protocol version `proto`: 1
+- Document version: 0.8 (2026-11-20) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -18,6 +18,8 @@ Each section heading carries one of these markers.
 
 Status as of 2026-11-17: everything is implemented on the device. The BLE layer (advertising, GATT, pairing, line splitting) was verified on real hardware with nRF Connect on Android and with `bleak` on Windows. **It has not been tried from a Web app in Chrome yet**, so the pairing flow (§4) stays provisional. On Windows, see the known issue in §10.
 
+Status as of 2026-11-20 (0.8): APRS messaging and the channel check (§7.6–§7.9, §8.8) are specified here first and are being implemented; they stay [Provisional] until verified on hardware. The channel threshold has not been measured yet.
+
 ## 1. Scope
 
 What the app can do (first phase):
@@ -27,10 +29,13 @@ What the app can do (first phase):
 - Get the list of stations heard so far, when connecting
 - Read, change, and reset settings (changes are saved to the device's flash and survive power cycles)
 - Send a position beacon now (`beacon.send`, §7.5), and choose whether the device also sends beacons by itself (`beacon_mode`, §9.1)
+- APRS messaging (§7.6–§7.8, §8.8): send a message to another station (the device retries until it is acknowledged), receive messages addressed to this device (the device acknowledges them by itself), and read the messages the device keeps
 
-What the app cannot do: send arbitrary packets or text, APRS messaging, serve map data, KISS, or update firmware.
+What the app cannot do: send arbitrary packets, bulletins or other non-message text, serve map data, KISS, or update firmware.
 
-**Transmit safety**: the device emits a radio signal only when the **physical beacon switch on the unit is on** and the device's transmit gate allows it (a callsign is set and `tx_enabled` is true). This also holds for `beacon.send`: the app cannot bypass the switch, either by a command or by changing settings. The app should show `status.tx_ready` (§8.1) prominently.
+**Transmit safety**: the device emits a radio signal only when the **physical beacon switch on the unit is on** and the device's transmit gate allows it (a callsign is set and `tx_enabled` is true). This also holds for `beacon.send`, for messages and for the acknowledgements the device sends by itself: the app cannot bypass the switch, either by a command or by changing settings. The app should show `status.tx_ready` (§8.1) prominently.
+
+**Channel check** (§7.9): before an automatic beacon, a message or an acknowledgement, the device waits until the channel is clear, judged from the received audio level (the radio's squelch is open while the channel is in use). `beacon.send` does not wait.
 
 ## 2. Finding the device [Fixed]
 
@@ -180,6 +185,9 @@ App                                      Device
 | `settings.reset` | none | `settings` | Delete the saved settings and return to the device's defaults |
 | `stations.list` | none | `station` × n, `stations.end` | Stations heard (newest first) |
 | `beacon.send` | none | `beacon` | Send a position beacon now (§7.5) |
+| `msg.send` | `to`, `text` | `msg` | Queue an APRS message for transmission (§7.6) |
+| `msg.list` | none | `msg` × n, `msg.end` | Messages kept by the device, received and sent (§7.7) |
+| `msg.cancel` | `no` | `msg` | Stop retrying a message being sent (§7.8) |
 
 ### 7.1 `hello`
 
@@ -260,10 +268,72 @@ Time until the reply (measured on the device, 2026-11-19):
 | On the air (including 0.3 s of leading flags) | 0.54–0.93 s (AX.25), 0.91–1.34 s (FX.25), depending on the comment and path |
 | **Total** | **about 0.8–1.7 s; at most about 2 s** |
 
-- The device does not wait for a clear channel (no carrier sense) or for anything else before keying. The time does not depend on radio traffic
+- `beacon.send` does not wait for a clear channel (§7.9) or for anything else before keying. The time does not depend on radio traffic. (Automatic beacons do wait for a clear channel)
 - While it waits, the device processes no other requests; they are answered afterwards, in order
 - Hard limits: if the transmission does not end within its expected length plus 0.2 s, the device cuts it (`internal`, then a restart). The device's watchdog (3 s) restarts it if the whole step takes longer. **So within about 3 s, either the reply arrives or the device restarts and the connection drops**
 - Recommended app timeout: **5 seconds**. If nothing arrives by then and the connection is still up, send `status` and look at `last_tx_s` to see whether the beacon was built
+
+### 7.6 `msg.send` [Provisional]
+
+Queues an APRS message to another station. The device answers at once; the transmissions follow in the device's loop and are reported with `msg` events (§8.8).
+
+```json
+{"op": "msg.send", "id": 9, "to": "Q1AAA-9", "text": "Hello"}
+{"t": "msg", "id": 9, "dir": "out", "no": "12", "to": "Q1AAA-9", "text": "Hello", "state": "pending", "tries": 0, "utc": "2026-11-16T03:04:05Z"}
+```
+
+- `to`: the addressee, 1–9 characters of letters, digits and `-` (callsign with an optional SSID, such as `Q1AAA-9`). Lowercase is converted to uppercase. Own callsign-SSID is rejected
+- `text`: 1–67 characters of printable ASCII (0x20–0x7E), without `|`, `~` and `{`. Japanese or other non-ASCII text is rejected. The device does not trim spaces
+- `no`: the message number the device assigned (1–5 digits). **Treat it as an opaque string.** The device continues the numbers across restarts when a microSD card is inserted
+- The device checks these in order; if one fails it returns `err` (§8.6) and queues nothing:
+
+  | Condition | `code` when not met |
+  |---|---|
+  | `to` and `text` are valid | `invalid` (`key` is `"to"` or `"text"`) |
+  | The unit's beacon switch is on (`status.sw`) | `switch_off` |
+  | The transmit gate allows transmitting (callsign set, `tx_enabled`) | `tx_not_ready` (`msg` holds the reason, as in `status.tx_refuse`) |
+  | Fewer than 4 messages are `pending` | `queue_full` |
+
+- A GNSS fix is not needed
+- **Transmissions**: the first one is made as soon as the switch is on, the gate allows it and the channel is clear (§7.9). Without an acknowledgement, the device sends it again 30, 60, 120 and 240 s after the previous try: **5 tries at most**. When 240 s pass after the 5th try without an acknowledgement, the state becomes `failed`
+- While the switch is off, the gate refuses, or the channel is busy, a due try waits (it is not counted). A message stays `pending` until it is sent, acknowledged, or cancelled
+- An acknowledgement (`ack`) or rejection (`rej`) from the addressee with the same number ends the message as `acked` or `rejected`, also when it arrives after `failed`. Both the APRS 1.0 form and the APRS 1.1 reply-ack form (`{12}AB`) are recognised
+- Messages are never dry runs: when the gate refuses, the device does not transmit and the message waits
+- Each try is also reported by a `tx` event (§8.3)
+
+### 7.7 `msg.list` [Provisional]
+
+```json
+{"op": "msg.list", "id": 10}
+{"t": "msg", "id": 10, "dir": "in", "no": "7", "src": "Q1AAA-9", "text": "Hi there", "utc": "2026-11-16T03:10:00Z"}
+{"t": "msg", "id": 10, "dir": "out", "no": "12", "to": "Q1AAA-9", "text": "Hello", "state": "acked", "tries": 1, "utc": "2026-11-16T03:04:05Z"}
+{"t": "msg.end", "id": 10, "n": 2}
+```
+
+- Received and sent messages together, **newest first**. The device keeps the **16** newest (a `pending` message is never dropped)
+- The list survives a restart when a microSD card is inserted (the device saves the messages to it and reads them back once it knows the time). A message that was `pending` when the device stopped comes back as `stopped` and is not sent again
+- `msg.list` clears the unread count (`status.msg_unread`, also shown on the LCD)
+
+### 7.8 `msg.cancel` [Provisional]
+
+```json
+{"op": "msg.cancel", "id": 11, "no": "12"}
+{"t": "msg", "id": 11, "dir": "out", "no": "12", "to": "Q1AAA-9", "text": "Hello", "state": "cancelled", "tries": 2}
+```
+
+- Stops a `pending` message. A message that already ended is returned unchanged
+- `no` not among the messages the device keeps: `err` with `unknown_msg`
+
+### 7.9 Channel check [Provisional]
+
+The device has no carrier detect. It judges the channel from the received audio: the radio's squelch opens while a signal is on the channel, and the level then rises well above the closed-squelch silence.
+
+- The channel is **busy** while the RMS level of the received audio (`status.lvl_db`, measured every 0.1 s) is at or above a threshold, and stays busy 0.5 s after the level falls below it (squelch tail)
+- After the channel becomes clear, the device waits a random 0–1 s before transmitting, so that two stations waiting for the same channel do not key at the same moment
+- The device leaves at least 3 s between its own transmissions (messages, acknowledgements, automatic beacons)
+- If the channel stays busy for 30 s without a break, the device assumes the squelch is held open and transmits anyway
+- The threshold is a device setting made from measurements of the radio (not adjustable from the app yet). `status.ch_busy` shows the current judgement
+- Applies to automatic beacons, messages and acknowledgements. `beacon.send` does not wait
 
 ## 8. Responses and events [Fixed]
 
@@ -273,7 +343,7 @@ Sent both as a response to a request and as an event. It is sent as an event:
 
 - right after connecting
 - every 5 seconds
-- when any of `fix`, `sw`, `tx_ready`, `tx_enabled`, `call`, or `beacon_mode` changes (at the latest about 20 ms later, in the device's loop)
+- when any of `fix`, `sw`, `tx_ready`, `tx_enabled`, `call`, `beacon_mode`, `msg_unread`, or `msg_pending` changes (at the latest about 20 ms later, in the device's loop)
 
 ```json
 {"t": "status", "utc": "2026-11-16T03:04:05Z", "fix": 3, "sats": 9, "lat": 35.68124, "lon": 139.76712,
@@ -299,6 +369,9 @@ Sent both as a response to a request and as an event. It is sent as an event:
 | `lvl_db` | float | RMS level of the received audio (dBFS). Shows the noise level even with no signal |
 | `sd` | str | microSD state: `"no card"`, `"wait"` (waiting for time), `"log NNNN"` (file number being logged), `"error"`, `"closed"`. **A display string** |
 | `dropped` | int | Number of `rx` events dropped in this connection because they could not be sent in time (§8.5) |
+| `msg_unread` | int | Messages received for this device since the last `msg.list` (§7.7) |
+| `msg_pending` | int | Messages sent by the app that are still `pending` (§7.6) |
+| `ch_busy` | bool | Whether the channel is judged busy now (§7.9). A change does not trigger a `status` event |
 
 ### 8.2 `rx` (event)
 
@@ -328,13 +401,14 @@ To keep one table from `stations.list` and later `rx` events the way the device 
 
 ### 8.3 `tx` (event)
 
-One each time the device builds a beacon: automatic or sent by `beacon.send` (dry runs included).
+One each time the device builds a packet to send: a beacon (automatic or sent by `beacon.send`, dry runs included), a message try (§7.6), or an acknowledgement the device sends by itself (§8.8).
 
 ```json
 {"t": "tx", "tnc2": "Q1TEST-7>SU4PX0,WIDE1-1:`CIXl <0x1C>[/\"4!}Pico2 APRS", "dry": false, "utc": "2026-11-16T03:04:05Z"}
 ```
 
-- `dry`: if true, nothing was transmitted (`tx_ready` was false)
+- `dry`: if true, nothing was transmitted (`tx_ready` was false). Only beacons can be dry runs; messages and acknowledgements are sent only when the gate allows it
+- Do not assume a `tx` event is a beacon. Parse `tnc2` if the kind matters
 
 ### 8.4 `station`
 
@@ -360,7 +434,7 @@ Each row is **either a station or an object/item**:
 When BLE cannot send fast enough, items queue up on the device.
 
 - Responses to requests are never dropped (they arrive late)
-- The event queue holds at most 8 lines. When it overflows, the oldest `rx` is dropped and counted in `status.dropped` (`dropped` counts from 0 for each connection)
+- The event queue holds at most 8 lines. When it overflows, the oldest `rx` is dropped and counted in `status.dropped` (`dropped` counts from 0 for each connection). Only when no `rx` is waiting is the oldest event of another kind dropped (also counted); a lost `msg` event can be recovered with `msg.list`
 - An old `status` is dropped when a newer `status` arrives (only the latest is sent)
 
 ### 8.6 `err`
@@ -382,6 +456,11 @@ When BLE cannot send fast enough, items queue up on the device.
 | `no_fix` | `beacon.send`: no 2D/3D fix, or the time is not known yet. Nothing was sent | present |
 | `too_soon` | `beacon.send`: less than 10 seconds since the last beacon. `wait_s` (int) is the seconds left. Nothing was sent | present |
 | `frame_too_long` | `beacon.send`: the beacon does not fit in the transmit buffer. Nothing was sent | present |
+| `tx_not_ready` | `msg.send`: the transmit gate refuses (callsign unset or `tx_enabled` false; `msg` holds the reason). Nothing was queued | present |
+| `queue_full` | `msg.send`: 4 messages are already `pending`. Wait or cancel one. Nothing was queued | present |
+| `unknown_msg` | `msg.cancel`: no message with that `no` is kept | present |
+
+`switch_off` is also returned by `msg.send`, and `invalid` by `msg.send` (`key` `"to"` or `"text"`) and `msg.cancel` (`key` `"no"`).
 
 `msg` is an English string for display and its wording may change. The app should decide by `code` and `key`.
 
@@ -408,6 +487,32 @@ The response to `beacon.send` (§7.5) when the beacon was built. It never comes 
 - When the device does not send, the response is an `err` (`switch_off`, `no_fix`, `too_soon`, `frame_too_long`, `internal`; §8.6), never a `beacon`
 - The `tx` event (§8.3) with the packet follows right after this response
 
+### 8.8 `msg` (response and event) [Provisional]
+
+One APRS message. The same shape is used as the response to `msg.send` and `msg.cancel`, for each row of `msg.list` (all with `id`), and as an event (without `id`).
+
+| Key | Type | Description |
+|---|---|---|
+| `dir` | str | `"in"`: received, addressed to this device. `"out"`: sent from the app with `msg.send` |
+| `no` | str | Message number. Always present for `"out"`. For `"in"`, present when the sender gave one |
+| `src` | str | `"in"` only: the sender (callsign-SSID; the inner sender for third-party traffic) |
+| `to` | str | `"out"` only: the addressee |
+| `text` | str | Message text. For `"in"`, the received bytes decoded as UTF-8 (so Japanese text sent in UTF-8 arrives as text); if they are not valid UTF-8, each byte outside printable ASCII becomes `?` |
+| `state` | str | `"out"` only: `"pending"` (waiting to be sent or for an acknowledgement), `"acked"`, `"rejected"`, `"failed"` (no acknowledgement after 5 tries), `"cancelled"` (`msg.cancel`), `"stopped"` (the device restarted before it ended). **More may be added**; treat an unknown value as ended |
+| `tries` | int | `"out"` only: transmissions so far |
+| `utc` | str | When it was received (`"in"`) or queued (`"out"`). Omitted if the time was unknown |
+
+Events are sent:
+
+- `"in"`: when a message addressed to this device's callsign-SSID (compared without regard to case) is received for the first time. A repeated copy (the same sender and number, or for a message without number the same sender and text, among the last 32) is not reported again
+- `"out"`: after each try is transmitted (`tries` changes) and when `state` changes
+
+Acknowledgements sent by the device:
+
+- For each received copy of a message with a number addressed to this device, including repeated copies (a repeat means the sender did not hear the earlier acknowledgement), the device sends `ack` once, under the same conditions as any transmission (switch on, gate allows, channel clear). An acknowledgement that cannot be sent within 60 s is dropped
+- Messages without a number are not acknowledged (APRS does not acknowledge them)
+- Messages addressed to other stations, bulletins and announcements are not handled here; they arrive only as `rx` events (`kind` `"message"`)
+
 ## 9. Settings items
 
 ### 9.1 Item list [Fixed]
@@ -428,7 +533,7 @@ The response to `beacon.send` (§7.5) when the beacon was built. It never comes 
 | `fx25_tx` | bool | | Transmit with FX.25 (with forward error correction) |
 
 - Types are strict: `1.0` or `true` is not accepted for an int item. An integer is accepted for a float item
-- Beacon rule (`beacon_mode` `"auto"`): with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving. Turning the switch off and on starts over (the next beacon is immediate). When `beacon_mode` changes from `"manual"` to `"auto"`, the rule continues from the last beacon; if there was none since startup or since the switch was last turned on, a beacon is sent immediately
+- Beacon rule (`beacon_mode` `"auto"`): with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving. Turning the switch off and on starts over (the next beacon is immediate). When `beacon_mode` changes from `"manual"` to `"auto"`, the rule continues from the last beacon; if there was none since startup or since the switch was last turned on, a beacon is sent immediately. A due beacon waits for a clear channel (§7.9), so it can come a little later than the interval; `next_beacon_s` stays 0 while it waits
 - Items may be added later. Build the screen from the result of `settings.schema`, and either hide unknown items or handle them with a generic input
 
 ### 9.2 Shape of `settings.schema` [Fixed]
@@ -492,6 +597,7 @@ For now, develop and test the Web app on **Android**. Whether Windows works with
 | U5 | Whether to put the firmware version in `hello` | §7.1 | When the Web app needs it |
 | U6 | How much reception is lost while `settings.set` saves | §7.2 | Task 7 (measurement) |
 | U8 | Whether Windows with a Bluetooth 5.x adapter avoids the issue in §10.1 | §10.1 | Test with a USB Bluetooth 5.x adapter |
+| U9 | The channel threshold (§7.9), and whether to make it a setting | §7.9 | Measure the level with the squelch closed, open, and with a signal |
 
 When an item is decided, remove it from this table, write it into the body, and record it in §12.
 
@@ -499,6 +605,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.8 | 2026-11-20 | APRS messaging (provisional, being implemented): `msg.send`, `msg.list`, `msg.cancel` (§7.6–§7.8), the `msg` response and event (§8.8), error codes `tx_not_ready`, `queue_full`, `unknown_msg`, and `status.msg_unread`, `msg_pending`, `ch_busy`. The device acknowledges messages addressed to it by itself. Channel check from the received audio level (§7.9), used for automatic beacons, messages and acknowledgements (not `beacon.send`). §8.3: a `tx` event may be a message or an acknowledgement. §1 updated. `proto` stays 1 (additions only) |
 | 0.7 | 2026-11-20 | §4: results of the first Chrome test (issue #5). On Android the passkey dialog may appear only as a notification the user has to tap; the app's hint text should say so and point to the LCD. Added the Chrome row to the verification table. U3 narrowed to the failure cases and Chrome on Windows |
 | 0.6 | 2026-11-19 | Answers to issues #7 and #8. §7.5: measured time until the reply (at most about 2 s, recommended timeout 5 s, no carrier sense); `frame_too_long` cannot happen with the current setting limits. Added §8.7 for the `beacon` response (`dry` is always a boolean) |
 | 0.5 | 2026-11-19 | Added `beacon.send` (§7.5) with the response `beacon` and the error codes `switch_off`, `no_fix`, `too_soon`, `frame_too_long`. Added the setting `beacon_mode` (`"auto"` / `"manual"`, §9.1), `status.beacon_mode`, and `choices` in the schema (§9.2). §1: the app can now command a beacon; the switch still has to be on. `proto` stays 1 (additions only) |

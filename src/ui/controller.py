@@ -47,6 +47,7 @@ class Ui:
         self._dirty_all = True
         self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
         self._pk_drawn = None  # 全画面で出しているパスキー(None = 通常の画面)
+        self._msg_drawn = None  # 全画面で出している自局宛のメッセージ(None = 通常の画面)
         self._detail_drawn = None  # 詳細欄に最後に描いた行(views.detail_body)
 
     # ---- ボタン
@@ -74,11 +75,24 @@ class Ui:
         pk = self.status.passkey
         if pk != self._pk_drawn:  # BLE のペアリング中は、パスキーを全画面で出す
             self._pk_drawn = pk
+            self._msg_drawn = None  # パスキーのあとにメッセージを出し直す
             if pk is None:
                 self._dirty_all = True  # 通常の画面に戻す
             else:
                 self._draw_passkey(pk)
         if pk is not None:
+            return
+        # 自局宛のメッセージ: status.message_until まで全画面で出す(パスキーが優先)
+        msg = self.status.message
+        if msg is not None and time.ticks_diff(now_ms, self.status.message_until) >= 0:
+            self.status.message = msg = None
+        if msg is not self._msg_drawn:
+            self._msg_drawn = msg
+            if msg is None:
+                self._dirty_all = True
+            else:
+                self._draw_message(msg)
+        if msg is not None:
             return
         for k in self._pressed():
             if k == "A":
@@ -144,6 +158,11 @@ class Ui:
         self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_passkey(
             fb, dy, lay.w, lay.h, pk))
 
+    def _draw_message(self, msg):
+        lay = self.lay
+        self.scr.region(0, 0, lay.w, lay.h, lambda fb, dy: views.draw_message(
+            fb, dy, lay.w, lay.h, msg[0], msg[1]))
+
     def draw_tick(self, now_ms):
         if self.map_mode and not self.lay.wide:
             return
@@ -175,8 +194,10 @@ class Ui:
                         lambda fb, dy: views.draw_age(fb, 0, dy, lay, age))
 
     def draw_status_now(self):
-        """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)"""
-        self._draw_status()
+        """自局の状態の欄だけすぐ描き直す(送信を始める前に [TX] を出す)。
+        全画面の表示(パスキー・メッセージ)の間は描かない"""
+        if self._pk_drawn is None and self._msg_drawn is None:
+            self._draw_status()
 
     def _draw_meter(self, now_ms):
         """受信音量の縦棒だけ描き直す(小さいので METER_MS ごとに描いても軽い)"""

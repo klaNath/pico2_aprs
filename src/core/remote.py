@@ -7,6 +7,7 @@
     remote.attach() / detach()   認証された接続ができた / 切れた(接続していない間は何も送らない)
     remote.handle(line)          受けた 1 行(\\n を除いた bytes)
     remote.rx(d) / remote.tx(d)  イベント(局から)
+    remote.msg(d)                APRS メッセージのイベント(局から。docs/ble-protocol.md §8.8)
     remote.poll(now)             送り待ちを write に流す。定期の status と、変化したときの status
 
 write(bytes) -> bool: 1 行(\\n 付き)を送る。送れない(送信のキューが満杯)なら False を返し、
@@ -19,6 +20,7 @@ import json
 import sys
 import time
 
+from aprs.message import MessageError
 from core.logger import iso_utc
 from core.settings import SettingsError, schema
 
@@ -27,7 +29,8 @@ STATUS_MS = 5000  # 定期の status の間隔
 EVENT_MAX = 8  # イベントの送り待ちの上限(行)
 LINE_MAX = 512  # 受ける 1 行の上限(バイト。hw.ble もこの値で切る)
 # この項目が変わったら、定期を待たずに status を送る
-CHANGE_KEYS = ("fix", "sw", "tx_ready", "tx_enabled", "call", "beacon_mode")
+CHANGE_KEYS = ("fix", "sw", "tx_ready", "tx_enabled", "call", "beacon_mode", "msg_unread",
+               "msg_pending")
 
 
 def printable(b):
@@ -65,24 +68,28 @@ def encode(obj):
 
 class Remote:
     def __init__(self, settings, write, status_fn, stations_fn, mode="tnc", log=None,
-                 send_fn=None):
+                 send_fn=None, msgs=None):
         """settings: core.settings.Settings。status_fn(): status の中身の dict。
         stations_fn(): 局の表の要約(dict)を新しい順に返す iterable。
         send_fn(): beacon.send(今すぐビーコンを送る)。その場で送り終えてから戻る。
             送ったら {"dry": bool}、送らなかったら (code, msg, extra の dict)。
-            None なら beacon.send は unknown_op"""
+            None なら beacon.send は unknown_op。
+        msgs: APRS メッセージ(局。None なら msg.* は unknown_op)。次のメソッドを持つ:
+            msg_send(to, text) / msg_cancel(no): 送ったら Msg の dict、断ったら (code, msg, extra)
+            msg_list(): 項目の dict を新しい順に返す iterable(未読を 0 にする)"""
         self.settings = settings
         self.write = write
         self.status_fn = status_fn
         self.stations_fn = stations_fn
         self.send_fn = send_fn
+        self.msgs = msgs
         self.mode = mode
         self.log = log or (lambda *a: None)
         self.attached = False
         self.dropped = 0
         self._resp = []  # 応答の送り待ち(bytes)
         self._events = []  # イベントの送り待ち: (種類, bytes)
-        self._iter = None  # stations.list の残り: (id, iterator, 送った数)
+        self._iter = None  # stations.list / msg.list の残り: (id, iterator, 送った数, 行の種類)
         self._status_ms = None
         self._last = None  # 前回送った status の CHANGE_KEYS の値
 
@@ -121,7 +128,7 @@ class Remote:
         op = req.get("op")
         try:
             self._dispatch(rid, op, req)
-        except SettingsError as e:
+        except (SettingsError, MessageError) as e:
             self._reply(rid, "err", code="invalid", key=e.key, msg=e.msg)
         except OSError as e:  # フラッシュに書けない
             self._reply(rid, "err", code="io", msg=str(e))
@@ -158,7 +165,13 @@ class Remote:
             self.log("[remote] settings.reset")
             self._reply(rid, "settings", values=st.values(), changed=changed)
         elif op == "stations.list":
-            self._iter = (rid, iter(self.stations_fn()), 0)
+            self._iter = (rid, iter(self.stations_fn()), 0, "station")
+        elif op == "msg.list" and self.msgs is not None:
+            self._iter = (rid, iter(self.msgs.msg_list()), 0, "msg")
+        elif op == "msg.send" and self.msgs is not None:
+            self._msg_reply(rid, "msg.send", self.msgs.msg_send(req.get("to"), req.get("text")))
+        elif op == "msg.cancel" and self.msgs is not None:
+            self._msg_reply(rid, "msg.cancel", self.msgs.msg_cancel(req.get("no")))
         elif op == "beacon.send" and self.send_fn is not None:
             r = self.send_fn()
             if isinstance(r, dict):
@@ -170,6 +183,16 @@ class Remote:
                 self._reply(rid, "err", code=code, msg=msg, **(extra or {}))
         else:
             self._reply(rid, "err", code="unknown_op", msg=str(op)[:32])
+
+    def _msg_reply(self, rid, op, r):
+        if isinstance(r, dict):
+            self.log("[remote] %s %s %s" % (op, r.get("no"), r.get("state")))
+            self._resp.append(encode(_fields({"t": "msg", "id": rid} if rid is not None
+                                             else {"t": "msg"}, r)))
+        else:
+            code, msg, extra = r
+            self.log("[remote] %s refused: %s %s" % (op, code, msg))
+            self._reply(rid, "err", code=code, msg=msg, **(extra or {}))
 
     def _reply(self, rid, t, **kw):
         d = {"t": t}
@@ -199,6 +222,10 @@ class Remote:
     def tx(self, d):
         """自局のビーコン(dry run を含む)。d: tnc2、dry、utc_s"""
         self._event("tx", self._packet("tx", d))
+
+    def msg(self, d):
+        """APRS メッセージ(受けた・送った項目の変化)。d: core.messages.Msg.to_dict()"""
+        self._event("msg", self._packet("msg", d))
 
     def _packet(self, t, d):
         return _fields({"t": t}, d)
@@ -239,15 +266,15 @@ class Remote:
                 self._resp.pop(0)
                 continue
             if self._iter is not None:
-                rid, it, n = self._iter
+                rid, it, n, kind = self._iter
                 try:
                     d = next(it)
                 except StopIteration:
                     self._iter = None
-                    self._reply(rid, "stations.end", n=n)
+                    self._reply(rid, "stations.end" if kind == "station" else "msg.end", n=n)
                     continue
-                self._iter = (rid, it, n + 1)
-                p = self._packet("station", d)
+                self._iter = (rid, it, n + 1, kind)
+                p = self._packet(kind, d)
                 if rid is not None:
                     p["id"] = rid
                 self._resp.append(encode(p))

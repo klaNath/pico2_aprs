@@ -56,6 +56,7 @@ class Packet:
         "text",  # メッセージ本文 / ステータス本文
         "msgno",  # メッセージ番号 / None
         "response",  # 'ack' / 'rej'(msgno への応答)/ None
+        "replyack",  # APRS 1.1 の reply-ack('{MM}AA' の AA。相手が受け取ったこちらの番号)/ None
         "mice_msg",  # Mic-E のメッセージ種別 'En Route' など
         "third_party",  # '}' で包まれていた場合の外側ヘッダ / None
     )
@@ -84,6 +85,7 @@ class Packet:
         self.text: "str | None" = None
         self.msgno: "str | None" = None
         self.response: "str | None" = None
+        self.replyack: "str | None" = None
         self.mice_msg: "str | None" = None
         self.third_party: "str | None" = None
 
@@ -205,19 +207,31 @@ def _item(p, info):
 
 def _message(p, info):
     # :ADDRESSEE:text{id   (宛先は空白で 9 文字に詰められる)
+    # APRS 1.1 の reply-ack: 'text{MM}AA'(AA はこちらの番号への ack を兼ねる)、'ackMM}AA'
     if len(info) < 11 or info[10] != 0x3A:
         return
     p.kind = "message"
     p.addressee = to_text(info[1:10]).rstrip()
     body = info[11:]
     head = body[:3]
-    if (head == b"ack" or head == b"rej") and b"{" not in body and 1 <= len(body) - 3 <= 5:
-        p.response = head.decode()
-        p.msgno = to_text(body[3:])
-        return
+    if (head == b"ack" or head == b"rej") and b"{" not in body:
+        no = bytes(body[3:]).rstrip(b" \r\n")
+        k = no.find(b"}")
+        if k >= 0:
+            no = no[:k]
+        if 1 <= len(no) <= 5:
+            p.response = head.decode()
+            p.msgno = to_text(no)
+            return
     j = body.rfind(b"{")
     if j >= 0:
-        p.msgno = to_text(body[j + 1 :])
+        no = bytes(body[j + 1 :]).rstrip(b" \r\n")
+        k = no.find(b"}")
+        if k >= 0:
+            if k + 1 < len(no):
+                p.replyack = to_text(no[k + 1 :])
+            no = no[:k]
+        p.msgno = to_text(no) if no else None
         body = body[:j]
     p.text = to_text(body)
 
