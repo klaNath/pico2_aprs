@@ -89,3 +89,72 @@ class Level:
 
     def grade(self):
         return grade(self.peak_db, self.clip)
+
+
+def _rand_ms(n):
+    """0 .. n-1 の乱数(ms)。n <= 0 なら 0"""
+    if n <= 0:
+        return 0
+    import random
+
+    return random.getrandbits(16) % n
+
+
+class Channel:
+    """受信音量によるチャネルの使用中の判定(キャリア検出の代わり。docs/ble-protocol.md §7.9)。
+
+    無線機のスケルチが開くと受信音声の実効値が上がり、閉じるとほぼ無音になる。
+    実効値が busy_db 以上なら使用中。下回ってから idle_ms たったら空きに戻し、さらに 0..slot_ms の
+    乱数だけ待ってから送ってよいとする(同じチャネルを待つ局と同時に送り出さないように)。
+    使用中が busy_max_ms 続いたら、スケルチが開きっぱなしとみなして送ってよいとする(stuck)。
+    復号したパケット(heard())も使用中の印として扱う(しきい値が高すぎても、受信の直後は待つ)。
+    rand(n): 0..n-1 の乱数(テストで差し替える)"""
+
+    def __init__(self, busy_db, idle_ms=500, slot_ms=1000, busy_max_ms=30_000, rand=None):
+        self.busy_db = busy_db
+        self.idle_ms = idle_ms
+        self.slot_ms = slot_ms
+        self.busy_max_ms = busy_max_ms
+        self.rand = rand or _rand_ms
+        self.busy = False
+        self._busy_since = None  # 使用中になった ticks_ms
+        self._below_since = None  # 使用中に、しきい値を下回り始めた ticks_ms
+        self._clear_at = None  # この時刻から送ってよい(空いてからの乱数の待ち)
+
+    def update(self, rms_db, now):
+        """受信音量の実効値(dBFS)を取り込む(局のループから。値は 100 ms ごとに変わる)"""
+        if rms_db >= self.busy_db:
+            self._below_since = None
+            if not self.busy:
+                self.busy = True
+                self._busy_since = now
+            return
+        if not self.busy:
+            # 過ぎた待ちは消す(ticks_ms の一周で、遠い過去が未来に見えないように)
+            if self._clear_at is not None and time.ticks_diff(now, self._clear_at) >= 0:
+                self._clear_at = None
+            return
+        if self._below_since is None:
+            self._below_since = now
+        if time.ticks_diff(now, self._below_since) >= self.idle_ms:
+            self.busy = False
+            self._busy_since = None
+            self._below_since = None
+            self._clear_at = time.ticks_add(now, self.rand(self.slot_ms))
+
+    def heard(self, now):
+        """パケットを復号した: idle_ms + 乱数の待ちのあいだは送らない"""
+        t = time.ticks_add(now, self.idle_ms + self.rand(self.slot_ms))
+        if self._clear_at is None or time.ticks_diff(t, self._clear_at) > 0:
+            self._clear_at = t
+
+    def stuck(self, now):
+        """使用中が busy_max_ms 以上続いている(スケルチが開きっぱなしとみなす)"""
+        since = self._busy_since
+        return self.busy and since is not None and time.ticks_diff(now, since) >= self.busy_max_ms
+
+    def ok(self, now):
+        """今送ってよいか(空いていて乱数の待ちも終わった、または stuck)"""
+        if self.busy:
+            return self.stuck(now)
+        return self._clear_at is None or time.ticks_diff(now, self._clear_at) >= 0

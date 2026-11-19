@@ -10,6 +10,8 @@ poll() を Core0 のループから呼ぶ。挿入を 0.5 秒続けて検出し�
 電源投入後の最初の初期化は失敗するカードがある(この基板の 32 GB で確認)ので、初期化は 3 回まで試す。
 stations(core.stations.Stations)を渡すと、受信した局の表を STATIONS_FILE に保存し、起動後の
 最初のマウントで読み出して表に加える(core.stationfile。GNSS の時刻が分かってから)。
+messages(core.messages.Messages)を渡すと、APRS メッセージを MESSAGES_FILE に保存し、最初の
+マウントで読み出す(core.msgfile)。
 """
 
 import time
@@ -23,6 +25,7 @@ from core.logger import Logger
 MOUNT = "/sd"
 LOG_DIR = MOUNT + "/log"
 STATIONS_FILE = MOUNT + "/stations.txt"
+MESSAGES_FILE = MOUNT + "/messages.txt"
 DEBOUNCE_MS = 500
 TIME_WAIT_MS = 20_000  # 見出しに時刻を書くため、GNSS の時刻を最大これだけ待ってから開く
 RETRY_MS = 5000
@@ -30,7 +33,8 @@ SD_BAUD = 20_000_000
 
 
 class SdLog:
-    def __init__(self, spi_id, sck, mosi, miso, cs, det, header="", log=None, stations=None):
+    def __init__(self, spi_id, sck, mosi, miso, cs, det, header="", log=None, stations=None,
+                 messages=None):
         self.spi = SPI(spi_id, baudrate=400_000, sck=Pin(sck), mosi=Pin(mosi), miso=Pin(miso))
         self.cs = Pin(cs, Pin.OUT, value=1)
         self.det = Pin(det, Pin.IN, Pin.PULL_UP)
@@ -41,6 +45,8 @@ class SdLog:
         # 読み込むたびにコンパイルでヒープが細切れになり、局の起動(Core1 のスタック 4 KB)が
         # MemoryError になった
         self.stfile = None
+        self.messages = messages
+        self.msgfile = None
         self.mounted = False
         # 表示用: 'no card' / 'wait'(挿入済みで開く前)/ 'log 0001' / 'error'(やり直し待ち)
         self.state = "no card"
@@ -95,6 +101,16 @@ class SdLog:
                 self.stfile.poll(self.stations, utc_s, now)
             except OSError as e:
                 self._fail("stations", e, now)
+                return
+        if self.messages is not None:
+            if self.msgfile is None:
+                from core.msgfile import MsgFile
+
+                self.msgfile = MsgFile(MESSAGES_FILE, log=self.log)
+            try:
+                self.msgfile.poll(self.messages, now)
+            except OSError as e:
+                self._fail("messages", e, now)
 
     def _mount(self, utc_s, now):
         try:
@@ -145,5 +161,10 @@ class SdLog:
                 self.stfile.close(self.stations, utc_s, time.ticks_ms())
             except OSError as e:
                 self.log("[sd] stations save failed: %r" % (e,))
+        if self.mounted and self.msgfile is not None:
+            try:
+                self.msgfile.close(self.messages, time.ticks_ms())
+            except OSError as e:
+                self.log("[sd] messages save failed: %r" % (e,))
         self._unmount(flush=True)
         self.state = "no card" if not self.inserted() else "closed"

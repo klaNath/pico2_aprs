@@ -154,3 +154,23 @@
 - 次の確認: BT 5.x の USB ドングルで同じ試験をする。それまで Web アプリの試験は Android で行う
 - 試験のときの Bluetooth の入れ直しは、WinRT の `Windows.Devices.Radios`(`Radio.set_state_async`)でスクリプトからできる。PC の Bluetooth 機器も一度切れる
 - 調べる途中で見つけた、ファームウェアの気になる点(今回の原因ではない): pico-sdk 2.3.0 の `cyw43_btbus_write()` は `cybt_hci_write_buf()` の `CYBT_ERR_QUEUE_FULL` を無視して 0 を返す。CYW43 への共有バスのリングバッファ(4 KB)が満杯だと、パケットを黙って捨てる
+
+## 8. APRS メッセージとチャネルの判定(2026-11-20)
+
+仕様(アプリとの取り決め)は ble-protocol.md §7.6〜§7.9、§8.8。本機の作り:
+
+| モジュール | 役割 | テスト |
+|---|---|---|
+| `aprs/message.py` | 情報フィールド(`:ADDRESSEE:text{NO`、`ack`、`rej`)の組み立てと値の検査(`MessageError`) | host |
+| `aprs/packet.py` | 受信の解析。APRS 1.1 の reply-ack(`{MM}AA`、`ackMM}AA`)の `}` の前を番号に、後ろを `replyack` に | host |
+| `core/messages.py` | 送信待ちの列(最大 4 件)、再送(30/60/120/240/240 秒、5 回で `failed`)、ack/rej の照合、自局宛への ack の列(送れなければ 60 秒で捨てる)、重複の判定(最近 32 件)、一覧(16 件、pending は消さない)、未読の数 | host |
+| `core/msgfile.py` | `/sd/messages.txt` に一覧を書き直す(変わってから 5 秒、終了時)。最初のマウントで読み戻し、pending は `stopped` | host(偽のファイル) |
+| `core/level.py` の `Channel` | 受信音量の実効値がしきい値 `config.CH_BUSY_DB` 以上なら使用中。下回ってから 0.5 秒で空き、さらに 0〜1 秒の乱数。使用中が 30 秒続いたら開きっぱなしとみなす。復号したパケットも使用中の印にする | host |
+| `station.py` | `_messages()`: スイッチ・ゲート・チャネル・前回の送信から 3 秒(`MSG_GAP_MS`)がそろえば、ack を先に 1 ステップ 1 フレーム送る。自動のビーコンも同じチャネルの判定で待つ(dry run と `beacon.send` は待たない)。送信は `_transmit()` に共通化 | host(偽のハードウェア、`test_tx_safety`) |
+| `ui/` | 自局宛を受けたら `MSG_SHOW_S`(30 秒)全画面で出す(パスキーが優先)。状態の欄に `MSG n`(未読)/ `MSG>`(送信中) | host、実機(`test_hw_ui_*`) |
+
+- メッセージは dry run にしない。ゲートが拒否している間は送らずに待つ(ack の来ない dry run を作っても意味がない)
+- 送れない間(スイッチがオフ、ゲートが拒否、チャネルが使用中)は、期限の来た送信は回数を数えずに待つ
+- 番号は SD のファイルの `next` から続ける。SD を読む前に送ったときと SD が無いときは、起動時の乱数(100〜999)から
+- いちばん長いメッセージ(宛先 9 文字、本文 67 文字、経路 2 つ、FX.25)は 1.34 秒で、送信波形のバッファ(1.5 秒)に収まる(`test_longest_message_fits_tx_buffer_with_fx25`)
+- **未確定**: `CH_BUSY_DB`(仮に -30 dBFS)。スケルチを閉じた/開けた/信号を受けたときの `rx level rms` を測って決める(ble-protocol.md U9)

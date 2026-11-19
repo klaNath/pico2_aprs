@@ -26,6 +26,11 @@ USB から Ctrl-C で止めたとき(dev.py の接続)は再起動しない。
           (send_now(); the switch must also be on). beacon.send also works in "auto" mode.
           ゲート(core.txgate)が拒否する間(コールサインが未設定、config.TX_ENABLED =
           False)は送るはずだったパケットを SD に TX(dry) と記録するだけで、PTT と音声は出さない
+    APRS メッセージ(core.messages): スマホの msg.send で積んだメッセージを送り、ack が来るまで
+          再送する。自局宛のメッセージには ack を返し、LCD に出して SD とスマホに残す。
+          送るのはスイッチがオンでゲートが許可するときだけ(dry run にしない)
+    チャネル(core.level.Channel): 受信音量でスケルチが開いているか(使用中)を見て、自動のビーコン・
+          メッセージ・ack は空くまで待つ。BLE の beacon.send は待たない(docs/ble-protocol.md §7.9)
     LED(GP7): 送信中は点灯、受信したら 0.1 秒点灯
     受信音量: 地図の左の縦棒(今の実効値と 3 秒保持のピーク)と、詳細欄の局ごとの LVL
 送信波形のバッファ(config.TX_BUFFER_MS 分)は、ヒープが断片化する前に確保する
@@ -46,6 +51,10 @@ _TX_RAW = bytearray(2 * (config.FS * config.TX_BUFFER_MS // 1000))  # 送信波�
 # 受信のリング: hw.afsk_rx.RING_ALLOC_BYTES(16 KB)と同じ大きさ
 _RX_RING = array("H", bytes(2 * 8192))
 _UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
+# Core1 のスタック(_thread、4 KB)の場所: 受信を始める直前に手放す。マウントでは読み込みの後の
+# 最大の連続領域が約 5 KB しか残らず、GNSS の初期化のあとでスタックが取れなかった(MemoryError、
+# メッセージの機能を足したとき。2026-11-20)
+_CORE1_RESERVE: "bytearray | None" = bytearray(8 * 1024)
 
 import sys
 import time
@@ -58,9 +67,11 @@ except ImportError:
 import machine
 from machine import SPI, Pin
 
+from aprs.message import MessageError, check_text, check_to
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
-from core.level import Level, db_peak
+from core.level import Channel, Level, db_peak
+from core.messages import Messages, QueueFull
 from core.settings import Settings
 from core.stations import Stations
 from core.txgate import display_call, valid_callsign
@@ -70,7 +81,7 @@ from hw.afsk_tx import AfskTx
 from hw.m10 import M10
 from hw.sdlog import SdLog
 from hw.st7789 import ST7789
-from tnc.ax25 import DecodeError, Frame
+from tnc.ax25 import Address, DecodeError, Frame
 from ui.controller import Ui
 from ui.screen import Screen
 from ui.views import Status
@@ -117,12 +128,21 @@ class Station:
         # 受信音量(地図の左の縦棒と、詳細欄の局ごとの LVL)
         self.level = Level()
         self.status.level = self.level
+        self.channel = Channel(config.CH_BUSY_DB, config.CH_IDLE_MS, config.CH_SLOT_MS,
+                               config.CH_BUSY_MAX_S * 1000)
+        self._stuck_noted = False  # スケルチが開きっぱなしの記録(使用中が続くあいだ 1 回)
+        # メッセージの番号は SD の続きから(core.msgfile)。SD が無ければ前回と重なりにくい乱数から
+        import random
+
+        self.msgs = Messages(self.call, retry_s=config.MSG_RETRY_S,
+                             first_no=random.getrandbits(16) % 900 + 100,
+                             on_change=self._msg_changed)
         self.ui = Ui(Screen(lcd, scratch=_UI_SCRATCH), self.stations, self.status, config.BUTTONS,
                      meter=self.level is not None)
         lcd.backlight(0.8)
         self.sd = SdLog(config.SD_SPI, config.PIN_SD_SCK, config.PIN_SD_MOSI, config.PIN_SD_MISO,
                         config.PIN_SD_CS, config.PIN_SD_DET, header=self.call, log=print,
-                        stations=self.stations)
+                        stations=self.stations, messages=self.msgs)
         self.gnss = M10(config.GNSS_UART, config.PIN_GNSS_TX, config.PIN_GNSS_RX,
                         resetn=config.PIN_GNSS_RESETN, pps=config.PIN_GNSS_PPS,
                         baud=config.GNSS_BAUD, log=print)
@@ -140,6 +160,7 @@ class Station:
         if settings is not None:
             settings.listeners.append(self.apply_settings)
         self._tx_ms = None  # 最後にビーコンを作った ticks_ms(dry run を含む)
+        self._air_ms = None  # 最後に電波を出し終えた ticks_ms(ビーコン・メッセージ・ack)
         self._fatal = None  # send_now() の送信中の例外(step() が投げ直す)
         self.status.beacon_mode = config.BEACON_MODE
 
@@ -152,7 +173,7 @@ class Station:
             from hw.ble import Ble
 
             self.remote = Remote(self.settings, None, self.remote_status, self.remote_stations,
-                                 log=print, send_fn=self.send_now)
+                                 log=print, send_fn=self.send_now, msgs=self)
             self.ble = Ble(self.remote, on_passkey=self._on_passkey, log=print)
             self.ble.start()
         except Exception as e:
@@ -187,6 +208,7 @@ class Station:
         self.call = display_call(config.CALLSIGN, config.SSID)
         self.status.callsign = self.call
         self.stations.own_call = self.call
+        self.msgs.set_call(self.call)
         self.status.beacon_mode = config.BEACON_MODE  # 手動なら次の _beacon() から自動では送らない
         self._refused = None  # 送信できない理由が変わっていれば、次の送信で記録し直す
         print("[settings] applied %s, TX %s" % (
@@ -219,6 +241,9 @@ class Station:
             "tx_count": st.tx_count,
             "lvl_db": self.level.rms_db if self.level is not None else None,
             "sd": self.sd.state,
+            "msg_unread": self.msgs.unread,
+            "msg_pending": self.msgs.pending(),
+            "ch_busy": self.channel.busy,
         }
 
     def remote_stations(self):
@@ -239,6 +264,8 @@ class Station:
             self.gnss_ok = True
         except (RuntimeError, OSError) as e:
             print("[gnss] not available:", e)
+        global _CORE1_RESERVE
+        _CORE1_RESERVE = None
         gc.collect()
         self.rx.start()
         print("[station] %s started, TNC mode, RX ADC GP%d, TX %s, free %d" % (
@@ -252,8 +279,12 @@ class Station:
         if self.level is not None:
             ms, pk, clip = self.rx.level()
             self.level.update(ms, pk, clip, now)
+            self.channel.update(self.level.rms_db, now)
         self._receive(now)
         self._beacon(now)
+        self._messages(now)
+        self.status.msg_unread = self.msgs.unread
+        self.status.msg_pending = self.msgs.pending()
         if self.ble is not None:
             try:
                 self.ble.poll(now)
@@ -290,6 +321,7 @@ class Station:
                 f = Frame.decode(b)
             except DecodeError:
                 continue
+            self.channel.heard(now)  # 受信の直後は送らない(デジピータの中継が続く)
             text = tnc2(f)
             self.sd.packet(text, utc_s=self.utc())
             lvl = None
@@ -302,6 +334,7 @@ class Station:
             try:
                 p = parse_frame(f)
                 self.stations.update(p, now, lvl, clip)
+                self.msgs.on_packet(p, now, self.utc())
             except Exception as e:  # 解析できない情報フィールドでも記録と受信数は残す
                 sys.print_exception(e)
             if self.remote is not None:
@@ -341,6 +374,9 @@ class Station:
         st.next_beacon_s = self.beacon.next_s(st.lat, st.lon, now)
         if st.next_beacon_s:
             return
+        # 電波を出すときは、チャネルが空くまで待つ(next_beacon_s は 0 のまま)。dry run は待たない
+        if self.gate.refuse_reason() is None and not self._channel_ok(now):
+            return
         self._send_beacon(now)
 
     def send_now(self):
@@ -379,14 +415,20 @@ class Station:
                        config.BEACON_COMMENT, config.BEACON_MESSAGE)
         self.beacon.sent(st.lat, st.lon, now)
         self._tx_ms = now
+        return self._transmit(f, "manual" if manual else None)
+
+    def _transmit(self, f, label=None):
+        """フレームを送る(ゲートが拒否すれば dry run: 記録だけ)。dry run なら True、送ったら
+        False、波形のバッファに入りきらず送らなかったら None。label: 記録の印("manual"、"msg")"""
+        st = self.status
         text = tnc2(f)
         try:
             n = self.tx.build([bytes(f.encode())])
-        except ValueError as e:  # TX_BUFFER_MS に入りきらない(コメントが長すぎる)
+        except ValueError as e:  # TX_BUFFER_MS に入りきらない
             print("[tx] not sent:", e)
             self.sd.logger.note("TX skipped: %s" % e)
             return None
-        if manual:
+        if label == "manual":
             self.sd.logger.note("TX manual (beacon.send)")
         why = self.gate.refuse_reason()
         self.sd.packet(text, tx=True, utc_s=self.utc(), dry=why is not None)
@@ -411,13 +453,93 @@ class Station:
                 self.rx.unmute(config.RX_MUTE_TAIL_MS)
                 self.led.value(0)
                 st.tx_active = False
+                self._air_ms = time.ticks_ms()
         st.tx_count += 1
         if self.remote is not None:
             self.remote.tx({"tnc2": text, "dry": why is not None, "utc_s": self.utc()})
-        print("[tx%s%s%s] %d ms" % (" manual" if manual else "", "" if why is None else " dry",
+        print("[tx%s%s%s] %d ms" % (" " + label if label else "", "" if why is None else " dry",
                                     " fx25" if self.tx.fx_used else "", n * 1000 // config.FS),
               text)
         return why is not None
+
+    def _channel_ok(self, now):
+        """自動の送信(ビーコン・メッセージ・ack)をしてよいか: 前回の送信から MSG_GAP_MS たち、
+        チャネルが空いている(またはスケルチが開きっぱなし)"""
+        if self._air_ms is not None and time.ticks_diff(now, self._air_ms) < config.MSG_GAP_MS:
+            return False
+        ch = self.channel
+        if ch.stuck(now):
+            if not self._stuck_noted:
+                self._stuck_noted = True
+                print("[ch] busy for %d s, squelch open? sending anyway" % config.CH_BUSY_MAX_S)
+                self.sd.logger.note("channel busy %d s, sending anyway" % config.CH_BUSY_MAX_S)
+            return True
+        if not ch.busy:
+            self._stuck_noted = False
+        return ch.ok(now)
+
+    # ---- APRS メッセージ
+    def _messages(self, now):
+        """送るもの(ack、期限の来たメッセージ)があり、送れる条件がそろえば 1 つ送る"""
+        self.msgs.poll(now)
+        if not self._switch_on() or self.gate.refuse_reason() is not None:
+            return  # メッセージは dry run にしない: 送れるようになるまで待つ
+        item = self.msgs.next_tx(now)
+        if item is None or not self._channel_ok(now):
+            return
+        info, key = item
+        f = Frame(Address(config.TOCALL), Address.parse(self.call),
+                  [Address.parse(p) for p in config.TX_PATH], info)
+        self._transmit(f, "msg")
+        self.msgs.sent(key, time.ticks_ms())
+
+    def _msg_changed(self, m, why):
+        """core.messages の項目が変わった(BLE のイベント、LCD、記録)"""
+        if why == "rx":
+            self.status.message = (m.peer, m.text)
+            self.status.message_until = time.ticks_add(time.ticks_ms(), config.MSG_SHOW_S * 1000)
+            print("[msg] from %s%s: %s" % (m.peer, "" if m.no is None else " {%s}" % m.no, m.text))
+            self.sd.logger.note("MSG from %s %s" % (m.peer, m.no or "-"))
+        else:
+            print("[msg] %s %s to %s %s tries %d" % (why, m.no, m.peer, m.state, m.tries))
+            if why == "state":
+                self.sd.logger.note("MSG %s to %s %s" % (m.no, m.peer, m.state))
+        if why != "new" and self.remote is not None:
+            self.remote.msg(m.to_dict())
+
+    # BLE の msg.*(core.remote が step() の中から呼ぶ。docs/ble-protocol.md §7.6-§7.8)
+    def msg_send(self, to, text):
+        try:
+            check_to(to)
+            check_text(text)
+        except MessageError as e:
+            return ("invalid", e.msg, {"key": e.key})
+        if not self._switch_on():
+            return ("switch_off", "beacon switch is off", None)
+        why = self.gate.refuse_reason()
+        if why is not None:
+            return ("tx_not_ready", why, None)
+        try:
+            m = self.msgs.send(to, text, time.ticks_ms(), self.utc())
+        except MessageError as e:
+            return ("invalid", e.msg, {"key": e.key})
+        except QueueFull:
+            return ("queue_full", "%d messages pending" % self.msgs.pending_max, None)
+        return m.to_dict()
+
+    def msg_cancel(self, no):
+        try:
+            m = self.msgs.cancel(no)
+        except MessageError as e:
+            return ("invalid", e.msg, {"key": e.key})
+        if m is None:
+            return ("unknown_msg", "no message %s" % (no,), None)
+        return m.to_dict()
+
+    def msg_list(self):
+        self.msgs.mark_read()
+        for m in list(self.msgs.items):  # 送る途中で変わってもよいように写す
+            yield m.to_dict()
 
     def _report(self):
         st = self.status
@@ -429,8 +551,9 @@ class Station:
             gc.mem_free(), self.rx.lag_max))
         if self.level is not None:
             lv = self.level
-            print("[station] rx level rms %.0f dBFS, peak %.0f dBFS (%s)" % (
-                lv.rms_db, lv.peak_db, lv.grade()))
+            print("[station] rx level rms %.0f dBFS, peak %.0f dBFS (%s), ch %s (busy >= %d)" % (
+                lv.rms_db, lv.peak_db, lv.grade(), "busy" if self.channel.busy else "clear",
+                config.CH_BUSY_DB))
 
     def _ble_state(self):
         b = self.ble

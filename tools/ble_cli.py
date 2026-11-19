@@ -8,7 +8,10 @@
     python tools/ble_cli.py reset
     python tools/ble_cli.py set beacon_mode=manual   # 手動のモード(自動では送らない)
     python tools/ble_cli.py send                      # 今すぐビーコンを送る(スイッチがオンのとき)
-    python tools/ble_cli.py listen -s 60              # status / rx / tx イベントを表示
+    python tools/ble_cli.py listen -s 60              # status / rx / tx / msg イベントを表示
+    python tools/ble_cli.py msg send Q1AAA-9 Hello -s 120  # APRS メッセージ(電波が出る)。送ったあと
+                                                      # 120 秒イベントを表示(ack の到着を見る)
+    python tools/ble_cli.py msg list | msg cancel 12  # 受信・送信の一覧 / 再送をやめる
 
 接続先は --name(既定 PicoAPRS 始まり)か --address で選ぶ。仕様は docs/ble-protocol.md。
 """
@@ -158,8 +161,18 @@ class Session:
                 show(m)  # 途中で来た別のイベント
                 continue
             out.append(m)
-            if m.get("t") == "err" or op != "stations.list" or m.get("t") == "stations.end":
+            if m.get("t") == "err" or m.get("t") in ("stations.end", "msg.end") or op not in (
+                    "stations.list", "msg.list"):
                 return out
+
+
+async def listen(s, seconds):
+    end = asyncio.get_running_loop().time() + seconds
+    while (left := end - asyncio.get_running_loop().time()) > 0:
+        try:
+            show(await asyncio.wait_for(s.queue.get(), left))
+        except asyncio.TimeoutError:
+            break
 
 
 def show(m):
@@ -191,12 +204,21 @@ async def main_async(args):
             for m in await s.request("hello"):
                 show(m)
         elif args.cmd == "listen":
-            end = asyncio.get_running_loop().time() + args.s
-            while (left := end - asyncio.get_running_loop().time()) > 0:
-                try:
-                    show(await asyncio.wait_for(s.queue.get(), left))
-                except asyncio.TimeoutError:
-                    break
+            await listen(s, args.s)
+        elif args.cmd == "msg":
+            if args.action == "list":
+                ms = await s.request("msg.list")
+            elif args.action == "send":
+                if len(args.args) < 2:
+                    sys.exit("usage: msg send TO TEXT...")
+                ms = await s.request("msg.send", to=args.args[0], text=" ".join(args.args[1:]))
+            else:
+                if len(args.args) != 1:
+                    sys.exit("usage: msg cancel NO")
+                ms = await s.request("msg.cancel", no=args.args[0])
+            for m in ms:
+                show(m)
+            await listen(s, args.s)
         else:
             kw = {}
             op = {"hello": "hello", "get": "settings.get", "schema": "settings.schema",
@@ -224,6 +246,10 @@ def main():
     sp.add_argument("kv", nargs="+", metavar="key=value")
     sp = sub.add_parser("listen")
     sp.add_argument("-s", type=float, default=30.0)
+    sp = sub.add_parser("msg")
+    sp.add_argument("action", choices=("send", "list", "cancel"))
+    sp.add_argument("args", nargs="*", help="send: TO TEXT... / cancel: NO")
+    sp.add_argument("-s", type=float, default=0.0, help="応答のあと、この秒数だけイベントを表示")
     args = ap.parse_args()
     global PASSKEY_FILE
     PASSKEY_FILE = args.passkey_file

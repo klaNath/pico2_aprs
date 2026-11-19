@@ -55,3 +55,54 @@ def test_packet_clip_is_held():
     assert lv.clip and lv.grade() == "clip"
     lv.update(0, 100, False, now_ms=3000)
     assert not lv.clip
+
+
+# ---- core.level.Channel(受信音量によるチャネルの使用中の判定)
+def _ch(**kw):
+    from core.level import Channel
+
+    return Channel(-30, idle_ms=500, slot_ms=1000, busy_max_ms=30_000, rand=lambda n: n // 2, **kw)
+
+
+def test_channel_busy_while_level_is_high_and_for_the_tail():
+    ch = _ch()
+    ch.update(-60, 0)
+    assert not ch.busy and ch.ok(0)  # スケルチが閉じている: 送ってよい
+    ch.update(-30, 100)  # しきい値ちょうどは使用中
+    assert ch.busy and not ch.ok(100)
+    ch.update(-50, 200)
+    ch.update(-50, 699)  # 下回ってから 0.5 秒たつまでは使用中(スケルチテール)
+    assert ch.busy and not ch.ok(699)
+    ch.update(-50, 700)
+    assert not ch.busy and not ch.ok(700)  # 空いた。乱数の待ち(ここでは 500 ms)のあいだは送らない
+    assert not ch.ok(1199) and ch.ok(1200)
+    ch.update(-20, 800)
+    ch.update(-50, 900)  # 一瞬下がっただけ
+    ch.update(-20, 1000)
+    assert ch.busy
+
+
+def test_channel_heard_packet_delays_sending():
+    ch = _ch()
+    ch.update(-60, 0)
+    ch.heard(1000)  # しきい値が高すぎて音量では分からなくても、復号した直後は待つ
+    assert not ch.ok(1999) and ch.ok(2000)  # 0.5 秒 + 乱数 0.5 秒
+
+
+def test_channel_stuck_open_squelch():
+    ch = _ch()
+    ch.update(-10, 0)
+    ch.update(-10, 29_999)
+    assert not ch.stuck(29_999) and not ch.ok(29_999)
+    assert ch.stuck(30_000) and ch.ok(30_000)  # 開きっぱなしとみなして送る
+    ch.update(-60, 30_100)
+    ch.update(-60, 30_600)
+    assert not ch.busy and not ch.stuck(30_600)
+
+
+def test_channel_random_wait_is_in_range():
+    from core.level import _rand_ms
+
+    vals = [_rand_ms(1000) for _ in range(200)]
+    assert min(vals) >= 0 and max(vals) < 1000 and len(set(vals)) > 10
+    assert _rand_ms(0) == 0

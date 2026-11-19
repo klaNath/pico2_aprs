@@ -488,3 +488,57 @@ def test_hw_ui_tick_redraws_only_age_and_badge():
     st.lat = TOKYO[0] + 0.1  # 自局が動いて距離が変わった: 詳細欄全体
     ui.poll(3000)
     assert detail in scr.regions and age not in scr.regions
+
+
+# ---- APRS メッセージ(未読の印と全画面の通知)
+def test_msg_tag_in_status_lines():
+    from ui.views import message_lines, msg_tag
+
+    st = full_status()
+    assert msg_tag(st) == ""
+    st.msg_pending = 1
+    assert msg_tag(st) == "MSG>"
+    st.msg_unread = 3
+    lines = [s for s, _ in status_lines(st, 25, 13)]
+    assert lines[4] == "Q1TEST-7            MSG 3" and len(lines[4]) <= 25
+    lay = Layout(240, 135)
+    lines = [s for s, _ in status_lines(st, lay.status_cols, lay.status_rows)]
+    assert lines[4] == "Q1TEST-7       MSG 3" and len(lines[4]) <= lay.status_cols
+    ml = message_lines("Q1AAA-9", "x" * 67, 40, 25)
+    assert ml[0] == ("MSG from Q1AAA-9", CYAN) and [s for s, _ in ml[2:]] == ["x" * 40, "x" * 27]
+
+
+def test_hw_ui_shows_message_then_returns_and_passkey_wins():
+    from ui.controller import Ui
+
+    class Scr:
+        width, height = 320, 240
+
+        def __init__(self):
+            self.regions = []
+
+        def region(self, x, y, w, h, draw, bg=0):
+            self.regions.append((x, y, w, h))
+
+        def fill(self, color):
+            self.regions.append("fill")
+
+    scr = Scr()
+    st = Status()
+    ui = Ui(scr, Stations(), st, ())
+    ui.poll(1000)
+    n = len(scr.regions)
+    st.message, st.message_until = ("Q1AAA", "hello"), 31_000
+    ui.poll(1100)
+    assert scr.regions[n:] == [(0, 0, 320, 240)]
+    ui.draw_status_now()  # 送信の [TX] も、通知の上には描かない
+    ui.poll(2100)
+    assert len(scr.regions) == n + 1
+    st.passkey = 1  # パスキーが優先
+    ui.poll(3000)
+    st.passkey = None
+    ui.poll(4000)  # パスキーのあとにメッセージを出し直す
+    assert scr.regions[-1] == (0, 0, 320, 240) and st.message is not None
+    k = len(scr.regions)
+    ui.poll(31_000)  # 時間切れ: 通常の画面
+    assert st.message is None and len(scr.regions) > k + 1

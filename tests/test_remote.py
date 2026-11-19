@@ -307,3 +307,79 @@ def test_status_change_on_beacon_mode():
     r.poll(1000)
     (m,) = link.take()
     assert m["t"] == "status" and m["beacon_mode"] == "manual"
+
+
+# ---- APRS メッセージ(msg.*、docs/ble-protocol.md §7.6-§7.8, §8.8)
+class FakeMsgs:
+    """局の msg_send / msg_cancel / msg_list の偽物(core.messages を使う)"""
+
+    def __init__(self):
+        from core.messages import Messages
+
+        self.m = Messages("Q1TEST-7")
+        self.refuse: "tuple | None" = None  # (code, msg, extra) を返して断る
+
+    def msg_send(self, to, text):
+        if self.refuse:
+            return self.refuse
+        return self.m.send(to, text, 0, UTC).to_dict()
+
+    def msg_cancel(self, no):
+        x = self.m.cancel(no)
+        return ("unknown_msg", "no message", None) if x is None else x.to_dict()
+
+    def msg_list(self):
+        self.m.mark_read()
+        return [x.to_dict() for x in self.m.items]
+
+
+def test_msg_ops_without_msgs_are_unknown():
+    r, link, _src, _cfg, _fs = make()
+    for op in ("msg.send", "msg.list", "msg.cancel"):
+        (m,) = req(r, link, op=op, id=1)
+        assert m["code"] == "unknown_op", op
+
+
+def test_msg_send_list_cancel():
+    r, link, _src, _cfg, _fs = make()
+    r.msgs = f = FakeMsgs()
+    (m,) = req(r, link, op="msg.send", id=7, to="q1aaa-9", text="Hello")
+    assert m == {"t": "msg", "id": 7, "dir": "out", "no": "1", "to": "Q1AAA-9", "text": "Hello",
+                 "state": "pending", "tries": 0, "utc": "2026-09-21T14:13:20Z"}
+    from aprs.packet import parse
+
+    f.m.on_packet(parse("Q1BBB", "APRS", [], b":Q1TEST-7 :Hi{5"), 0)  # utc 不明
+    ms = req(r, link, op="msg.list", id=8)
+    assert [x["t"] for x in ms] == ["msg", "msg", "msg.end"] and ms[-1]["n"] == 2
+    assert ms[0] == {"t": "msg", "id": 8, "dir": "in", "no": "5", "src": "Q1BBB", "text": "Hi"}
+    assert ms[1]["no"] == "1" and f.m.unread == 0
+    (m,) = req(r, link, op="msg.cancel", id=9, no="1")
+    assert m["t"] == "msg" and m["state"] == "cancelled" and m["id"] == 9
+    (m,) = req(r, link, op="msg.cancel", id=10, no="77")
+    assert m["t"] == "err" and m["code"] == "unknown_msg" and m["id"] == 10
+
+
+def test_msg_send_errors():
+    r, link, _src, _cfg, _fs = make()
+    r.msgs = f = FakeMsgs()
+    (m,) = req(r, link, op="msg.send", id=1, to="Q1AAA", text="a{b")  # MessageError は invalid
+    assert m["code"] == "invalid" and m["key"] == "text"
+    (m,) = req(r, link, op="msg.cancel", id=2, no="toolong")
+    assert m["code"] == "invalid" and m["key"] == "no"
+    f.refuse = ("tx_not_ready", "TX not enabled", None)
+    (m,) = req(r, link, op="msg.send", id=3, to="Q1AAA", text="x")
+    assert m == {"t": "err", "id": 3, "code": "tx_not_ready", "msg": "TX not enabled"}
+    f.refuse = ("invalid", "1-9 letters", {"key": "to"})
+    (m,) = req(r, link, op="msg.send", id=4, to="Q1 A", text="x")
+    assert m["code"] == "invalid" and m["key"] == "to"
+
+
+def test_msg_event_and_status_on_unread_change():
+    r, link, src, _cfg, _fs = make()
+    r.msg({"dir": "in", "no": None, "src": "Q1BBB", "text": "Hi", "utc_s": UTC})
+    src.status["msg_unread"] = 1
+    r.poll(10)
+    ms = link.take()
+    assert ms[0] == {"t": "msg", "dir": "in", "src": "Q1BBB", "text": "Hi",
+                     "utc": "2026-09-21T14:13:20Z"}
+    assert ms[1]["t"] == "status" and ms[1]["msg_unread"] == 1

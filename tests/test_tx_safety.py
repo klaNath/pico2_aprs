@@ -339,6 +339,8 @@ def _station(gate_on=False):
     else:  # 既定の状態にする(src/config_local.py でコールサインと送信の許可を設定していても)
         st.gate.callsign, st.gate.allowed = None, False
     st.call = CALL + "-7"
+    st.msgs.set_call(st.call)
+    st.channel.rand = lambda n: 0  # チャネルが空いてからの乱数の待ちを 0 に
     st.tx.settle_ms = 0
     st.status.fix, st.status.lat, st.status.lon = 3, 35.68, 139.76
     st.gnss.rtc.last_ms = 0
@@ -1194,4 +1196,156 @@ def test_beacon_mode_setting_applies_to_station():
         assert st.status.tx_count == 1  # 自動に戻すと規則どおり(前回が無ければすぐ)
     finally:
         s.reset()
+        st.close()
+
+
+# ---- APRS メッセージ(Station.msg_send、自動の ack)とチャネルの判定
+def _feed(st, *tnc2):
+    """受信したことにするフレーム(TNC2 の文字列)"""
+    from tnc.ax25 import Frame
+
+    q = [bytes(Frame.parse(t).encode()) for t in reversed(tnc2)]
+    st.rx.get = lambda now_ms=None: q.pop() if q else None
+
+
+def _no(st, to, text):
+    """msg_send() が断ったときの (code, msg, extra)"""
+    r = st.msg_send(to, text)
+    assert isinstance(r, tuple), r
+    return r
+
+
+def test_msg_send_needs_switch_and_gate():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station()
+    try:
+        r = _no(st, "Q1AAA", "a|b")  # 値の検査が最初(スイッチがオンでなくても)
+        assert r[0] == "invalid" and r[2] == {"key": "text"}
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        assert _no(st, "Q1AAA", "hi")[0] == "switch_off"
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        assert _no(st, "Q1AAA", "hi")[:2] == ("tx_not_ready", "callsign not set")
+        assert _no(st, CALL + "-7", "hi")[0] == "tx_not_ready"  # ゲートが先
+        st.gate.callsign, st.gate.allowed = CALL, True
+        assert _no(st, CALL + "-7", "hi") == ("invalid", "own callsign", {"key": "to"})
+        d = st.msg_send("Q1AAA", "hi")
+        assert isinstance(d, dict) and d["state"] == "pending" and d["to"] == "Q1AAA"
+        # 積んだあとでゲートが閉じたら送らない(dry run にもしない)
+        st.gate.allowed = False
+        st._messages(time.ticks_ms())
+        assert st.status.tx_count == 0 and _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+        assert st.msgs.items[0].tries == 0
+    finally:
+        st.close()
+
+
+def test_message_is_sent_when_channel_clear_and_retried():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station(gate_on=True)
+    try:
+        st.msg_send("Q1AAA-9", "Hello")
+        now = time.ticks_ms()
+        st.channel.update(-10, now)  # スケルチが開いている: 待つ
+        st._messages(now)
+        assert st.status.tx_count == 0 and _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+        st.channel.update(-60, time.ticks_add(now, 100))
+        st.channel.update(-60, time.ticks_add(now, 600))  # テール 0.5 秒のあと空き
+        st._messages(time.ticks_add(now, 600))
+        assert st.status.tx_count == 1 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        m = st.msgs.items[0]
+        assert m.tries == 1 and m.state == "pending"
+        st._messages(time.ticks_ms())  # 30 秒たつまで再送しない
+        assert st.status.tx_count == 1
+        # 相手の ack
+        _feed(st, "Q1AAA-9>APRS,WIDE1-1*::%-9s:ack%s" % (CALL + "-7", m.no))
+        st._receive(time.ticks_ms())
+        assert m.state == "acked" and st.msgs.pending() == 0
+    finally:
+        st.close()
+
+
+def test_incoming_message_gets_ack_only_with_switch_on():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station(gate_on=True)
+    try:
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
+        _feed(st, "Q1BBB>APRS,WIDE1-1*::%-9s:Hi there{42" % (CALL + "-7"))
+        t = time.ticks_ms()
+        st._receive(t)
+        assert st.msgs.unread == 1 and st.status.message == ("Q1BBB", "Hi there")
+        st._messages(time.ticks_add(t, 2000))
+        assert st.status.tx_count == 0 and _ptt_on_writes(config.PTT_ACTIVE_HIGH) == []
+        _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+        st._messages(time.ticks_add(t, 100))  # 受信の直後(0.5 秒)は待つ
+        assert st.status.tx_count == 0
+        st._messages(time.ticks_add(t, 600))
+        assert st.status.tx_count == 1 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        st._messages(time.ticks_add(time.ticks_ms(), 10_000))
+        assert st.status.tx_count == 1  # ack は 1 回だけ
+    finally:
+        st.close()
+
+
+def test_auto_beacon_waits_for_clear_channel_dry_run_does_not():
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station()
+    try:
+        now = time.ticks_ms()
+        st.channel.update(-10, now)
+        st._beacon(now)  # ゲートが拒否: dry run は電波を出さないので待たない
+        assert st.status.tx_count == 1
+        st.gate.callsign, st.gate.allowed = CALL, True
+        st.beacon.reset()
+        st._beacon(now)
+        assert st.status.tx_count == 1 and st.status.next_beacon_s == 0  # 使用中: 待つ
+        st.channel.update(-60, time.ticks_add(now, 100))
+        st.channel.update(-60, time.ticks_add(now, 600))
+        st._beacon(time.ticks_add(now, 600))
+        assert st.status.tx_count == 2 and len(_ptt_on_writes(config.PTT_ACTIVE_HIGH)) == 1
+        # 送信の直後(MSG_GAP_MS)は、次の自動の送信をしない
+        st.beacon.reset()
+        st._beacon(time.ticks_ms())
+        assert st.status.tx_count == 2
+    finally:
+        st.close()
+
+
+def test_longest_message_fits_tx_buffer_with_fx25():
+    if not _fake_hw.install():
+        return
+    import config
+    from aprs.message import info
+    from tnc.ax25 import Address, Frame
+
+    st = _station()
+    try:
+        st.tx.set_fx25(True)
+        f = Frame(Address(config.TOCALL), Address.parse("Q1AAAA-15"),
+                  [Address.parse("WIDE1-1"), Address.parse("WIDE2-2")],
+                  info("Q1BBBB-15", "x" * 67, "99999"))
+        n = st.tx.build([bytes(f.encode())])  # 入りきらなければ ValueError
+        ms = n * 1000 // config.FS
+        assert st.tx.fx_used == 1 and ms < config.TX_BUFFER_MS, ms
+        print("[test] longest message %d ms (FX.25)" % ms)
+    finally:
         st.close()

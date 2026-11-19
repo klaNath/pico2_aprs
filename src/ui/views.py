@@ -14,7 +14,7 @@ from hw.rgb565 import rgb
 from ui import ble_icons
 
 try:
-    from typing import Sequence  # noqa: F401  (型注釈用。MicroPython には無い)
+    from typing import Any, Sequence  # noqa: F401  (型注釈用。MicroPython には無い)
 except ImportError:
     pass
 
@@ -90,6 +90,11 @@ class Status:
         self.tx_active = False
         self.rx_recent = False
         self.passkey: "int | None" = None  # BLE のペアリング中のパスキー(全画面で表示)
+        # 自局宛に受けた APRS メッセージ (送信局, 本文)。message_until(ticks_ms)まで全画面で出す
+        self.message: "tuple[str, str] | None" = None
+        self.message_until: "Any" = 0  # ticks_ms
+        self.msg_unread = 0  # 自局宛を受けて、まだスマホで読んでいない数
+        self.msg_pending = 0  # 送信中(ack 待ち)のメッセージの数
         # BLE: "adv" = 広告中、"conn" = 接続済みで認証前、"auth" = 認証済み / None = BLE を使わない
         self.ble: "str | None" = None
         # 受信音声の音量(core.level.Level)/ None = 表示しない(IF 入力など)
@@ -468,7 +473,9 @@ def status_lines(status, cols, rows=4):
         lines.append((pos, pos_color))
         lines.append((_two(bcn, "RX %d TX %d" % (status.rx_count, status.tx_count), cols),
                       bcn_color))
-        lines.append((status.callsign or "", CYAN))  # 5 行目: 自局のコールサイン-SSID
+        # 5 行目: 自局のコールサイン-SSID(右にメッセージの印)
+        m = msg_tag(status)
+        lines.append((_two(status.callsign or "", m, cols) if m else status.callsign or "", CYAN))
         return lines
     gps = gnss_text(status, cols - len(t) - 1)
     lines.append((_two(gps, t, cols), gps_color))
@@ -476,11 +483,23 @@ def status_lines(status, cols, rows=4):
     lines.append((bcn, bcn_color))
     lines.append(("RX %d  TX %d" % (status.rx_count, status.tx_count), WHITE))
     if rows >= 5:
-        if status.callsign:  # 自局のコールサイン-SSID と Grid
+        m = msg_tag(status)  # メッセージの印は Grid の代わりに(送受信数の行は [RX] と重なる)
+        if m:
+            lines.append((_two(status.callsign or "", m, cols), YELLOW))
+        elif status.callsign:  # 自局のコールサイン-SSID と Grid
             lines.append((_two(status.callsign, grid, cols), CYAN))
         else:
             lines.append(("GRID " + grid, WHITE))
     return lines
+
+
+def msg_tag(status):
+    """メッセージの印: 未読があれば 'MSG n'、送信中があれば 'MSG>'、どちらも無ければ ''"""
+    if status.msg_unread:
+        return "MSG %d" % status.msg_unread
+    if status.msg_pending:
+        return "MSG>"
+    return ""
 
 
 def sd_tag(state):
@@ -530,6 +549,22 @@ def draw_passkey(fb, dy, w, h, passkey):
     draw_big(fb, "%06d" % passkey, x, y + dy, YELLOW)
     for i, s in enumerate(("Enter this passkey", "on the phone")):
         fb.text(s, (w - len(s) * CH) // 2, y + CH * BIG + 2 * ROW + i * ROW + dy, GRAY)
+
+
+def message_lines(src, text, cols, rows):
+    """自局宛のメッセージの全画面表示の行 -> [(文字列, 色), ...]"""
+    lines = [("MSG from " + src, CYAN), ("", WHITE)]
+    for t in _wrap(text, cols, max(1, rows - 2)):
+        lines.append((t, YELLOW))
+    return lines
+
+
+def draw_message(fb, dy, w, h, src, text):
+    """自局宛の APRS メッセージの全画面表示(一定時間で通常の画面に戻る)"""
+    lines = message_lines(src, text, w // CH, (h - 2) // ROW)
+    y = max(1, (h - len(lines) * ROW) // 2)
+    for i, (s, c) in enumerate(lines):
+        fb.text(s, 0, y + i * ROW + dy, c)
 
 
 def draw_signals(fb, y0, w, h, signals):
