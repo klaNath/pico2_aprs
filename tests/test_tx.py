@@ -68,6 +68,36 @@ def test_hw_tx_fx25_build():
         tx.close()
 
 
+
+def test_hw_tx_longest_beacon_fits():
+    # スマホから設定できる範囲で最長のビーコン(コメント 40 文字、パス 2 段)が TX_BUFFER_MS に
+    # 収まる(docs/ble-protocol.md §7.5: 今の設定の範囲では frame_too_long は起きない)。
+    # "~"(0x7E)はビット詰めが最も多い印字可能文字。作る時間と送出の長さを出す(§7.5 の数値)
+    from core import settings
+    from core.beacon import mice_frame
+
+    comment = b"~" * settings.MAX_COMMENT
+    path = ("WIDE1-1", "WIDE2-1")[:settings.MAX_PATH]
+    f = mice_frame("Q1TEST-15", path, -35.12345, -139.12345, 99.0, 359.0, 9999.0, ("/", "["),
+                   comment, settings.MAX_MESSAGE)
+    import gc
+
+    gc.collect()
+    tx, _pin = _tx()  # バッファは 1 回だけ確保する(57.6 KB。2 回取ると後のテストが断片化で落ちる)
+    try:
+        for fx25 in (False, True):
+            tx.set_fx25(fx25)
+            t0 = time.ticks_us()
+            n = tx.build([bytes(f.encode())])  # 入りきらなければ ValueError
+            build_ms = time.ticks_diff(time.ticks_us(), t0) // 1000
+            air_ms = n * 1000 // config.FS
+            print("longest beacon fx25=%s: build %d ms, air %d ms (buffer %d ms)" % (
+                fx25, build_ms, air_ms, config.TX_BUFFER_MS))
+            assert air_ms <= config.TX_BUFFER_MS
+            assert tx.fx_used == (1 if fx25 else 0)
+    finally:
+        tx.close()
+
 def test_hw_tx_timing_and_ptt():
     tx, pin = _tx()
     try:

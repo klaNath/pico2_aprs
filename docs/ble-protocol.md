@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.5 (2026-11-19) / protocol version `proto`: 1
+- Document version: 0.6 (2026-11-19) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -239,12 +239,26 @@ Sends one position beacon (Mic-E, the same frame as the automatic beacon) right 
   | The device has a 2D or 3D fix and knows the time (`status.fix` ≥ 2 and `utc` present) | `no_fix` |
   | At least 10 seconds have passed since the last beacon (automatic, sent by command, or dry run) | `too_soon`, with `wait_s` |
 
-- When the conditions are met, the device builds the beacon and transmits it, then replies. The reply comes **after the transmission ends** (about 1–2 seconds; the device does not process other requests in the meantime). `dry` is true when the transmit gate refused (`status.tx_ready` was false because the callsign is unset or `tx_enabled` is false): the beacon was recorded but not transmitted, just like an automatic dry run
-- The `beacon` response carries only `dry`. The packet itself follows in the `tx` event (§8.3), right after the response
+- When the conditions are met, the device builds the beacon and transmits it, then replies. The reply comes **after the transmission ends**; see "Time until the reply" below. `dry` is true when the transmit gate refused (`status.tx_ready` was false because the callsign is unset or `tx_enabled` is false): the beacon was recorded but not transmitted, just like an automatic dry run
+- The `beacon` response (§8.7) carries only `dry`, always as a boolean. The packet itself follows in the `tx` event (§8.3), right after the response. Every refusal or failure is an `err`; a `beacon` response always means the beacon was built (and transmitted, unless `dry` is true)
 - In the `"auto"` beacon mode, the automatic schedule restarts from this beacon (the next automatic beacon comes `beacon_moving_s` or `beacon_still_s` later)
 - After an abnormal restart, the device holds back its first automatic beacon for a while. `beacon.send` is not held back
-- `frame_too_long`: the beacon does not fit in the device's transmit buffer (the comment is too long for the current settings, such as with FX.25). Nothing was sent. Shorten the comment
+- `frame_too_long`: the beacon does not fit in the device's transmit buffer. With the current limits of the settings (§9.1) this does not happen: the longest beacon (a 40-character comment, 2 path entries, FX.25) takes 1.34 s on the air and the buffer holds 1.5 s. The code is kept for future items. Nothing was sent
 - An `err` with `internal` means the transmission failed inside the device. The device then restarts (as it does for a failure of an automatic beacon), so the connection will drop
+
+Time until the reply (measured on the device, 2026-11-19):
+
+| Step | Time |
+|---|---|
+| Build the waveform | 0.15 s (AX.25) – 0.26 s (FX.25), for the longest beacon |
+| Settle the audio output before keying | 0.06 s |
+| On the air (including 0.3 s of leading flags) | 0.54–0.93 s (AX.25), 0.91–1.34 s (FX.25), depending on the comment and path |
+| **Total** | **about 0.8–1.7 s; at most about 2 s** |
+
+- The device does not wait for a clear channel (no carrier sense) or for anything else before keying. The time does not depend on radio traffic
+- While it waits, the device processes no other requests; they are answered afterwards, in order
+- Hard limits: if the transmission does not end within its expected length plus 0.2 s, the device cuts it (`internal`, then a restart). The device's watchdog (3 s) restarts it if the whole step takes longer. **So within about 3 s, either the reply arrives or the device restarts and the connection drops**
+- Recommended app timeout: **5 seconds**. If nothing arrives by then and the connection is still up, send `status` and look at `last_tx_s` to see whether the beacon was built
 
 ## 8. Responses and events [Fixed]
 
@@ -373,6 +387,22 @@ Guarantees of `busy`:
 - `busy` comes after the responses to the lines that were already waiting. One `busy` may stand for several dropped lines
 - An app that sends one request at a time and waits for its response never gets `busy`
 
+### 8.7 `beacon` (response)
+
+The response to `beacon.send` (§7.5) when the beacon was built. It never comes as an event.
+
+```json
+{"t": "beacon", "id": 7, "dry": false}
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `id` | int | The request's `id` (absent if the request had none) |
+| `dry` | bool | **Always present.** `false`: the beacon was transmitted. `true`: it was a dry run (built and recorded, no radio output, because `tx_ready` was false) |
+
+- When the device does not send, the response is an `err` (`switch_off`, `no_fix`, `too_soon`, `frame_too_long`, `internal`; §8.6), never a `beacon`
+- The `tx` event (§8.3) with the packet follows right after this response
+
 ## 9. Settings items
 
 ### 9.1 Item list [Fixed]
@@ -464,6 +494,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.6 | 2026-11-19 | Answers to issues #7 and #8. §7.5: measured time until the reply (at most about 2 s, recommended timeout 5 s, no carrier sense); `frame_too_long` cannot happen with the current setting limits. Added §8.7 for the `beacon` response (`dry` is always a boolean) |
 | 0.5 | 2026-11-19 | Added `beacon.send` (§7.5) with the response `beacon` and the error codes `switch_off`, `no_fix`, `too_soon`, `frame_too_long`. Added the setting `beacon_mode` (`"auto"` / `"manual"`, §9.1), `status.beacon_mode`, and `choices` in the schema (§9.2). §1: the app can now command a beacon; the switch still has to be on. `proto` stays 1 (additions only) |
 | 0.4 | 2026-11-18 | Answers to issues #1–#6. Added §5.3 (partial lines, resync with a bare `\n`). §4: how the app learns that authentication completed, time limits; the device now disconnects a connection that is not authenticated within 60 s. §8.1: `call` is omitted while the callsign is unset. §8.2: added `obj`; `src` is always the sender (the inner sender for `}`); `lat`/`lon` are the packet's position. §8.4: a row is a station or an object, added `obj`; an object named like a station is now a separate row. §8.6: guarantees of `busy`. §9.1: lowercase or whitespace in `callsign` is rejected. Time limits measured on hardware (60 s cut, 30 s passkey) |
 | 0.3 | 2026-11-17 | BLE layer verified on real hardware: §2, §3, §5.2 fixed. Advertising interval 100 ms, public address. Notifications capped at 244 bytes. App writes fixed at 20 bytes or fewer. Pre-authentication commands are silently dropped. Added the hardware results to §4, the note about the first `status` to §6.2, and the Windows known issue (§10.1). Closed U1, U4, U7; added U8 |
