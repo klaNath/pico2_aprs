@@ -1,6 +1,8 @@
 # プロジェクト: Raspberry Pi Pico 2 上の MicroPython アプリ
 
 このファイルは Claude Code が毎回読む作業ルールです。人間が読んでも分かるように書いています。
+説明(手順の背景、ディレクトリ構成、テストやデバッグの詳細)は [docs/development.md](docs/development.md) にあります。ここには毎回守る規則と要点だけを置きます。
+利用者向けの説明は README.md(日本語)と README.en.md(英語)。未完成の si5351 モードは README に書かず、docs/development.md §1 に書く。
 
 ## ターゲット
 
@@ -8,7 +10,7 @@
     - 無線チップが使う GP23/24/25/29 と ADC3 は使わない(Pico 2 でも同じ配線で動く。BLE は無効になる)
 - ファームウェア: MicroPython 1.29 のカスタムビルド `RPI_PICO2_W_ROMFS2`(正確なバージョンは `python tools/dev.py info` で確認する)
     - ROMFS を 1MB 設定。標準のライブラリに加えて micropython-lib から `sdcard` と `datetime` を読み込みビルドしている
-    - BTstack にペアリング(LE Secure Connections のパスキー)とボンドの保存を足すパッチを当てている。BLE のペアリングにはこのファームウェアが要る。ボード定義は `hw/RPI_PICO2_W_ROMFS2/`、パッチとビルド手順は `hw/micropython/`(README.md)。ビルドは WSL のツリーで行い、書き込み(BOOTSEL)はユーザーが行う
+    - BTstack にペアリングとボンドの保存を足すパッチを当てている。ボード定義は `hw/RPI_PICO2_W_ROMFS2/`、パッチとビルド手順は `hw/micropython/`(README.md)。ビルドは WSL のツリーで行い、書き込み(BOOTSEL)はユーザーが行う
     - ROMFS が有効であるため、必要ならばライブラリなどをROMFSへDeployし高速化を図ってください
 - オンボード LED は `Pin("LED", Pin.OUT)`(Pico 2 W では無線チップ経由。GP25 ではない)。基板の状態表示 LED は GP7
 - PC とは USB シリアルで接続。操作は全て `tools/dev.py`(mpremote のラッパー)経由
@@ -17,47 +19,32 @@
 
 ## 動作モード(`config.MODE`、`src/config_local.py` で上書き)
 
-- `"tnc"`(既定): 無線機の外付け TNC。受信は GP26 の音声(ADC)、送信は GP3 の音声(PWM)と PTT(GP2)。周波数と電波型式は無線機側で決まるので、送信ゲート(`hw.txctl.tnc_gate`)は周波数を見ない。コールサインと `TX_ENABLED` がそろったときだけ送信する
-- `"si5351"`: Si5351B を使うフル機能のトランシーバー。**未完成**。`src/transceiver.py` が LCD に「NOT COMPLETE」と出して待つだけで、受信・送信・GNSS・ビーコンは動かない(PTT は切ったまま、Si5351 にも触れない)。455 kHz FM IF 受信(`hw/fm_if_rx.py`、`PIN_RX_IF`)と `SI5351_*` の設定はこのモード用
-- 切り替えは電源投入時の設定のみ(実行中には切り替えない)
-- BLE(`config.BLE_ENABLED`)は `"tnc"` モードだけで動く
+- `"tnc"`(既定): 無線機の外付け TNC。受信は GP26 の音声(ADC)、送信は GP3 の音声(PWM)と PTT(GP2)。送信ゲート(`hw.txctl.tnc_gate`)は周波数を見ず、コールサインと `TX_ENABLED` がそろったときだけ送信する
+- `"si5351"`: **未完成**。`src/transceiver.py` が LCD に「NOT COMPLETE」と出して待つだけ(PTT は切ったまま、Si5351 にも触れない)。関係するコードは docs/development.md §1
+- 切り替えは電源投入時の設定のみ。BLE(`config.BLE_ENABLED`)は `"tnc"` モードだけで動く
 
-## ディレクトリ構成
+## ディレクトリ構成(詳細は docs/development.md §3)
 
-- `src/` … デバイスに載るコード。`main.py` は起動時に自動実行されるエントリポイント(`station.main()` を呼ぶ)
-    - `src/station.py` … 局(tnc モード)の本体。`src/transceiver.py` は si5351 モード(未完成)
-    - `src/config.py` … ピン割り当てと動作設定。`src/boot.py`、`src/wdt_bridge.py` … 起動時のウォッチドッグのつなぎ
-    - `src/core/` … ハードウェアに依存しない処理(送信ゲート `txgate`、ビーコン、局の表、設定 `settings`、BLE のコマンド処理 `remote` など)
-    - `src/hw/` … ハードウェアのドライバ(AFSK 送受信、GNSS、LCD、microSD、BLE `ble`、ウォッチドッグなど)
-    - `src/modem/` … 復調器と FX.25。`src/ui/` … LCD の画面
-    - `src/aprs/` … APRS の解析と Mic-E エンコード(自作)
-    - `src/tnc/` … micro-aprs 由来のコード(**生成物。手で編集しない**、下記「サブモジュール由来のコード」)
-    - `src/maxm10/`、`src/micropyGPS.py` … MAX-M10 ドライバと NMEA パーサ(**生成物。手で編集しない**)
-    - `src/*_demo.py`、`src/*_test.py`、`src/m10_check.py` など … 個別の確認用スクリプト(`release` では除く。dev.py の `RELEASE_EXCLUDE`)
-- `tests/` … テスト(`test_*.py` の `test_*` 関数)。`_runner.py` はランナー。実機でも PC でも動く。実機専用のテストは `test_hw_*` と名付ける(PC ではスキップ)。モジュールに `SKIP = "理由"` を書くと、そのモジュールは PC でも実機でも飛ばす(今は未完成の si5351 モードの `test_si5351`。実装を進めるときに `SKIP` を消す)
-- `tools/dev.py` … ビルド・実行・デバッグ用 CLI(PC 側で動く通常の Python)。`tools/host_test.py` は `test --host` の土台(MicroPython の代わりの関数)
-- `tools/vendor.py` … サブモジュールから `src/` の生成物を作る(対応表は vendor.py の `SOURCES`)
-- `tools/ble_cli.py` … PC から BLE で本機につなぐ検証ツール(bleak)。`tools/afsk_bench.py` … 復調器のベンチ
-- `docs/` … 設計メモ。BLE は `ble-protocol.md`(Web アプリ向けの仕様、英語)と `ble-control.md`(本機側の設計)
-- `hw/` … 基板のネットリスト、無線機のインターフェース、ファームウェアのボード定義とパッチ
-- `third_party/` … サブモジュール
-    - `micro-aprs/` … フォーク klaNath/micro-aprs、ブランチ `pico2-subset`、GPL-3.0 → `src/tnc/`
-    - `micropython-maxm10/` … klaNath/micropython-maxm10、ブランチ `pico2-aprs`、MIT → `src/maxm10/`
-    - `micropyGPS/` … klaNath/micropyGPS、ブランチ `pico2-aprs`、MIT → `src/micropyGPS.py`(互換性を保って改善する)
-- `typings/` … MicroPython の型スタブ(自動生成、編集しない)
+- `src/` … デバイスに載るコード。`main.py` が `station.main()` を呼ぶ。`station.py` が局(tnc モード)の本体
+    - `src/core/` … ハードに依存しない処理。`src/hw/` … ドライバ。`src/modem/`、`src/ui/`、`src/aprs/`
+    - `src/tnc/`、`src/maxm10/`、`src/micropyGPS.py` … **生成物。手で編集しない**(下記)
+    - `src/*_demo.py`、`src/*_test.py`、`src/m10_check.py` など … 確認用スクリプト(`release` では除く。dev.py の `RELEASE_EXCLUDE`)
+    - `src/` には、デバイスに要らないファイル(ドキュメントなど)を置かない。ROMFS のイメージに丸ごと入る
+- `tests/` … テスト(`test_*.py` の `test_*` 関数)。実機専用は `test_hw_*`(PC ではスキップ)。モジュールの `SKIP = "理由"` で飛ばす(今は `test_si5351`)
+- `tools/dev.py` … ビルド・実行・デバッグ用 CLI。`tools/vendor.py` … 生成物を作る。`tools/ble_cli.py` … BLE の検証。`tools/afsk_bench.py` … 復調器のベンチ
+- `docs/` … 設計メモ。`third_party/` … サブモジュール。`typings/` … 型スタブ(自動生成、編集しない)
 
-## サブモジュール由来のコード(出典の追跡)
+## サブモジュール由来のコード(詳細は docs/development.md §7)
 
-- 生成物(`src/tnc/`、`src/maxm10/`、`src/micropyGPS.py`)の変更は必ず `third_party/` のサブモジュール側で行い、そこでコミットしてから `python tools/vendor.py` で再生成する。試行錯誤中は `--dirty` で未コミットのまま生成できる(ヘッダに `+dirty` と出る)。
-- 派生ファイルの先頭には出典(上流のファイルとコミット)と変更点を書く。
-- `lint` は `vendor.py --check` で生成物が古くないかも確認する。ruff/pyright は `src/maxm10`、`src/micropyGPS.py` を検査しない(各リポジトリの書式のまま)。
-- フォークへの push はユーザーが行う。本体より先にフォークを push しないと、サブモジュールの参照先が存在しない状態になる。
+- 生成物の変更は必ず `third_party/` のサブモジュール側で行い、そこでコミットしてから `python tools/vendor.py` で再生成する。試行錯誤中は `--dirty`
+- 派生ファイルの先頭には出典(上流のファイルとコミット)と変更点を書く
+- フォークへの push はユーザーが行う(本体より先にフォークを push する)
 
 ## 絶対に守ること
 
 1. **デバイス操作は必ず `python tools/dev.py <cmd>` を使う。** `mpremote` を直接、特に引数なしや `repl` で起動しない(対話モードに入って固まる)。`dev.py repl` も使わない。
-2. **実行には必ずタイムアウトを付ける**(`-t 秒`)。無限ループのプログラムがタイムアウトで終わるのは正常(終了コード 124)。`run` / `exec` / `test`(src をマウントするもの)は、時間切れになると Ctrl-C を送ってデバイス上のプログラムを止めてから終わる(デバイスには何も残らない。止められなければ終了コード 125)。
-3. **`deploy` / `romfs-deploy`(フラッシュへの書き込み)、`rm-main`、`mip` はユーザーに確認してから。** 開発中の動作確認は `run` / `test` で十分(フラッシュに書かずに PC 上の `src/` をマウントして実行する)。
+2. **実行には必ずタイムアウトを付ける**(`-t 秒`)。無限ループのプログラムがタイムアウトで終わるのは正常(終了コード 124)。`run` / `exec` / `test` は、時間切れになると Ctrl-C を送ってデバイス上のプログラムを止めてから終わる(止められなければ終了コード 125)。
+3. **`deploy` / `romfs-deploy` / `release`(フラッシュへの書き込み)、`rm-main`、`mip` はユーザーに確認してから。** 開発中の動作確認は `run` / `test` で十分(フラッシュに書かずに PC 上の `src/` をマウントして実行する)。
 4. **物理的な結果は見えない。** LED・モーター・センサー値の実際の振る舞いは、print 出力で確かめるか、ユーザーに目視確認を頼む。推測で「動いた」と報告しない。
 5. 配線を変えるような指示を出すときは、ピン番号と接続先を明記し、電源(3.3V 系、GPIO は 5V 非耐性)に注意を促す。
 
@@ -67,69 +54,48 @@
 - 実機テスト(`dev.py test`、`check`、`build`、`release`)は偽のピンを使い、本物の PTT を駆動しない。
 - 本物の PTT を入れるデモは `src/tx_demo.py` だけで、`config.BENCH_TX_HZ` の明示が必要。
 
-## 開発ループ
+## 開発ループ(コマンドの一覧と書き込み方式は docs/development.md §4)
 
 ```
 python tools/dev.py lint              # 1. vendor --check + ruff + pyright(ホスト側、デバイス不要)
-python tools/dev.py test --host       # 2a. PC(CPython)上で tests/ を実行(速い。test_hw_* はスキップ)
+python tools/dev.py test --host       # 2a. PC(CPython)上で tests/ を実行
 python tools/dev.py test              # 2b. デバイス上で tests/ を実行
 python tools/dev.py run -t 15         # 3. src/main.py を実行して出力を見る
 python tools/dev.py run src/xxx.py -t 10   # 個別スクリプトの実行
 python tools/dev.py exec "import config; print(config.MODE)" -t 10   # 対話の代わりのコード片実行
 python tools/dev.py check             # lint + test --host + test をまとめて
-python tools/afsk_bench.py -n 200     # 復調器の劣化条件ベンチ(PC のみ、数分かかる。モデムを変えたら回す)
-python tools/dev.py build             # check のあと、本体だけ(デモを除く)の ROMFS イメージを作る(書き込みなし)
-python tools/dev.py release           # build + ROMFS へ書き込み + 起動の確認(要確認。電源投入で動く状態にする)
+python tools/afsk_bench.py -n 200     # 復調器のベンチ(PC のみ、数分。モデムを変えたら回す)
+python tools/dev.py build             # check のあと ROMFS イメージを作る(書き込みなし)
+python tools/dev.py release           # build + ROMFS へ書き込み + 起動の確認(要確認)
 ```
 
-変更後は少なくとも `lint` と `test` を通してから完了を報告する。
+- 変更後は少なくとも `lint` と `test` を通してから完了を報告する。
+- 書き込んだ本体を動かすときは `dev.py exec --no-mount "..."`。ROMFS 版のトレースバックは `src/xxx.py`(`_romfs_main` は `src/main.py`)と出る。
 
-## 書き込み方式: deploy と romfs-deploy
+## デバッグで守ること(手順の詳細は docs/development.md §8)
 
-- `deploy`: `src/` を .py のままフラッシュのファイルシステムに書く。シンプルで、デバイス上で直接編集もできる。
-- `release`(普段はこれ): `check` → デモを除いた ROMFS イメージ → `romfs-deploy` → ソフトリセットして `[station] ... started` を待つ。除外するファイルは dev.py の `RELEASE_EXCLUDE`。書き込んだ本体を動かすときは `dev.py exec --no-mount "..."`。
-- `romfs-deploy`: `src/` を .mpy にコンパイルした読み出し専用イメージを ROMFS 区画に書き、`/rom` から実行する。import が速く RAM 消費が少ない。フラッシュには `/rom` の `_romfs_main` を呼ぶランチャー `main.py`(と `boot.py`)だけが残る。
-  - 使う前に `romfs-query` で区画があるか確認する。区画が無いファームウェアでは使えない。
-  - .mpy 化は dev.py が `mpy-cross -march=armv7emsp` で行う(viper/native を含むため。mpremote 任せだと失敗する)。元のパスを埋め込むので、トレースバックには `src/xxx.py`(`_romfs_main` は `src/main.py`)と出る。ソースは表示されないので、ローカルの該当行を見る。
-  - 開発中の `run` / `test` は従来どおり PC の `src/` をマウントして動く(マウントが優先される)ので、ROMFS の中身に影響されない。
-  - `deploy` を実行するとフラッシュの `main.py` が上書きされ、フラッシュ版に戻る。
-
-## デバッグの手順
-
-- **トレースバック**: `File "/remote/station.py", line N` の `/remote/` はマウントされた `src/` のこと。そのまま `src/station.py` の N 行目を見る。
-- **状態を覗く**: `dev.py exec "<コード>"` でモジュールを import して関数を呼ぶ・変数を print する。REPL の代わりにこれを使う。
-- **メモリ**: `import gc; gc.collect(); print(gc.mem_free())` を怪しい箇所の前後で出す。`MemoryError` が出たら大きなリスト/文字列連結/ループ内での確保を疑う。
-- **起動時の挙動(deploy 後)**: `dev.py monitor --reset -s 15` でソフトリセットして main.py の出力を 15 秒読む。
-- **デバイス上のファイル**: `dev.py ls`, `dev.py cat boot.py`。
-- **接続できない**: 他ツール(MicroPico、Thonny、シリアルモニタ)がポートを掴んでいないかユーザーに確認。`dev.py ports` で検出状況を見る。
-- **マウント中に PC 側を切らない**: マウント中、デバイスは PC へファイルを要求している間 Ctrl-C を無効にして応答を待つ。その途中で mpremote が終わる(強制終了、ケーブルの抜け)と、デバイスは固まり、次の接続の Ctrl-C も読み捨てられる(「could not enter raw repl」)。局の起動中は PC の src/ から import を続ける(マウントでは `import station` に約 23 秒)ので、ここで切ると必ず固まった。dev.py の `run` / `exec` / `test` は時間切れでも切らずに止める(上の 2.)ので、mpremote を直接起動しないこと(絶対に守ること 1.)。
-- **固まったとき**: `boot.py` の `wdt_bridge` がタイマーでウォッチドッグをフィードし続けるので、自然には戻らない(数分待っても戻らなかった)。USB の抜き差しを頼む。ブリッジが動いていなければ、ウォッチドッグのリセットで約 15 秒後に自然に戻り、普通に接続できた(2026-11-16 の試験。マウント中のリセットそのものでは固まらない)。
-- **リセットを伴う試験**(`station.main()` の異常時の再起動など)は、書き込み後に `dev.py exec --no-mount` で行う。リセットするとマウントが切れ、dev.py は出力を追えない。
-- **ウォッチドッグ**: 局(`station.main`)は、マウント中の `run/exec` 以外ではウォッチドッグを有効にする(起動中 16 秒、ループ 3 秒。設計は docs/tx-time-limit.md §4)。有効にすると止められない。USB から Ctrl-C で局を止めると、タイマーがフィードして REPL で作業できる(ソフトリセットのあとは `boot.py` の `wdt_bridge` が引き継ぐ。プログラムが固まってもフィードを続ける点に注意。上の「固まったとき」)。ソフトリセットすると約 16 秒後にリセットされることがあるので、書き込み済みの局を触るときは、基板が再起動してもよい状態にしておく。
-- **局を止めたあと**: dev.py で接続すると、動いていた局(フラッシュの release 版)は Ctrl-C で止まり、ソフトリセットでは `main.py` が走らないので、局は止まったまま(LCD も消える)。作業を終えるときは `dev.py monitor --reset -s 20` で局を起動し直す。
+- **トレースバック**の `/remote/` はマウントされた `src/` のこと。状態を覗くのは `dev.py exec "<コード>"`(REPL の代わり)。
+- **マウント中に PC 側を切らない**: mpremote の途中終了でデバイスが固まる(「could not enter raw repl」)。局の起動中は PC の src/ から import を続ける(約 23 秒)。dev.py の `run` / `exec` / `test` を使えば切らずに止める。
+- **固まったとき**: `boot.py` の `wdt_bridge` がフィードし続けるので自然には戻らない。USB の抜き差しを頼む。
+- **リセットを伴う試験**は、書き込み後に `dev.py exec --no-mount` で行う(リセットするとマウントが切れる)。
+- **ウォッチドッグ**: 局はマウント中の `run/exec` 以外で有効にする(起動中 16 秒、ループ 3 秒)。止められない。書き込み済みの局を触るときは、基板が再起動してもよい状態にしておく。
+- **局を止めたあと**: dev.py で接続すると局は止まったまま(LCD も消える)。作業を終えるときは `dev.py monitor --reset -s 20` で局を起動し直す。
 - **応答しない / 起動ループ**: まず `dev.py rm-main`(要確認)。それでも駄目ならユーザーに USB の抜き差しを頼む。最終手段は BOOTSEL でファームウェア再書き込み(ユーザー作業)。
 
-## BLE
+## BLE(詳細は docs/development.md §9)
 
 - 仕様は docs/ble-protocol.md(Web アプリとの取り決め。変えるときはまずここを直す)、本機の作りは docs/ble-control.md
-- ペアリングは LCD に出る 6 桁のパスキー。ボンドの鍵はデバイスの `/ble_bonds.json`(LTK を含む。中身をそのまま表示したり外へ出したりしない)。消すのは USB から、BLE を止めた状態で `Ble.forget_all()`
-- PC からの確認: `python tools/ble_cli.py pair`(初回。パスキーは標準入力)、`hello` / `get` / `stations` / `listen -s 30` / `send`(今すぐビーコン。スイッチがオンのときだけ送る。電波が出るので `tx_enabled` を確かめてから)など。本機は同時に 1 台しかつながず、つながっている間は広告を止める(スマホがつながったままだと PC から見つからない)
-- **Windows の既知の問題**(docs/ble-control.md §7): 開発用の PC(Bluetooth 4.0)では、通知が続く応答の 2 回目の途中から受信が止まり、Windows の Bluetooth を入れ直すまで戻らない。本機は正常(Android では起きない)。BLE の動作確認は Android(nRF Connect)で行う
-- nRF Connect(Android)から書くときは TEXT を使う。改行を付けられないので、`ble_cli.py` か、改行で終わる書き込みのできるツールで確かめる
+- ボンドの鍵はデバイスの `/ble_bonds.json`(LTK を含む。**中身をそのまま表示したり外へ出したりしない**)。消すのは USB から、BLE を止めた状態で `Ble.forget_all()`
+- `ble_cli.py send` は電波が出るので `tx_enabled` を確かめてから
+- Windows の開発用 PC では通知が途中で止まる(本機は正常)。BLE の動作確認は Android(nRF Connect)で行う
+- nRF Connect(Android 版)は TEXT でしか Write できない。改行を付けられないので、行の終わりが要る確認は `ble_cli.py` などで行う
 - `bluetooth.irq` のハンドラの中の `print` は失われることがある。IRQ では記録だけして、ループで表示する
 
-## MicroPython で書くときの注意(CPython との違い)
+## MicroPython で書くときの注意(一覧は docs/development.md §10)
 
-- 時間は `time.ticks_ms()` / `time.ticks_diff(a, b)` / `time.ticks_add()` を使う(ラップアラウンドするので引き算しない)。待ちは `time.sleep_ms()`。
-- 定数は `from micropython import const` の `const()`。
-- 使えない/限定的: `dataclasses`, `typing`(実行時。型ヒントの構文自体は OK)、`pathlib`, `threading`(代わりに `_thread`、または `asyncio`)、`f"{x=}"` などの新しい書式。
-- 型ヒント用の import が必要なら `try: from typing import ... except ImportError: pass` で包む。
-- 例外の表示は `sys.print_exception(e)`。
-- 割り込みハンドラ(`Pin.irq` など)の中ではメモリ確保をしない。重い処理は `micropython.schedule` に逃がす。
-- `@micropython.viper` のポインタ(`ptr8/16/32`)は**境界検査をしない**。書き込み先の大きさを必ず自前で守る(溢れるとメモリ破壊)。PC では同じコードが配列の添字エラー/`array('i')` の OverflowError になるので、`test --host` で検出できる。
-- viper の `ptr16`/`ptr32` の読み出しは符号なし扱い。符号付きの値は `array('i')` に入れて `int(p[i])` で読む。
-- 標準以外のライブラリは micropython-lib にあれば `dev.py mip <名前>`(要確認)。CPython の pip パッケージは基本的に動かない。
-- ハードウェア依存部分(Pin, I2C, SPI など)はクラスの引数として渡し、テストでは偽オブジェクトに差し替えられるようにする(`tests/_fake_hw.py` と `tests/test_tx_safety.py` が例)。
+- 時間は `time.ticks_ms()` / `ticks_diff()` / `ticks_add()`(引き算しない)。割り込みハンドラの中ではメモリを確保しない。
+- `@micropython.viper` のポインタは**境界検査をしない**。書き込み先の大きさを必ず自前で守る(溢れるとメモリ破壊)。`ptr16`/`ptr32` の読み出しは符号なし。
+- ハードウェア依存部分はクラスの引数として渡し、テストでは偽オブジェクトに差し替えられるようにする(`tests/_fake_hw.py`)。
 
 ## 配線メモ(ユーザーが追記する)
 

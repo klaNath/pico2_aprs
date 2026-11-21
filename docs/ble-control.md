@@ -12,9 +12,12 @@
   - `Station.send_now()` が `remote.handle` の中で(`step()` の中で)その場で送り、送り終えてから応答する(`settings.set` と同じ作り。応答の順序が保たれ、送り待ちの状態を持たない)。送信中の例外は `_fatal` に置き、`step()` が投げ直して局を再起動する(BLE の except で消さない)
 - ペアリングは **LCD に表示する 6 桁のパスキー**を使う(MITM 保護つきのボンディング)
 - 受信履歴は**接続中に表示するだけ**。スマホ側では保存しない。本機は、接続したときに局の表(`core.stations`)の要約を返す
+- 2026-11-20 追加: スマホから **APRS メッセージ**を送り、自局宛のメッセージを受ける(本機が自動で ack を返す)。送信の条件はビーコンと同じ(スイッチ AND ゲート)。自動のビーコン・メッセージ・ack は、受信音量でチャネルの空きを待ってから送る(§8)
 - 動作モードは `"tnc"` だけが対象。`"si5351"` は未完成なので BLE を起動しない
 
-範囲外: ビーコン以外の送信(任意のパケットやテキスト)、地図、APRS メッセージ、KISS over BLE、BLE 経由のファームウェア更新とファイル転送。
+範囲外: ビーコンとメッセージ以外の送信(任意のパケット、ブリテンなど)、地図、KISS over BLE、BLE 経由のファームウェア更新とファイル転送。
+
+実装の状況(2026-11-22): §3〜§5 と §8 はすべて実装済み。BLE の層(広告、GATT、ペアリング、行の分割)は実機で確かめた(Android の nRF Connect、Windows の bleak、Android の Chrome)。APRS メッセージとチャネルの判定は PC のテストだけで、実機(BLE と空中)ではまだ確かめていない。残りは §6 の表。
 
 ## 2. 前提の確認(実測、2026-11-16)
 
@@ -35,7 +38,7 @@
 
 ```
 [Web アプリ(Chrome/Android)] ─ BLE (NUS) ─ hw/ble.py ─ core/remote.py ─┬─ core/settings.py ─ /settings.json
-[tools/ble_cli.py(PC, bleak)]                                           └─ station.Station(状態、受信、局の表)
+[tools/ble_cli.py(PC, bleak)]                                           └─ station.Station(状態、受信、局の表、ビーコン、メッセージ)
 ```
 
 | モジュール | 役割 | テスト |
@@ -43,8 +46,8 @@
 | `core/settings.py` | 設定項目の定義(型、範囲)、検証、`/settings.json` の読み書き、`config` への反映 | host |
 | `core/remote.py` | 1 行の JSON コマンドを処理し、応答とイベントを作る。BLE には依存しない | host(偽の送受信) |
 | `hw/ble.py` | 広告、NUS の GATT、行の分割と組み立て、ボンディング、パスキー、鍵の保存 | 実機(`test_hw_*`) |
-| `station.py` | 受信と状態の変化を `remote` に渡し、`step()` で BLE のキューを処理する。LCD に BLE の状態とパスキーを出す | 既存の方法 |
-| `tools/ble_cli.py` | PC から検索、接続、ペアリング、コマンドの送信、イベントの表示を行う | 手動、受け入れ試験 |
+| `station.py` | 受信と状態の変化を `remote` に渡し、`step()` で BLE のキューを処理する。設定の反映(§4.3)、`beacon.send`、メッセージ(§8)。LCD に BLE の状態とパスキーを出す | 既存の方法 |
+| `tools/ble_cli.py` | PC から検索、接続、ペアリング、コマンドの送信(`get`/`set`/`stations`/`send`/`msg` など)、イベントの表示を行う | 手動、受け入れ試験 |
 
 ### 3.1 本機のループとの関係
 
@@ -84,14 +87,16 @@
 
 ピン、MODE、LCD、無線機の立ち上がり時間などは出さない(間違えると復旧に USB が要るため)。
 
-### 4.3 実行中の反映に必要な変更
+### 4.3 実行中の反映
 
-今は、次の値をオブジェクトを作るときに一度だけ読んでいる。値を変えるための口を足す。
+`settings.set` で `config` の属性を書き換えたあと、`Station.apply_settings()` が各部に反映する。
 
-- `TxGate` の `callsign` と `allowed`(`hw/txctl.py` が `config.CALLSIGN` と `config.TX_ENABLED` を渡している)
-- `Beacon` の間隔と移動距離(`station.py:121`)
-- `Station.call`(`display_call` の結果、`station.py:97`)と FX.25 の有効/無効(`station.py:94`)
-- `_beacon()` が毎回読む `TX_PATH`、`SYMBOL`、`BEACON_COMMENT`、`BEACON_MESSAGE` は、`config` の属性を書き換えれば反映される
+- `TxGate` の `callsign` と `allowed`(`config.CALLSIGN`、`config.TX_ENABLED`)
+- FX.25 の有効/無効(`tx.set_fx25()`)
+- `Beacon` の間隔と移動距離
+- `Station.call`(`display_call` の結果。画面、局の表の自局、メッセージの自局のコールサインにも渡す)とビーコンのモード
+- `_beacon()` が毎回読む `TX_PATH`、`SYMBOL`、`BEACON_COMMENT`、`BEACON_MESSAGE` は、`config` の属性を書き換えるだけで反映される
+- 送信できない理由が変わっていれば、次の送信で記録し直す。USB に `[settings] applied ...` を出す
 
 送信中に設定は変えない。`set` は `step()` の中で処理するので、送信の途中には割り込まない。
 
@@ -99,7 +104,7 @@
 
 - 一時ファイル(`/settings.json.tmp`)に書いてから名前を変える。途中で電源が落ちても、古いか新しいかのどちらかが残る
 - フラッシュに書いている間は XIP が止まり、Core1 の受信も止まる見込み。そのため書き込みは `settings.set` 1 回につき 1 回だけにする(複数の項目をまとめて送る)
-- 書き込みの前にウォッチドッグをフィードする
+- 書き込みは `step()` の中で行う。`step()` の最初でウォッチドッグをフィードしており、書き込み 1 回(8〜58 ms、§2)はループの 3 秒に十分収まるので、書き込みのためのフィードはしていない
 
 ## 5. BLE プロトコル(Web アプリとの取り決め)
 
@@ -138,7 +143,8 @@
 | 4 ✅ | `station.py` へのつなぎ込み、LCD 表示 | `status`、`rx`、`tx` のイベントが出る。BLE があってもウォッチドッグ(3 秒)に余裕がある |
 | 5 (一部) | `tools/ble_cli.py` | PC からペアリングし、`hello`、`status`、`settings.get/set`、`stations.list` が使え、`rx` が流れる。ペアリングと各コマンドは確かめた。この PC では §7 の問題で通しの受け入れ試験ができていない |
 | 6 | 受信性能の確認 | 同じ信号源で、BLE を止めた場合、広告中、接続中に通知が流れている場合の受信数を比べ、劣化がないか、許容できる程度であること |
-| 7 | 書き込み中の受信の欠け | `settings.set` の書き込み時間と、Core1 が止まる時間を測る |
+| 7 | 書き込み中の受信の欠け | `settings.set` の書き込み時間と、Core1 が止まる時間を測る(ble-protocol.md U6) |
+| 8 (一部) | APRS メッセージとチャネルの判定(§8) | host テストは済み。残り: `CH_BUSY_DB` を測って決める(U9)、Android から `msg.send` / `msg.list` / `msg.cancel` を試す、もう 1 局と空中で送受信して ack の往復と再送を確かめる |
 
 受け入れ試験(5 が完了の条件): PC から接続し、パスキーでペアリングする → `settings.set` でコメントを変える → 次のビーコン(dry run で可)に反映される → 電源を入れ直しても残っている → `rx` が受信のたびに届く。
 
@@ -157,7 +163,7 @@
 
 ## 8. APRS メッセージとチャネルの判定(2026-11-20)
 
-仕様(アプリとの取り決め)は ble-protocol.md §7.6〜§7.9、§8.8。本機の作り:
+仕様(アプリとの取り決め)は ble-protocol.md §7.6〜§7.9、§8.8(暫定)。実装済み、実機では未確認(§6 の 8)。本機の作り:
 
 | モジュール | 役割 | テスト |
 |---|---|---|
