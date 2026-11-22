@@ -372,6 +372,43 @@ def test_secrets_roundtrip_and_save_delay():
     assert fb2.ev(B.IRQ_GET_SECRET, 2, 0, b"key2") is None
 
 
+def test_bond_save_failure_keeps_ble_and_retries():
+    # フラッシュが満杯で鍵を書けなくても BLE を止めない。SAVE_RETRY_MS あとに書き直す
+    b, fb, _r, _cfg, fs, _shown = make()
+    fb.ev(B.IRQ_SET_SECRET, 2, b"key1", b"val1")
+    t0 = b._secrets_dirty_ms
+    assert t0 is not None
+    fs.fail = True
+    t1 = time.ticks_add(t0, B.SAVE_DELAY_MS + 1)
+    b.poll(t1)  # 例外を出さない
+    assert "/ble_bonds.json" not in fs.files and b.running
+    fs.fail = False
+    b.poll(time.ticks_add(t1, B.SAVE_RETRY_MS - 1))
+    assert "/ble_bonds.json" not in fs.files
+    b.poll(time.ticks_add(t1, B.SAVE_RETRY_MS))
+    assert "/ble_bonds.json" in fs.files and b._secrets_dirty_ms is None
+
+
+def test_forget_all_reports_a_save_failure():
+    b, _fb, _r, _cfg, fs, _shown = make()
+    b.stop()
+    fs.fail = True
+    try:
+        b.forget_all()
+        raise AssertionError("OSError expected")
+    except OSError:
+        pass
+
+
+def test_short_encryption_key_is_not_authenticated():
+    b, fb, r, _cfg, _fs, _shown = make()
+    connect(b, fb, auth=False)
+    fb.ev(B.IRQ_ENCRYPTION_UPDATE, 1, True, True, True, 7)  # 7 バイトの鍵(仕様の最小)
+    assert not b.authenticated and not r.attached
+    fb.ev(B.IRQ_ENCRYPTION_UPDATE, 1, True, True, True, 16)
+    assert b.authenticated and b.key_size == 16
+
+
 def test_secrets_are_capped_and_forgotten():
     b, fb, _r, _cfg, fs, _shown = make()
     for i in range(B.MAX_SECRETS + 5):
