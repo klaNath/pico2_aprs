@@ -433,12 +433,15 @@ class Ble:
         return True
 
     def _flush_out(self):
-        while self._out and self.conn is not None:
+        # 切断の IRQ(_set_connected)は Python のコードの途中でも割り込み、self._out を新しい
+        # リストに替える。手元の参照で回し、替わったら(切れたら)やめる
+        out = self._out
+        while out and out is self._out and self.conn is not None:
             try:
-                self._ble.gatts_notify(self.conn, self._h_tx, self._out[0])
+                self._ble.gatts_notify(self.conn, self._h_tx, out[0])
             except OSError:  # BTstack のキューが満杯。次の poll で送り直す
                 return
-            self._out.pop(0)
+            out.pop(0)
 
     def _check_auth_timeout(self, now):
         conn = self.conn
@@ -463,8 +466,15 @@ class Ble:
             return
         self._flush_out()
         ln = self.lines
-        for _ in range(len(ln.lines)):
-            self.remote.handle(ln.lines.pop(0))
+        # handle()(送信や設定の保存で時間がかかる)の途中で切断の IRQ が来ると、ln.lines は
+        # 新しい空のリストに替わる(_set_connected -> clear)。先に取り出してから回し、
+        # 認証が外れたら(切れたら)残りは捨てる(前の接続の要求を、次の接続で実行しない)
+        if ln.lines:  # 行が無いときは何も確保しない(毎回のループ)
+            todo, ln.lines = ln.lines, []
+            for line in todo:
+                if not self.authenticated:
+                    return
+                self.remote.handle(line)
         if ln.too_long:
             ln.too_long = 0
             self.remote.too_long()

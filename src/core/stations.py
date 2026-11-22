@@ -23,6 +23,7 @@ except ImportError:
 STALE_S = 60 * 60
 MAX_STATIONS = 64
 MAP_STATIONS = 6
+REBASE_MS = 86_400_000  # 1 日。これより古い受信時刻は秒に移す(Stations.sweep)
 
 
 def is_object(packet):
@@ -71,6 +72,21 @@ class Station:
 
     def stale(self, now_ms):
         return self.age_s(now_ms) >= STALE_S
+
+    def rebase(self, now_ms):
+        """heard_ms / pos_ms が REBASE_MS より古ければ、その分の秒を age0_s / pos_age0_s に移す
+        (経過時間は変えずに、ticks_diff の正しい範囲(約 6.2 日)の内側に保つ)"""
+        d = time.ticks_diff(now_ms, self.heard_ms)
+        if d > REBASE_MS:
+            s = d // 1000
+            self.age0_s += s
+            self.heard_ms = time.ticks_add(self.heard_ms, s * 1000)
+        if self.pos_ms is not None:
+            d = time.ticks_diff(now_ms, self.pos_ms)
+            if d > REBASE_MS:
+                s = d // 1000
+                self.pos_age0_s += s
+                self.pos_ms = time.ticks_add(self.pos_ms, s * 1000)
 
 
 class Stations:
@@ -151,6 +167,11 @@ class Stations:
         if is_object(packet):
             return Station(packet.name, obj=True)
         return Station(packet.src, own=packet.src == self.own_call)
+
+    def sweep(self, now_ms):
+        """古い受信時刻を秒に移す(局のループから定期的に。Station.rebase)。表示は変わらない"""
+        for st in self.order:
+            st.rebase(now_ms)
 
     def latest(self):
         return self.order[0] if self.order else None

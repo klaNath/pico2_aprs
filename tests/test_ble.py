@@ -558,3 +558,45 @@ def test_busy_line_is_never_executed():
     assert ms[-1]["code"] == "busy" and cfg.SSID != 9 and cfg.SSID != 8
     b.poll(2)
     assert [m for m in link.lines() if m["t"] != "status"] == []  # 遅れて来る応答もない
+
+
+def test_disconnect_while_handling_a_line_drops_the_rest():
+    # beacon.send(送信で最長約 2 秒)などの処理中に切断の IRQ が来ると、行のリストが替わる。
+    # IndexError で BLE ごと止めず、前の接続の残りの要求も実行しない
+    b, fb, r, cfg, _fs, _shown = make()
+    connect(b, fb)
+    b.poll(0)
+    done = []
+    orig = r.handle
+
+    def handle(line):
+        done.append(line)
+        if len(done) == 1:
+            fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+        orig(line)
+
+    r.handle = handle
+    fb.write(1, b'{"op":"status","id":1}\n{"op":"settings.set","id":2,"values":{"ssid":9}}\n')
+    b.poll(1)
+    assert len(done) == 1 and cfg.SSID != 9
+    assert b.conn is None and fb.adv is not None
+    connect(b, fb, conn=2)  # 次の接続はふつうに使える
+    fb.write(2, b'{"op":"settings.set","id":3,"values":{"ssid":9}}\n')
+    b.poll(2)
+    assert cfg.SSID == 9
+
+
+def test_disconnect_while_notifying_does_not_raise():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    connect(b, fb)
+    b.poll(0)
+    sent = []
+
+    def notify(conn, h, data):
+        sent.append(data)
+        if len(sent) == 1:
+            fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+
+    fb.gatts_notify = notify
+    assert b.write(b"z" * 100 + b"\n") is True  # MTU 23 なので何個かに分かれる
+    assert len(sent) == 1 and b._out == []

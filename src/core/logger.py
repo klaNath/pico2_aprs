@@ -4,6 +4,9 @@
                            'TX(dry) ')を付ける
     <root>/0001_nmea.txt   NMEA の RMC と GGA(受信したまま)
 
+書き込みの失敗のあとのやり直し(hw.sdlog)では、同じ番号のファイルに追記する(start の resume)。
+失敗のたびに新しい組を作ると、壊れたままのカードではファイルが増え続ける。
+
 受信ログの 1 行: '2026-10-25T01:37:37Z JA1ABC>APRS,WIDE1-1:!3539.53N/13944.70E>'
 GNSS の時刻が取れる前は時刻の代わりに起動からの経過秒 'T+123.456' を書く。先頭の '#' の行は見出し。
 行はメモリにためて flush_ms ごとにまとめて書く(カードの書き込み回数を減らす。電源断で失うのは
@@ -19,12 +22,23 @@ FLUSH_MS = 10_000
 MAX_BYTES = 16 * 1024  # ファイルが開いていない間にためる上限(2 つのログの合計)
 NMEA_KEEP = (b"RMC", b"GGA")
 SEQ_MAX = 9999
+_REBASE_MS = 86_400_000  # 1 日(sweep)
 
 
 def iso_utc(utc_s):
     """UTC の秒 -> '2026-10-25T01:37:37Z'"""
     t = time.gmtime(utc_s)
     return "%04d-%02d-%02dT%02d:%02d:%02dZ" % (t[0], t[1], t[2], t[3], t[4], t[5])
+
+
+def listdir_names(root):
+    """root のファイル名を 1 つずつ返す(os.ilistdir。リストを作らないので、ファイルが多くても
+    メモリは一定)。root が無ければ呼んだ時点で OSError"""
+    il = getattr(os, "ilistdir", None)
+    if il is None:  # PC(CPython)
+        return os.listdir(root)
+    it = il(root)
+    return (e[0] for e in it)
 
 
 def next_seq(names):
@@ -38,7 +52,7 @@ def next_seq(names):
 
 class Logger:
     def __init__(self, header="", flush_ms=FLUSH_MS, max_bytes=MAX_BYTES,
-                 opener=open, listdir=os.listdir, mkdir=os.mkdir):
+                 opener=open, listdir=listdir_names, mkdir=os.mkdir):
         self.header = header  # 見出しに書く文字列(局名など)
         self.flush_ms = flush_ms
         self.max_bytes = max_bytes
@@ -52,6 +66,7 @@ class Logger:
         self._buf = ([], [])
         self._bytes = 0
         self._t0 = time.ticks_ms()
+        self._t0_s = 0  # 起動からの秒のうち _t0 に入れずに持つ分(sweep。ticks は約 6.2 日まで)
         self._last_flush = self._t0
 
     # ---- 記録(バッファにためるだけ。メモリ確保は 1 行分)
@@ -62,7 +77,7 @@ class Logger:
             stamp = iso_utc(utc_s)
         else:
             ms = time.ticks_diff(time.ticks_ms() if now_ms is None else now_ms, self._t0)
-            stamp = "T+%d.%03d" % (ms // 1000, ms % 1000)
+            stamp = "T+%d.%03d" % (ms // 1000 + self._t0_s, ms % 1000)
         if isinstance(text, str):
             text = text.encode()
         tag = (b"TX(dry) " if dry else b"TX ") if tx else b""
@@ -85,23 +100,38 @@ class Logger:
             self._bytes -= len(b.pop(0))
             self.dropped += 1
 
+    def sweep(self, now_ms):
+        """起動からの経過(T+ の時刻)を ticks_diff の正しい範囲(約 6.2 日)の内側に保つ
+        (局のループから定期的に)"""
+        d = time.ticks_diff(now_ms, self._t0)
+        if d > _REBASE_MS:
+            s = d // 1000
+            self._t0_s += s
+            self._t0 = time.ticks_add(self._t0, s * 1000)
+
     # ---- ファイル
-    def start(self, root, utc_s=None):
-        """root にこの起動のファイルを作って開く。通し番号を返す。失敗は OSError"""
-        try:
-            names = self.listdir(root)
-        except OSError:
-            self.mkdir(root)
-            names = []
-        seq = next_seq(names)
+    def start(self, root, utc_s=None, resume=None):
+        """root にこの起動のファイルを作って開く。通し番号を返す。失敗は OSError。
+        resume: 通し番号。そのファイルに追記する(失敗のあとのやり直し。番号は探さない)"""
+        if resume is None:
+            try:
+                names = self.listdir(root)
+            except OSError:
+                self.mkdir(root)
+                names = ()
+            seq = next_seq(names)
+            mode, verb = "wb", b"started"
+        else:
+            seq = resume
+            mode, verb = "ab", b"resumed"
         when = iso_utc(utc_s) if utc_s is not None else "time unknown"
         files = []
         try:
             for kind in ("aprs", "nmea"):
-                f = self.opener("%s/%04d_%s.txt" % (root, seq, kind), "wb")
+                f = self.opener("%s/%04d_%s.txt" % (root, seq, kind), mode)
                 files.append(f)
-                f.write(b"# %s %s log %04d started %s\n" % (self.header.encode(), kind.encode(),
-                                                            seq, when.encode()))
+                f.write(b"# %s %s log %04d %s %s\n" % (self.header.encode(), kind.encode(),
+                                                       seq, verb, when.encode()))
         except OSError:
             for f in files:
                 _close(f)
@@ -109,6 +139,8 @@ class Logger:
         self._files = (files[0], files[1])
         self.seq = seq
         self.flush()
+        # ファイルが無かった間の古い時刻のままだと、ticks の一周で次の書き込みが何日も遅れる
+        self._last_flush = time.ticks_ms()
         return seq
 
     def poll(self, now_ms=None):
@@ -132,6 +164,9 @@ class Logger:
                     buf.clear()
                 f.flush()
         except OSError:
+            # 書けた分はバッファから消えている。残りの量に合わせないと、上限に張り付いたまま
+            # 新しい行を捨て続ける
+            self._bytes = sum(len(d) for buf in self._buf for d in buf)
             self.abandon()
             raise
         self._bytes = 0

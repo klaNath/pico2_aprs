@@ -15,7 +15,7 @@ import time
 
 from aprs import mice
 from aprs.position import KNOT_KMH
-from core import geo
+from core import geo, ticks
 from tnc.ax25 import Address, Frame
 
 MOVING_S = 90
@@ -65,6 +65,12 @@ class Beacon:
     def sent(self, lat, lon, now_ms=None):
         self.last_ms = time.ticks_ms() if now_ms is None else now_ms
         self.last_pos = (lat, lon)
+
+    def sweep(self, now_ms):
+        """古い時刻を片付ける(局のループから定期的に。core.ticks)。測位が何日も無い間は
+        next_s() が呼ばれず、hold_ms と last_ms が古いまま残る"""
+        self.hold_ms = ticks.passed(now_ms, self.hold_ms)
+        self.last_ms = ticks.cap(now_ms, self.last_ms)
 
 
 def mice_frame(src, path, lat, lon, speed_kn=0.0, course=0.0, alt=None, symbol=("/", ">"),

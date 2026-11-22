@@ -315,7 +315,8 @@ class Receiver:
         return None
 
     def _is_dup(self, b, now_ms):
-        self._recent = [(t, x) for t, x in self._recent if time.ticks_diff(now_ms, t) < 3000]
+        # 差が負 = ticks の半周(約 6.2 日)以上前の記録。残すと同じ内容のパケットを捨て続ける
+        self._recent = [(t, x) for t, x in self._recent if 0 <= time.ticks_diff(now_ms, t) < 3000]
         for _t, x in self._recent:
             if x == b:
                 return True

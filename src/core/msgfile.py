@@ -13,6 +13,7 @@
 import os
 import time
 
+from core import ticks
 from core.messages import Msg
 from core.stationfile import escape, unescape
 
@@ -69,6 +70,11 @@ class MsgFile:
         if self._saved_ms is not None and time.ticks_diff(now_ms, self._saved_ms) < self.save_ms:
             return
         self.save(msgs, now_ms)
+
+    def sweep(self, now_ms):
+        """古い保存の時刻を片付ける(局のループから定期的に。core.ticks)。何日も変化が無いと、
+        ticks の一周で「保存したばかり」に見えて、次の変化が何日も保存されない"""
+        self._saved_ms = ticks.cap(now_ms, self._saved_ms)
 
     def load(self, msgs):
         f = None

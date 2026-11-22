@@ -1,20 +1,24 @@
 # pico2_aprs
 
-Raspberry Pi Pico 2 上の MicroPython で動く、TNC 内蔵の APRS トラッカーのファームウェアです。144 MHz 帯の FM 無線機につなぎ、電源を入れると自動で次のことを行います。
+[English](README.en.md)
+
+Raspberry Pi Pico 2 W 上の MicroPython で動く、APRS の局のファームウェアです。144 MHz 帯の FM 無線機に外付けの TNC としてつなぎ、GNSS モジュールと液晶を合わせて、単体で動くトラッカーとして使います。電源を入れると次のことを自動で行います。
 
 - APRS パケット(AX.25、1200 bps AFSK)の受信と、局の一覧・距離・方位の表示
-- GNSS(u-blox MAX-M10M)による自局位置の取得と、Mic-E 形式のビーコン送出
-- ST7789 液晶への表示(局の一覧、最新局の詳細、自局の状態、地図、衛星の強度)
-- microSD への受信ログと NMEA ログの記録
+- GNSS(u-blox MAX-M10M)による自局の位置の取得と、Mic-E 形式のビーコンの送出(FX.25 にも対応)
+- ST7789 液晶への表示(局の一覧、最新局の詳細、自局の状態、地図、衛星の強度、受信音量)
+- microSD への受信ログ・NMEA ログの記録と、局の一覧・メッセージの保存
+- BLE でスマートフォンとつなぎ、設定の変更、受信の表示、ビーコンの送出、APRS メッセージの送受信
 
 ```
- 無線機(受信音声 / 455 kHz FM IF)──► Pico 2 ──► 液晶(ST7789)
- GNSS(MAX-M10M)─────────UART0────►   │  ├──► microSD(SPI1)
- ビーコンスイッチ ───────GP21─────►   │  └──► 状態 LED
+ 無線機(受信音声)──── GP26 ADC ──► Pico 2 W ──► 液晶(ST7789)
+ GNSS(MAX-M10M)────── UART0 ───►   │  ├──► microSD
+ ビーコンスイッチ ───── GP21 ────►   │  ├──► 状態 LED
+ スマートフォン ◄──────── BLE ──────►   │
                                       └──► 送信音声(PWM)/ PTT ──► 無線機
 ```
 
-**現在の状態**: 対応している動作は、この自動で動く TNC 内蔵トラッカーだけです。ただし、送信周波数を確定する部分が局にまだ組み込まれていないため、局本体は設定にかかわらず電波を出しません(→ [送信の仕組み](#送信の仕組み))。受信、GNSS、表示、SD への記録は動きます。
+周波数と電波型式は無線機側で決まります。本機が扱うのは音声と PTT だけです。
 
 ---
 
@@ -24,51 +28,49 @@ Raspberry Pi Pico 2 上の MicroPython で動く、TNC 内蔵の APRS トラッ�
 
 | 部品 | 内容 |
 |------|------|
-| ボード | Raspberry Pi Pico 2(RP2350)または Pico 2 W。無線チップが使う GP23/24/25/29 と ADC3 は使っていないので、W でも同じ配線で使えます |
-| 無線機 | 144 MHz 帯 FM。受信音声(または 455 kHz の FM IF)を Pico に入れ、送信音声と PTT を Pico から出す |
+| ボード | Raspberry Pi Pico 2 W(RP2350)。BLE を使わないなら Pico 2 でも同じ配線で動きます |
+| 無線機 | 144 MHz 帯 FM。受信音声を Pico に入れ、送信音声と PTT を Pico から出すインターフェースが必要です。FT-818ND(DATA 端子)と FT3D / FT5D(MIC/SP 端子)に対応したインターフェースの回路を [hw/ft818_if/](hw/ft818_if/) に置いています(`ft818_if.pdf`) |
 | GNSS | u-blox MAX-M10M(UART0、115200 bps) |
-| 表示 | ST7789 液晶。既定は 2.4 インチ 240x320(横長 320x240)。Pimoroni Pico Display Pack(240x135、ボタン付き)にも対応 |
-| 記録 | microSD カードとカード検出スイッチ |
-| スイッチ | ビーコン送出のオン/オフ(外部スイッチ。GP21 を GND に落とすとオン) |
+| 表示 | ST7789 液晶。既定は 2.4 インチ 240x320(横長 320x240 で使う)。Pimoroni Pico Display Pack(240x135、ボタン付き)にも対応 |
+| 記録 | microSD カード(カード検出スイッチ付きのスロット) |
+| スイッチ | ビーコン送出のオン/オフ(GP21 を GND に落とすとオン) |
 | PC との接続 | **データ通信対応の** USB ケーブル |
 
-試作基板の回路(開発途中の rev1)は `hw/Pico_MicroSD_M10_Board_rev1.net` にあります。
+試作基板(開発途中の rev1)のネットリストは [hw/Pico_MicroSD_M10_Board_rev1.net](hw/Pico_MicroSD_M10_Board_rev1.net) にあります。
 
 ### ピン割り当て
 
-すべて [src/config.py](src/config.py) で決めています。配線を変えるときはそこだけ直します。**GPIO は 5 V 非耐性**です。
+正は [src/config.py](src/config.py) の `PIN_*` です。**GPIO は 5 V 非耐性**です(3.3 V 系)。
 
 | GPIO | 用途 |
 |------|------|
 | GP0 / GP1 | GNSS との UART0(TX / RX) |
-| GP2 | PTT(出力。High で送信) |
-| GP3 | AFSK 送信音声(PWM) |
-| GP4 / GP5 | I2C0(SDA / SCL。無線機ボードへの接続用。現在の局本体は使わない) |
-| GP6 | GNSS RESET_N(通常は駆動しない) |
-| GP7 | 状態 LED(送信中は点灯、受信で 0.1 秒点灯) |
-| GP8 | 455 kHz FM IF の入力(`RX_SOURCE = "if"` のとき) |
-| GP9 | microSD カード検出 |
+| GP2 | PTT(出力。既定は High で送信。`PTT_ACTIVE_HIGH`) |
+| GP3 | 送信音声(PWM) |
+| GP6 | GNSS の RESET_N(通常は駆動しない) |
+| GP7 | 状態 LED(送信中は点灯、受信で短く点灯) |
+| GP9 | microSD のカード検出 |
 | GP10〜12, GP15 | microSD(SPI1: SCK / MOSI / MISO / CS) |
 | GP16〜20 | 液晶(SPI0: DC / CS / SCK / MOSI、バックライト) |
 | GP21 | ビーコンスイッチ(内部プルアップ。GND でオン、開放・断線はオフ) |
 | GP22 | GNSS の PPS(駆動しない) |
-| GP26 | 受信音声の ADC 入力(`RX_SOURCE = "adc"` のとき) |
+| GP26 | 受信音声(ADC0) |
+
+GP4 / GP5 / GP8 / GP27 は今は使っていません。Pico 2 W の無線チップが使う GP23 / 24 / 25 / 29 も使いません。
 
 ### ファームウェア
 
-この局は、次のようにビルドした MicroPython で動かします。
+標準の MicroPython ではなく、次のようにビルドしたファームウェア(ボード定義 `RPI_PICO2_W_ROMFS2`、MicroPython v1.29.0)を使います。
 
-- 標準のライブラリに加えて、micropython-lib の `sdcard` と `datetime` を組み込む
-- フラッシュに 1 MB の ROMFS 区画を取る(`python tools/dev.py romfs-query` で確認できます)
+- micropython-lib の `sdcard` と `datetime` を組み込む(標準の .uf2 では microSD が使えません)
+- フラッシュに 1 MB の ROMFS 区画を取る(標準の .uf2 では `release` で書き込めません)
+- BTstack に、パスキーでのペアリングとボンドの保存を足すパッチを当てる(標準の .uf2 ではペアリングできず、BLE が使えません)
 
-動作を確認したバージョンは MicroPython v1.29.0(Pico 2 W)です。`mpy-cross` も 1.29 系列に合わせています。
-
-標準の .uf2 のままでは、microSD の記録が使えず、ROMFS への書き込みもできません。
+ビルドの手順とパッチの内容は [hw/micropython/README.md](hw/micropython/README.md) にあります(WSL の Ubuntu でビルドします)。できた `firmware.uf2` は、BOOTSEL ボタンを押しながら USB を挿し、出てきたドライブにコピーして書き込みます。配布用の .uf2 はありません。
 
 ### PC 側
 
 - Python 3.9 以上
-- `mpremote`、`mpy-cross`、`ruff`、`pyright`([requirements-dev.txt](requirements-dev.txt))。`tools/bootstrap.py` が `.venv` を作って入れます
 - Linux ではシリアルポートの権限が必要です(`sudo usermod -aG dialout $USER` のあと再ログイン)
 
 ---
@@ -78,14 +80,14 @@ Raspberry Pi Pico 2 上の MicroPython で動く、TNC 内蔵の APRS トラッ�
 ```bash
 git clone --recurse-submodules <このリポジトリ>
 cd pico2_aprs
-python3 tools/bootstrap.py        # Windows は py tools\bootstrap.py
+python3 tools/bootstrap.py --board rpi_pico2_w   # Windows は py tools\bootstrap.py --board rpi_pico2_w
 ```
 
-Pico 2 W なら `--board rpi_pico2_w`、ファームウェアのバージョンに合わせるなら `--mp-version 1.28.0` のように指定します。終わったら `.venv` を有効にします(VSCode なら「Python: Select Interpreter」)。
+`bootstrap.py` が `.venv` を作り、必要なツール(`mpremote`、`mpy-cross` など)を入れます。終わったら `.venv` を有効にします(VSCode なら「Python: Select Interpreter」)。
 
 ### 自局の設定
 
-コールサインなどの設定は、git 管理外の `src/config_local.py` に書きます。`src/config.py` の値を上書きします。
+コールサインなどは、git 管理外の `src/config_local.py` に書きます。
 
 ```bash
 cp tools/config_local.example.py src/config_local.py
@@ -95,259 +97,158 @@ cp tools/config_local.example.py src/config_local.py
 # src/config_local.py(ここに書く値は架空の例)
 CALLSIGN = "Q1TEST"   # 架空の例。自分のコールサインに置き換える。SSID は含めない
 SSID = 7
-TX_ENABLED = False    # 送信を許可するか。無線機の接続を確かめるまで False
+TX_ENABLED = False    # 送信を許可するか。無線機との接続を確かめるまで False
 ```
 
-コールサインを未設定のままでも、受信・表示・記録は動きます(画面には `NOCALL` と出ます)。設定は電源を切っても残りますが、`release` で ROMFS に入れる場合は、書き込む前にこのファイルを作っておく必要があります。
+コールサインが未設定でも、受信・表示・記録は動きます(画面には `NOCALL` と出て、送信はしません)。BLE からも同じ項目を変えられます(→ [BLE](#ble-でスマートフォンとつなぐ))。
 
-### 動作確認
+設定は次の順で上書きされます。
+
+`src/config.py`(既定値) < `src/config_local.py` < デバイスの `/settings.json`(BLE で変えた値。電源を切っても残る)
+
+### 接続の確認
 
 ```bash
 python tools/dev.py ports         # Pico が見えるか
 python tools/dev.py info          # MicroPython のバージョン・空きメモリ
-python tools/dev.py lint          # ruff + pyright + 生成物の確認
-python tools/dev.py test --host   # PC(CPython)上でテスト
-python tools/dev.py test          # 実機でテスト → 最後に RESULT: OK
+python tools/dev.py romfs-query   # ROMFS 区画があるか(パッチ済みのファームウェアか)
 ```
-
-テストは偽のピンを使うので、PTT は駆動されません。
 
 ---
 
 ## 3. 局を動かす
 
-### 動作確認(フラッシュに書かない)
+### まず試す(フラッシュに書かない)
 
 ```bash
-python tools/dev.py run -t 60     # src/main.py を 60 秒実行して出力を見る
+python tools/dev.py run -t 60     # PC の src/ を Pico にマウントして 60 秒動かす
 ```
 
-`run` / `exec` / `test` は PC の `src/` を Pico にマウントして実行するので、フラッシュを書き換えません。
-
-起動すると、次のような行が USB に出ます。
+時間が来ると止まります(終了コード 124 は正常)。USB には次のような行が出ます。
 
 ```
-[station] NOCALL-7 started, RX ADC GP26, TX refused: ..., free 12345
-[rx] SRC>DST,PATH:...                     受信したパケット
-[tx dry] 700 ms SRC>DST,PATH:...          送るはずだったパケット(実際には出していない)
-[station] fix 3D sats 12/30 rx 4 tx 1 bcn on next 540 sd log 0001 free 12345 lag 3     10 秒ごと
+[station] Q1TEST-7 started, TNC mode, RX ADC GP26, TX TX not enabled, free 244464
+[ble] advertising as PicoAPRS-XXXX              BLE の広告を始めた
+[sd] logging to /sd/log/0001_*.txt              SD への記録を始めた
+[rx] SRC>DST,PATH:...                           受信したパケット
+[tx dry] 715 ms SRC>DST,PATH:...                送るはずだったパケット(TX_ENABLED が False なので出していない)
+[station] fix 3D sats 12/30 rx 4 tx 1 bcn on next 540 sd log 0001 ble adv free 157376 lag 3     10 秒ごと
+[station] rx level rms -38 dBFS, peak -8 dBFS (ok), ch clear (busy >= -30)
 ```
 
-### 電源を入れるだけで動かす
+`started` の行の `TX ...` は送信できない理由です(`callsign not set`、`TX not enabled`)。送信できるときは `TX enabled` と出ます。10 秒ごとの行の `bcn` はビーコンスイッチ(`off` のときは `next None`)、`sd` は SD の状態(`no card` / `wait` / `log 番号`)、`ble` は BLE の状態(`adv` 広告中 / `conn` 接続中 / `auth` 認証済み)です。
+
+### 電源を入れるだけで動くようにする
 
 ```bash
-python tools/dev.py release       # 検査 → ROMFS へ書き込み → 起動の確認
+python tools/dev.py release
 ```
 
-`release` は、`check`(lint とテスト)を通し、デモ・試験用のスクリプトを除いた ROMFS イメージを作り、書き込んで、再起動後に `[station] ... started,` が出るのを待ちます。書き込んだ本体は `dev.py exec --no-mount "..."` で操作します。
+lint とテストを通してから、局のコードを ROMFS(フラッシュの読み出し専用の区画)に書き込み、再起動して `[station] ... started` が出るのを確かめます。`src/config_local.py` もイメージに入るので、**書き込む前に作っておきます**。以後は電源を入れると局が起動します。
 
-ROMFS は読み出し専用のイメージで、`.mpy` にコンパイルしたコードをフラッシュから直接実行します。`.py` のまま使うより import が速く、RAM の消費も小さくなります。フラッシュには `/rom` の本体を呼ぶ `main.py` と、起動直後に PTT(GP2)を Low にする `boot.py` が残ります。
-
-`.py` のままフラッシュに置くなら `dev.py deploy` です(`main.py` が上書きされ、ROMFS 版から戻ります)。
-
-書き込みを伴う `deploy` / `romfs-deploy` / `release` / `rm-main` / `mip` は、実行前に内容を確かめてください。
-
-### 異常時の動作
-
-**ウォッチドッグ**: ファームウェアが止まったときのために、RP2350 のウォッチドッグを使います。起動中(import、GNSS の探索、SD のマウント)は 16 秒、ループに入ってからは 3 秒で、局のループが毎回フィードします。送信の待ちのループではフィードしません(止まった DMA を見つけるため)。ウォッチドッグのリセットの後は、最初のビーコンを 90 秒待ちます。
-
-- `dev.py run` / `exec` で PC の `src/` をマウントして動かしているときは有効にしません(リセットでデバイスが応答しなくなるため)。有効になるのは、`deploy` / `release` で書き込んだ局の起動と、`exec --no-mount` で `station.main()` を呼んだときです。
-- 有効にしたウォッチドッグは止められません。USB から Ctrl-C で局を止めたときは、タイマーがフィードを続けるので、REPL で作業できます。`mpremote` は接続のたびにソフトリセットしますが、`boot.py` がフィードを引き継ぐので、書き込み済みの局に `dev.py` で接続しても約 16 秒で再起動することはありません。
-
-**例外**: 局が例外で止まると、内容を液晶・USB・SD に出し、待ってからハードリセットします。起動から 60 秒以内の失敗が続くと、待ち時間を 10、20、40 … 秒と延ばします(最大 300 秒)。失敗の回数はウォッチドッグのスクラッチレジスタに置くので、電源を切ると消えます。異常で再起動した直後は、最初のビーコンを 90 秒待ちます。
-
-USB から Ctrl-C で止めたときは再起動しません。
+`dev.py` で接続すると、動いている局は止まります。作業のあとは `python tools/dev.py monitor --reset -s 20` で起動し直してください。
 
 ---
 
-## 4. 動作
+## 4. 使い方
 
-対応しているのは、自動で動く TNC 内蔵トラッカーとしての動作だけです。電源を入れると、次を 1 つのループで同時に行います。操作は必要ありません。
+### 送信の条件
 
-1. 受信: 無線機の音声を復調して AX.25 のフレームに復号し、局の表と画面、SD の記録に渡す
-2. 測位: GNSS から位置と時刻を得て、画面に出す。有効な時刻で RTC を UTC に合わせる(最初の 1 回と、その後 1 時間ごと)
-3. ビーコン: ビーコンスイッチがオンで、測位と時刻がそろったら、Mic-E のビーコンを決まった間隔で送る
-4. 表示と記録: 液晶の更新と、microSD への記録
-
-設定で変えられる部分は、次のとおりです。
-
-### 受信の入力(`config.RX_SOURCE`)
-
-入力の取り方は設定で選びます。どちらでも、動作の流れは同じです。
-
-| 値 | 入力 | 内容 |
-|----|------|------|
-| `"adc"`(既定) | GP26 | 無線機の復調音声を ADC で 19.2 kHz に取り、DMA でリングに溜め、Core1 で復調します。画面に受信音量(縦棒と局ごとの LVL)が出ます |
-| `"if"` | GP8 | 455 kHz FM IF(リミッタを通した 0〜3.3 V の方形波)を PIO でエッジの時刻から復調します。受信音量は出ません |
-
-`"if"` のときの周波数の求め方は `config.RX_IF_METHOD` で選びます。
-
-- `"pll"`(既定): DPLL。弱い信号で乱れたエッジに強い
-- `"count"`: 周期の逆数計数
-
-どちらも、雑音向けとハム向けの 2 つの復調器とデフレーマで復号します。
-
-### 送信
-
-送るのは自局の位置ビーコン(Mic-E)だけです。経路、シンボル、メッセージ、コメントは `config.py` の `TX_PATH`、`SYMBOL`、`BEACON_MESSAGE`、`BEACON_COMMENT` で決めます。
-
-**ビーコンスイッチ(GP21)**
-
-| 状態 | 動作 |
-|------|------|
-| GND に落とす(オン) | 2D 以上の測位と GNSS の時刻がそろうと、最初の 1 回をすぐ送る |
-| 開放・断線(オフ) | 送らない。オフにすると前回の記録を消し、次にオンにしたときにまたすぐ送る |
-
-**送出間隔**
-
-| 条件 | 間隔 |
-|------|------|
-| 前回の位置から `BEACON_MOVE_M`(10 m)以上動いている | `BEACON_MOVING_S`(90 秒)ごと |
-| 動いていない | `BEACON_STILL_S`(600 秒)ごと |
-
-**実際に電波を出すか(送信の仕組み)**
-
-送信は [src/core/txgate.py](src/core/txgate.py) のゲートだけが PTT(GP2)を操作します。次の条件がすべてそろったときだけ PTT を入れ、1 つでも欠けると「ドライラン」になります。
+PTT を入れるのは、次がすべてそろったときだけです。1 つでも欠けると「ドライラン」になり、ビーコンの時機の管理、画面、SD の記録(`TX(dry)` の印)は同じに動き、PTT と送信音声だけを出しません。
 
 1. コールサインが正しい形式で設定されている(`CALLSIGN`)
 2. `TX_ENABLED = True`
-3. 送信周波数が確定していて、144〜146 MHz の範囲に入っている
-4. 周波数源の準備ができている
+3. ビーコンスイッチ(GP21)がオン
 
-ドライランでは、ビーコンの時機の管理、画面、SD の記録(`TX(dry)` の印)は本番と同じに動き、PTT と送信音声だけを出しません。拒否の理由は USB と SD に 1 回ずつ記録します。
+1 回の送信は 5 秒を上限に打ち切ります。送信中は受信を止めます(自局の音声を復号しないため)。
 
-> **今は、送信周波数を確定する部分が局に組み込まれていないため、周波数は常に「未確定」で、`TX_ENABLED = True` にしても局本体は送信しません。** 電波を出せるのは、周波数を明示する `tx_demo.py`(下の表)だけです。
+> **送信を伴う試験は、ダミーロードにつないで行ってください。** 空中への送信は、免許と運用の条件を満たしたうえで、自分の判断で行います。
 
-送信の時間は、1 回あたり「波形の長さ + 200 ms」と 5 秒の短い方を上限にしています。止め方、PTT の後始末、ウォッチドッグの設計は [docs/tx-time-limit.md](docs/tx-time-limit.md) にあります。
+### ビーコン
 
-送信を伴う試験は、**ダミーロードにつないで**行ってください。空中への送信は、免許と運用の条件を満たしたうえで、自分で判断して行います。
+送るのは自局の位置ビーコン(Mic-E)です。2D 以上の測位と GNSS の時刻がそろうと送ります。
+
+| 設定 | 動作 |
+|------|------|
+| `BEACON_MODE = "auto"`(既定) | スイッチをオンにして測位がそろうと、最初の 1 回をすぐ送る。その後は、前回の位置から `BEACON_MOVE_M`(10 m)以上動いていれば `BEACON_MOVING_S`(90 秒)ごと、動いていなければ `BEACON_STILL_S`(600 秒)ごと |
+| `BEACON_MODE = "manual"` | 自動では送らず、スマートフォンの指示(`beacon.send`)のときだけ送る |
+
+- スイッチをオフにすると送りません。次にオンにしたときは、またすぐ送ります
+- 自動のビーコンとメッセージは、チャネルが空くのを待ってから送ります(受信音量でスケルチが開いているかを見る。しきい値 `CH_BUSY_DB` はまだ仮の値です)
+- 経路、シンボル、コメント、Mic-E のメッセージは `TX_PATH`、`SYMBOL`、`BEACON_COMMENT`、`BEACON_MESSAGE` で決めます
+- `FX25_TX = True` で FX.25(誤り訂正付き)で送ります。FX.25 に対応しない受信機でも、従来の AX.25 として受かります
+
+### 受信音量の調整
+
+画面の受信音量のメータ(と USB の `rx level` の行)で、無線機の音量を合わせます。目安はピークが -12〜-3 dBFS で、クリップ(ADC の端に当たる)は避けます。
 
 ### 画面
 
-| 画面 | 内容 |
+| 構成 | 内容 |
 |------|------|
-| 320x240(既定。`LCD_PANEL = "st7789_320x240"`) | 上段に局の一覧と最新局の詳細(コールサイン、種別、距離・方位、位置、コメント)。下段に自局の状態(測位、衛星数、時刻、位置、ビーコンの次回、送受信数)、衛星の強度の棒グラフ、小さな地図。地図は局の分布と衛星の空図を自動で切り替えます |
-| 240x135(`LCD_PANEL = "pico_display"`) | 左に一覧、右上に詳細、右下に自局の状態。地図は X ボタンで全画面に切り替えます |
+| 320x240(既定。`LCD_PANEL = "st7789_320x240"`) | 上段に局の一覧と最新局の詳細(コールサイン、種別、距離・方位、位置、コメント)。下段に自局の状態(測位、衛星数、時刻、位置、ビーコンの次回、送受信数)、衛星の強度、小さな地図(局の分布と衛星の空図を自動で切り替え) |
+| 240x135(`LCD_PANEL = "pico_display"`) | 左に一覧、右上に詳細、右下に自局の状態。地図は X ボタンで全画面に切り替え |
 
-右上の丸は測位状態です(1 Hz で点滅)。自局の状態の欄には、SD の状態(`SD:LOG` / `SD:WAIT` / `SD:ERR` / `SD:---`)と、送信中の `[TX]`、受信直後の `[RX]` が出ます。
+- 右上には、測位状態の丸と BLE の状態のアイコンが出ます。自局の状態の欄には、SD の状態(`SD:LOG` / `SD:WAIT` / `SD:ERR` / `SD:---`)と、送信中の `[TX]`、受信直後の `[RX]` が出ます
+- BLE のペアリング中は、6 桁のパスキーを全画面で出します
+- 自局宛のメッセージを受けると、30 秒間、全画面で出します
 
-ボタンは 240x135 の構成だけにあります(`config.BUTTONS` に GPIO 番号を `(A, B, X, Y)` の順で書きます)。
+ボタンは 240x135 の構成だけにあります(`config.BUTTONS` に GPIO 番号を `(A, B, X, Y)` の順で書く)。A / B で一覧の選択を上下、X で地図とメイン画面の切り替え、Y で選択を解除して最新の局の自動表示に戻ります。
 
-| ボタン | 動作 |
-|--------|------|
-| A / B | 一覧の選択を 1 つ上(新しい側)/ 下(古い側)へ |
-| X | 地図とメイン画面の切り替え |
-| Y | 選択を解除して、最新の局を自動表示に戻す |
+### microSD
 
-### microSD の記録
-
-カードを挿すと、GNSS の時刻が分かってから(最大 20 秒待つ)`/sd/log/` に通し番号の 1 組のファイルを作ります。
+カードを挿すと、GNSS の時刻が分かってから(最大 20 秒待つ)記録を始めます。
 
 | ファイル | 内容 |
 |----------|------|
-| `NNNN_aprs.txt` | 受信パケット(TNC2 形式)。自局の送信は `TX `、ドライランは `TX(dry) ` を付ける |
-| `NNNN_nmea.txt` | NMEA の RMC と GGA |
+| `/sd/log/NNNN_aprs.txt` | 受信パケット(TNC2 形式)。自局の送信は `TX `、ドライランは `TX(dry) ` を付ける。起動ごとに通し番号で作る |
+| `/sd/log/NNNN_nmea.txt` | NMEA の RMC と GGA |
+| `/sd/stations.txt` | 受信した局の一覧。次の起動で読み出して表に戻す |
+| `/sd/messages.txt` | APRS メッセージ。次の起動で読み出す |
 
-行は 10 秒ごとにまとめて書きます(電源を切ると最大 10 秒分を失う)。カードを抜くとファイルを閉じ、挿し直すと新しい番号で作ります。書き込みに失敗したら 5 秒後にやり直します。
+ログは 10 秒ごとにまとめて書きます(電源を切ると最大 10 秒分を失います)。カードを抜くとファイルを閉じ、挿し直すと新しい番号で作ります。
 
-### デモ・試験用スクリプト
+### BLE でスマートフォンとつなぐ
 
-`src/` には、局本体とは別に、部品ごとの確認用スクリプトがあります。`python tools/dev.py run src/<名前>.py -t <秒>` で実行します。`release` の ROMFS には入りません。
+Pico 2 W では、BLE(広告名 `PicoAPRS-XXXX`)でスマートフォンの Web アプリ(Android の Chrome、別のリポジトリで開発中)や PC からつなげます。
 
-| スクリプト | 内容 |
-|------------|------|
-| `tx_demo.py` | 試験ビーコンを GP3 から 5 秒おきに 12 回出す。**既定では PTT を入れず、音声だけ**。PC のライン入力につないで Dire Wolf などで復号を確かめる。`config.BENCH_TX_HZ` に周波数を明示したときだけ PTT を入れる(電波が出る) |
-| `rx_loopback.py` | 送信音声を受信側に戻して、送ったフレームが復号できるかを数える |
-| `ui_demo.py` | 試験用の局データで画面を表示する(無線機・GNSS 不要。局はすべて架空) |
-| `gnss_demo.py`、`m10_check.py` | MAX-M10M の通信と測位の確認 |
-| `sdlog_demo.py` | microSD への記録の確認 |
-| `lcd_test.py` | 液晶の向き・色・オフセットの確認 |
-| `fm_if_test.py`、`fm_if_afsk_test.py`、`fm_if_rt_test.py`、`fm_if_pll_test.py` | 455 kHz IF の FM 復調の測定と比較(信号発生器が要るものもある) |
-| `gt505_demo.py` | 旧 GNSS モジュール(GT-505)の確認 |
+- **ペアリング**: 初めてつなぐと、液晶に 6 桁のパスキーが出るので、スマートフォンに入力します。2 回目からは入力は要りません。ペアリングが済んだ接続だけが操作できます
+- **できること**: 状態の表示、受信したパケットの表示、局の一覧の取得、設定の変更(コールサイン、SSID、シンボル、経路、コメント、ビーコンの間隔とモード、`tx_enabled`、FX.25)、今すぐビーコンを送る、APRS メッセージの送受信(相手の確認応答が来るまで送り直し、自局宛には自動で応答)
+- 送信には、BLE からの指示でもビーコンスイッチのオンが必要です。スイッチはスマートフォンから迂回できません
+- 同時につなげるのは 1 台だけで、つながっている間は広告を止めます
+- 仕様は [docs/ble-protocol.md](docs/ble-protocol.md)(英語、Web アプリの開発者向け)です。一部の項目は暫定です
+- PC からは `python tools/ble_cli.py pair`(初回、パスキーは標準入力)、`get`、`stations`、`listen -s 30`、`send` などで試せます。Windows の PC では、通知の受信が途中で止まる既知の問題があります([docs/ble-control.md §7](docs/ble-control.md#7-windows-で通知が止まる問題2026-11-17))。動作の確認には Android(nRF Connect)が確実です
 
----
+### 異常時の動作
 
-## 5. 開発ツール(`tools/dev.py`)
-
-PC 側で動く `mpremote` のラッパーです。実行にタイムアウトを付け、対話モードに入らないようにしてあります。`mpremote` を直接起動すると対話モードに入って固まることがあるので、デバイスの操作はこれを経由してください。
-
-```bash
-python tools/dev.py --help
-```
-
-| コマンド | 内容 |
-|----------|------|
-| `ports` / `info` | 接続中の Pico の列挙 / ファームウェア・メモリ・ストレージ |
-| `run [FILE] -t N` | `src/` をマウントして実行(既定 `src/main.py`)。タイムアウトで終わると終了コード 124 |
-| `exec "CODE" -t N` | コード片の実行(REPL の代わり)。書き込み済みの本体に対しては `--no-mount` |
-| `test [PATTERN] [--host]` | `tests/test_*.py` の実行。`--host` は PC 上、省略すると実機。`test_hw_*` は実機専用 |
-| `lint` | 生成物の確認(`vendor.py --check`)+ ruff + pyright |
-| `check` | `lint` + `test --host` + `test` |
-| `build` | `check` のあと、デモを除いた ROMFS イメージを作る(書き込みなし) |
-| `release` | `build` + ROMFS への書き込み + 起動の確認 |
-| `deploy [--reset]` | `src/` を `.py` のままフラッシュに書く |
-| `romfs-query` / `romfs-build` / `romfs-deploy` | ROMFS 区画の確認 / イメージの作成 / 書き込み |
-| `monitor -s N [--reset]` | シリアル出力を N 秒読む(起動時の挙動の確認) |
-| `ls` / `cat` / `rm-main` / `mip` / `reset` | デバイス上のファイル操作など |
-| `repl` | 人間用の対話 REPL |
-
-複数台つないでいるときは、環境変数 `PICO_PORT` でポートを指定します。
-
-そのほかのツール:
-
-- `python tools/afsk_bench.py -n 200` … 復調器を劣化条件(雑音、ハム、周波数ずれなど)で試すベンチ。PC 上で数分かかります。モデムを変えたら回します
-- `python tools/vendor.py` … サブモジュールのコードを `src/` に生成します(次節)
-
-### トラブルシュート
-
-- **接続できない**: MicroPico、Thonny、シリアルモニタなど、ほかのツールがポートを掴んでいないか確認します。`dev.py ports` で検出の状況を見られます
-- **トレースバックの `File "/remote/station.py"`**: `/remote/` はマウントした `src/` のことです(`/remote/station.py` なら `src/station.py`)。ROMFS から動かしているときは元のパス(`src/xxx.py`)が出るので、手元のソースの該当行を見ます
-- **マウント中のリセット**: `dev.py run/exec` で動かしたプログラムが `machine.reset()` までいくと、その後デバイスが応答しなくなります(USB の抜き差しで戻ります)。再起動を伴う試験は、書き込んだあとに `dev.py exec --no-mount` で行います
-- **起動ループで応答しない**: まず `dev.py rm-main`。それでも駄目なら USB を抜き差しします。最後の手段は BOOTSEL ボタンを押しながら USB を挿し、ファームウェアを書き直すことです
-- **メモリ不足(`MemoryError`)**: 送信波形のバッファ(57.6 KB)など大きな領域を、`station.py` の読み込みの最初に確保しています。ほかのモジュールを先に読み込むとヒープが細切れになって確保に失敗することがあります
+- ファームウェアが止まったときは、ウォッチドッグで再起動します
+- 局が例外で止まると、内容を液晶・USB・SD に出し、待ってから再起動します。続けて失敗すると、待ち時間を 10、20、40 … 秒と延ばします(最大 300 秒)
+- 異常で再起動した直後は、最初のビーコンを 90 秒待ちます(再起動を繰り返して送り続けないように)
+- 起動直後に `boot.py` が PTT を切った状態にします
 
 ---
 
-## 6. ファイル構成
+## 5. 困ったとき
 
-```
-.
-├── src/                    デバイスに載るコード
-│   ├── boot.py             起動直後に PTT を Low にし、ウォッチドッグのフィードを引き継ぐ
-│   ├── main.py             起動時のエントリポイント(station.main())
-│   ├── station.py          局の本体(受信・ビーコン・GNSS・画面・SD を 1 つのループで回す)
-│   ├── config.py           ピン割り当てと動作設定
-│   ├── core/               ハードに依存しない処理(ビーコンの時機、送信ゲート、局の表、距離計算、ログ)
-│   ├── hw/                 ハード依存の処理(AFSK の送受信、IF 復調、GNSS、液晶、SD、ウォッチドッグ)
-│   ├── aprs/               APRS の解析と Mic-E のエンコード
-│   ├── modem/              AFSK 復調器
-│   ├── ui/                 画面の描画とボタン操作
-│   ├── tnc/                [生成物] micro-aprs 由来の AX.25 / HDLC / AFSK 変調
-│   ├── maxm10/             [生成物] MAX-M10 のドライバ
-│   ├── micropyGPS.py       [生成物] NMEA パーサ
-│   └── *_demo.py, *_test.py  部品ごとの確認用スクリプト(上の表)
-├── tests/                  テスト(_runner.py、test_*.py)。実機でも PC でも動く
-├── tools/
-│   ├── dev.py              ビルド・書き込み・実行用の CLI
-│   ├── vendor.py           third_party/ から src/ の生成物を作る
-│   ├── bootstrap.py        開発環境の初回セットアップ
-│   ├── afsk_bench.py       復調器のベンチ
-│   └── config_local.example.py  自局設定の例
-├── docs/tx-time-limit.md   送信時間の制限と PTT の後始末の設計
-├── hw/                     試作基板のネットリスト
-├── third_party/            サブモジュール(下記)
-├── typings/                MicroPython の型スタブ(bootstrap.py が生成)
-└── LICENSE                 GPL-3.0
-```
+- **接続できない**: MicroPico、Thonny、シリアルモニタなど、ほかのツールがポートを掴んでいないか確かめます。`dev.py ports` で検出の状況が見られます
+- **応答しない・固まった**: USB を抜き差しします。起動を繰り返して応答しないときは `dev.py rm-main`(自動起動を止める)を試します
+- **最後の手段**: BOOTSEL ボタンを押しながら USB を挿し、ファームウェアを書き直します
+- **ペアリングし直したい**: スマートフォン側で本機の登録を削除してから、つなぎ直します。本機側の鍵を消す方法は [docs/development.md](docs/development.md) にあります
 
-## 7. サブモジュールとライセンス
+---
 
-`src/` の次のファイルは、`third_party/` のサブモジュールから `tools/vendor.py` が生成したものです。**手で編集しないでください**。変更はサブモジュール側でコミットしてから `python tools/vendor.py` で再生成します(試行錯誤中は `--dirty` で未コミットの変更も取り込めます)。各ファイルの先頭に出典のリポジトリとコミットが入ります。
+## 6. 開発する人へ
 
-| 生成先 | サブモジュール | ライセンス |
-|--------|----------------|------------|
-| `src/tnc/` | [klaNath/micro-aprs](https://github.com/klaNath/micro-aprs) の `pico2-subset` ブランチ(本家は [stephanelsmith/micro-aprs](https://github.com/stephanelsmith/micro-aprs) のフォーク) | GPL-3.0 |
+開発環境、開発の手順、テスト、デバッグ、ディレクトリ構成、設計メモの一覧は [docs/development.md](docs/development.md) にまとめています。
+
+## 7. ライセンス
+
+micro-aprs を含むため、このプロジェクト全体のライセンスは **GPL-3.0** です([LICENSE](LICENSE))。
+
+次のコードは、サブモジュールから生成したものです。
+
+| 生成先 | 出典 | ライセンス |
+|--------|------|------------|
+| `src/tnc/` | [klaNath/micro-aprs](https://github.com/klaNath/micro-aprs) の `pico2-subset` ブランチ(本家 [stephanelsmith/micro-aprs](https://github.com/stephanelsmith/micro-aprs) のフォーク) | GPL-3.0 |
 | `src/maxm10/` | [klaNath/micropython-maxm10](https://github.com/klaNath/micropython-maxm10) の `pico2-aprs` ブランチ | MIT |
 | `src/micropyGPS.py` | [klaNath/micropyGPS](https://github.com/klaNath/micropyGPS) の `pico2-aprs` ブランチ | MIT |
-
-micro-aprs を含むため、このプロジェクト全体のライセンスは **GPL-3.0** です。

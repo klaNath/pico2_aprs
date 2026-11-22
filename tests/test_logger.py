@@ -38,10 +38,15 @@ class FakeFs:
         self.names = names  # None = ディレクトリが無い
         self.files = {}
         self.fail = False
+        self.opened = []
 
     def open(self, path, mode):
-        assert mode == "wb"
+        assert mode in ("wb", "ab")
+        old = self.files.get(path)
         f = self.files[path] = FakeFile(self, path)
+        if mode == "ab" and old is not None:
+            f.data = f.flushed = old.flushed  # 書けていた分に足す
+        self.opened.append((path, mode))
         return f
 
     def listdir(self, path):
@@ -118,3 +123,48 @@ def test_write_error_closes_and_keeps_buffer():
     fs.fail = False
     assert lg.start("/sd/log", UTC) == 1  # 偽の listdir は空のまま
     assert fs.files["/sd/log/0001_aprs.txt"].flushed.endswith(b"JA1AAA>APRS:>x\n")
+
+
+def test_resume_appends_to_the_same_files():
+    # SD の失敗のあとのやり直し(hw.sdlog)では、新しい番号を作らず同じファイルに足す
+    fs = FakeFs(["0004_aprs.txt"])
+    lg = make(fs)
+    assert lg.start("/sd/log", UTC) == 5
+    lg.packet("JA1AAA>APRS:>one", utc_s=UTC)
+    lg.flush()
+    lg.abandon()
+    fs.names = None  # 番号を探しに行けば OSError(探さないこと)
+    lg.packet("JA1AAA>APRS:>two", utc_s=UTC)
+    assert lg.start("/sd/log", UTC + 60, resume=5) == 5
+    assert fs.opened[-2:] == [("/sd/log/0005_aprs.txt", "ab"), ("/sd/log/0005_nmea.txt", "ab")]
+    data = fs.files["/sd/log/0005_aprs.txt"].flushed
+    assert data.startswith(b"# Q1TEST-7 aprs log 0005 started ")
+    assert b">one\n# Q1TEST-7 aprs log 0005 resumed 2026-10-24T23:49:33Z\n" in data
+    assert data.endswith(b">two\n")
+
+
+def test_start_restarts_the_flush_clock():
+    # カードが無かった間の古い時刻のままだと、ticks の一周で次の書き込みが何日も遅れる
+    fs = FakeFs([])
+    lg = make(fs)
+    lg._last_flush = time.ticks_add(time.ticks_ms(), -100_000)
+    lg.start("/sd/log", UTC)
+    assert time.ticks_diff(time.ticks_ms(), lg._last_flush) < 1000
+
+
+def test_failed_flush_recounts_the_buffer():
+    # 書けなかったあとも、残りの量で上限を数える(上限に張り付いて新しい行を捨て続けない)
+    fs = FakeFs([])
+    lg = make(fs, max_bytes=200)
+    lg.start("/sd/log", UTC)
+    lg.packet("JA1AAA>APRS:>x", utc_s=UTC)
+    fs.fail = True
+    try:
+        lg.flush()
+        raise AssertionError("OSError expected")
+    except OSError:
+        pass
+    assert lg._bytes == sum(len(d) for b in lg._buf for d in b)
+    before = lg.dropped
+    lg.packet("JA1AAA>APRS:>y", utc_s=UTC)
+    assert lg.dropped == before

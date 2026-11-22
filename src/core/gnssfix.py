@@ -7,7 +7,7 @@
 
 import time
 
-from core import geo
+from core import geo, ticks
 
 RTC_SYNC_MS = 60 * 60 * 1000  # 最初に合わせたあと、合わせ直す間隔
 # Treat as no fix if no valid fix sentence arrives within this time (so a stale position is
@@ -92,6 +92,11 @@ class RtcSync:
     @property
     def synced(self):
         return self.last_ms is not None
+
+    def sweep(self, now_ms):
+        """古い時刻を片付ける(局のループから定期的に。core.ticks)。測位が何日も無いと、
+        ticks の一周で「合わせたばかり」に見えて、測位が戻っても何日も合わせない"""
+        self.last_ms = ticks.cap(now_ms, self.last_ms)
 
     def on_rmc(self, gps, now_ms=None):
         """RMC を解析した直後に呼ぶ。合わせたら True"""

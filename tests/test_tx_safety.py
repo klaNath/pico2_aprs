@@ -1349,3 +1349,93 @@ def test_longest_message_fits_tx_buffer_with_fx25():
         print("[test] longest message %d ms (FX.25)" % ms)
     finally:
         st.close()
+
+
+def _days_ago(now, days):
+    """now の days 日前の ticks_ms(実機の ticks_add は ±2^29 ms までしか受けないので刻む)"""
+    import time
+
+    t = now
+    for _ in range(days):
+        t = time.ticks_add(t, -86_400_000)
+    return t
+
+
+def test_station_still_transmits_after_a_week_of_listening():
+    # 受信だけで 7 日動かしたあと: 前回の送信が ticks の一周で「ついさっき」に見えて、
+    # 自動の送信(_channel_ok)も BLE の beacon.send(too_soon)も止まっていた
+    if not _fake_hw.install():
+        return
+    import time
+
+    keep = _manual()
+    try:
+        st = _station(gate_on=True)
+        now = time.ticks_ms()
+        t = _days_ago(now, 7)
+        st._tx_ms = st._air_ms = t
+        assert time.ticks_diff(now, t) < 0  # 片付けなければ未来に見える
+        for _ in range(7 * 24):  # 局のループの _sweep(ここでは 1 時間ごと)で now まで進める
+            t = time.ticks_add(t, 3600_000)
+            st._sweep(t)
+        assert st._channel_ok(time.ticks_ms())
+        assert st.send_now() == {"dry": False}
+        st.close()
+    finally:
+        import config
+
+        config.BEACON_MODE = keep
+
+
+class _FakeBle:
+    authenticated = False
+    conn = None
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.stopped = False
+
+    def poll(self, now):
+        if self.fail:
+            raise ValueError("boom")
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_ble_error_stops_ble_and_restarts_it_later():
+    # BLE の処理のエラーで局は止めない。BLE は止めて、待ってから起動し直す(失敗のたびに待ちを倍に)
+    if not _fake_hw.install():
+        return
+    import time
+
+    import upkeep
+
+    st = _station(gate_on=False)
+    bad = _FakeBle(fail=True)
+    st.ble = bad
+    started = []
+
+    def start_ble():
+        started.append(1)
+        st.ble = _FakeBle(fail=len(started) == 1)
+
+    st.start_ble = start_ble
+    t0 = time.ticks_ms()
+    st.step(t0)
+    assert st.ble is None and bad.stopped and started == []
+    st.step(time.ticks_add(t0, upkeep.BLE_RETRY_MS - 1))
+    assert started == []
+    t1 = time.ticks_add(t0, upkeep.BLE_RETRY_MS)
+    st.step(t1)
+    assert started == [1] and st.ble is not None
+    st.step(time.ticks_add(t1, 1))  # 起動し直した BLE もエラー: 次は倍の待ち
+    assert st.ble is None
+    t2 = time.ticks_add(t1, 1 + 2 * upkeep.BLE_RETRY_MS)
+    st.step(time.ticks_add(t2, -1))
+    assert started == [1]
+    st.step(t2)
+    assert started == [1, 1] and st.ble is not None
+    st.step(time.ticks_add(t2, 1))
+    assert st.ble is not None  # 今度は動き続ける
+    st.close()

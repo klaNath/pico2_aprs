@@ -20,6 +20,7 @@ import os
 import time
 
 from aprs.packet import parse_frame
+from core import ticks
 from core.logger import iso_utc
 from tnc.ax25 import Frame
 
@@ -132,6 +133,11 @@ class StationFile:
         if self._saved_ms is not None and time.ticks_diff(now_ms, self._saved_ms) < self.save_ms:
             return
         self.save(stations, utc_s, now_ms)
+
+    def sweep(self, now_ms):
+        """古い保存の時刻を片付ける(局のループから定期的に。core.ticks)。何日も変化が無いと、
+        ticks の一周で「保存したばかり」に見えて、次の変化が何日も保存されない"""
+        self._saved_ms = ticks.cap(now_ms, self._saved_ms)
 
     def load(self, stations, utc_s, now_ms):
         """ファイルの局を表に加える。加えた数を返す。ファイルが無ければ 0"""
