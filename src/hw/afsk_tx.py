@@ -139,7 +139,9 @@ class AfskTx:
         if samples is None:
             samples = self.raw
         if n < 0:
-            n = len(samples)
+            n = len(samples) // 2  # samples は 16 ビットのサンプルのバイト列
+        if n > self.nmax:
+            raise ValueError("%d samples > buffer %d" % (n, self.nmax))
         self.gate.check()  # 条件がそろっていなければ TxRefused(PWM に触る前に)
         self._write_cc(self._mid)
         time.sleep_ms(self.settle_ms)

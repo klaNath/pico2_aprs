@@ -611,6 +611,9 @@ def run(duration_ms=None, wdt=None):
         # 超えうるので、BLE の前に張り直してフィードする
         station.wdt.arm(watchdog.STARTUP_MS)
         station.wdt.feed()
+        if station.wdt.scope_ok is False:  # リセットで PTT の出力が戻らない設定: 送らない
+            station.gate.fault = "watchdog reset scope"
+            print("[station] PSM_WDSEL lacks RESETS/SIO: transmit refused")
         station.start_ble()
         station.wdt.arm(watchdog.LOOP_MS)
         t0 = time.ticks_ms()

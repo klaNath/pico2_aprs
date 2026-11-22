@@ -143,7 +143,7 @@ def install():
         UART=Any,
         ADC=lambda *a: types.SimpleNamespace(read_u16=lambda: 0),
         RTC=Any,
-        mem32=Mem32(),
+        mem32=Mem32({0x40018008: 0x01FFFFF3}),  # PSM_WDSEL: 実機で machine.WDT を入れた後の値
         freq=lambda: 150_000_000,
         reset=lambda: None,
         WDT=WDT,

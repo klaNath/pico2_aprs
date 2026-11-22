@@ -568,6 +568,41 @@ def test_gate_clock_failure_never_keys_ptt():
     assert "ptt_on" not in log and not gate.keyed and log[-1] == "clk_off"
 
 
+def test_gate_tx_off_error_of_any_kind_refuses_later():
+    # tx_off の例外が OSError でなくても後始末を止めず、PTT を切り、以後は送らない
+    from core.txgate import TxGate
+
+    log = []
+    freq = LogFreq(log)
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=freq)
+    gate.key()
+
+    def broken_off():
+        log.append("clk_off")
+        raise ValueError("driver bug")
+
+    freq.tx_off = broken_off
+    gate.unkey()
+    assert log[-2:] == ["ptt_off", "clk_off"] and not gate.keyed
+    assert gate.refuse_reason() == "TX clock off failed"
+
+
+def test_gate_fault_refuses():
+    from core.txgate import TxGate, TxRefused
+
+    log = []
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log))
+    gate.fault = "watchdog reset scope"
+    assert gate.refuse_reason() == "watchdog reset scope"
+    del log[:]
+    try:
+        gate.key()
+        raise AssertionError("TxRefused expected")
+    except TxRefused:
+        pass
+    assert "ptt_on" not in log
+
+
 def test_unset_freq_is_not_ready():
     from core.txgate import UnsetFreq
 
@@ -709,6 +744,25 @@ def _armed_station(gate_on=True):
     st = _station(gate_on)
     st.wdt = wd
     return st, wd, _fake_hw.WDT.instances[-1]
+
+
+def test_watchdog_reads_back_the_reset_scope():
+    if not _fake_hw.install():
+        return
+    import machine
+
+    from hw import watchdog
+
+    wd = watchdog.Watchdog()
+    wd.arm(watchdog.LOOP_MS)
+    assert wd.scope_ok is True  # 実機と同じ値(_fake_hw)
+    keep = machine.mem32[watchdog.PSM_WDSEL]
+    machine.mem32[watchdog.PSM_WDSEL] = 0x01FFFFF3 & ~0x00200000  # SIO が入らない設定
+    try:
+        wd.arm(watchdog.LOOP_MS)
+        assert wd.scope_ok is False
+    finally:
+        machine.mem32[watchdog.PSM_WDSEL] = keep
 
 
 def test_step_feeds_the_watchdog():

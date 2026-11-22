@@ -52,7 +52,7 @@
 
 ### 実機で確かめたこと(2026-11-14、Pico 2 W、MicroPython v1.29.0)
 
-- `PSM_WDSEL` は既定で 0。`machine.WDT` を有効にすると `0x01fffff3` になった。bit2 と bit3 だけが 0 で(データシートの PSM の並びでは CLOCKS と RESETS。この対応は読み取りによる推定)、`RESETS_WDSEL` は 0 のまま。つまり、リセット制御は残るので IO のパッドの設定(機能の選択、プル)も残り、SIO(GPIO の出力値と出力許可)はリセットされる。GP2 は出力が Low に戻るが、出力許可も切れるので、**パッドは入力(プルがなければ浮く)になる見込み**。外付けのプルダウンが要る(下の「対策」)
+- `PSM_WDSEL` は既定で 0。`machine.WDT` を有効にすると `0x01fffff3` になった。bit2 と bit3 だけが 0。pico-sdk の `hardware/regs/psm.h` では bit2 = ROSC、bit3 = XOSC で、`watchdog_enable` は `PSM_WDSEL_BITS & ~(ROSC | XOSC)` を立てる(`watchdog.c`)。bit4 = RESETS、bit5 = CLOCKS、bit21 = SIO は立っている(2026-11-23 に訂正。前は bit2・bit3 を CLOCKS・RESETS と読み違え、パッドの設定が残ると推定していた)。RESETS が入るので、リセット制御ごと周辺(IO_BANK0・PADS)がリセットされ、GP2 のパッドは既定(出力なし、プルダウン)に戻る見込み。`RESETS_WDSEL` が 0 なのはこの経路では関係しない。局は本物の WDT を入れたあと `PSM_WDSEL` を読み戻し、RESETS と SIO がそろっていなければ送信を拒否する(`hw/watchdog.wdsel_ok`)。送信部の TX_EN の外付けのプルダウンは、念のため残す
 - `reset_cause()` は 3(`WDT_RESET`)、`WATCHDOG REASON` は 1(タイムアウト)。スクラッチレジスタは残る
 - `WDT(timeout=…)` は 16000 まで受け付けた(8388 を超えても可)。有効にしたあとに作り直して時間を設定し直せた
 - 起動中の測定: `import station`(マウント、コンパイル込み)21.8 秒、`Station()` 0.3 秒、`start()` 0.09 秒。ROMFS では import はずっと短い
@@ -65,7 +65,7 @@
 - RP2350 のパッドが既定(Hi-Z、入力無効、プルダウン)に戻るのは、電源投入、ブラウンアウト、RUN ピン、SWD のリセット。ウォッチドッグのリセットの範囲は `PSM_WDSEL` と `RESETS_WDSEL` で決まり、既定値はすべて 0(RP2350 データシート §9.7、§12.9)
 - pico-sdk の `watchdog_enable` はリセットコントローラごとリセットする設定にするので、GP2 の出力は切れる見込み。MicroPython の `machine.WDT` が同じ関数を使うかは未確認
 - パッドの分離ラッチで、リセット前の High がラッチされる可能性も否定できない
-- 対策: `boot.py` の先頭で GP2 を Low にする。ウォッチドッグを有効にした後に `PSM_WDSEL` を読み戻し、想定と違えば送信を拒否する。送信部の TX_EN には外付けの GND への経路(プルダウン)を残す
+- 対策: `boot.py` の先頭で GP2 を送信しない側にする(設定が読めなければ入力にする)。ウォッチドッグを有効にした後に `PSM_WDSEL` を読み戻し、想定と違えば送信を拒否する(実装済み、2026-11-23)。送信部の TX_EN には外付けの GND への経路(プルダウン)を残す
 - 実機での確認(無線機ボードを外して行う): `PSM_WDSEL`、`RESETS_WDSEL`、`CHIP_ID` を読む。GP2 を High にしてウォッチドッグを発火させ、Low になるまでの時間をオシロで測る
 
 ### 再起動の扱い
