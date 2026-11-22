@@ -36,7 +36,7 @@ index dd416fcbf..5799395dc 100644
 +    )
 +endif()
 diff --git a/extmod/btstack/modbluetooth_btstack.c b/extmod/btstack/modbluetooth_btstack.c
-index 7694a1874..a4a1775dc 100644
+index 7694a1874..d07314318 100644
 --- a/extmod/btstack/modbluetooth_btstack.c
 +++ b/extmod/btstack/modbluetooth_btstack.c
 @@ -56,6 +56,60 @@ volatile int mp_bluetooth_btstack_state = MP_BLUETOOTH_BTSTACK_STATE_OFF;
@@ -269,7 +269,21 @@ index 7694a1874..a4a1775dc 100644
  }
  
  void mp_bluetooth_set_io_capability(uint8_t capability) {
-@@ -1267,7 +1422,30 @@ int mp_bluetooth_gap_pair(uint16_t conn_handle) {
+@@ -1190,7 +1345,12 @@ int mp_bluetooth_gatts_notify_indicate(uint16_t conn_handle, uint16_t value_hand
+     }
+     MICROPY_PY_BLUETOOTH_EXIT
+ 
+-    if (err == BTSTACK_ACL_BUFFERS_FULL || err == ATT_HANDLE_VALUE_INDICATION_IN_PROGRESS) {
++    // A notification that does not fit in the ACL buffers is not queued: return ENOMEM so that
++    // the application can wait and send it again. Queuing it returned success, so the
++    // application never saw that the link was full, and every further notify allocated another
++    // copy (heap growth while a client stops reading). Indications are still queued as upstream.
++    if (err == ATT_HANDLE_VALUE_INDICATION_IN_PROGRESS
++        || (err == BTSTACK_ACL_BUFFERS_FULL && gatts_op == MP_BLUETOOTH_GATTS_OP_INDICATE)) {
+         DEBUG_printf("mp_bluetooth_gatts_notify_indicate: ACL buffer full / indication in progress, scheduling callback\n");
+ 
+         // Copy the value and ask btstack to let us know when it can be sent.
+@@ -1267,7 +1427,30 @@ int mp_bluetooth_gap_pair(uint16_t conn_handle) {
  
  int mp_bluetooth_gap_passkey(uint16_t conn_handle, uint8_t action, mp_int_t passkey) {
      DEBUG_printf("mp_bluetooth_gap_passkey: conn_handle=%d action=%d passkey=%d\n", conn_handle, action, (int)passkey);
