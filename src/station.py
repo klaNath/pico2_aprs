@@ -55,6 +55,10 @@ _UI_SCRATCH = bytearray(24 * 1024)  # 画面の帯描画の作業領域
 # 最大の連続領域が約 5 KB しか残らず、GNSS の初期化のあとでスタックが取れなかった(MemoryError、
 # メッセージの機能を足したとき。2026-11-20)
 _CORE1_RESERVE: "bytearray | None" = bytearray(8 * 1024)
+# Station() の作成(受信のデフレーマ、画面、SD など)の場所: Station.__init__ の最初で手放す。
+# マウントでは読み込みの後の最大の連続領域が 4〜8 KB しかなく、モジュールが少し大きくなるだけで
+# Receiver の作成が MemoryError になった(2026-11-22)
+_INIT_RESERVE: "bytearray | None" = bytearray(16 * 1024)
 
 import sys
 import time
@@ -89,7 +93,7 @@ from ui.views import Status
 LOOP_MS = 20
 RX_RECENT_MS = 2000  # 画面の [RX] を出しておく時間
 LED_RX_MS = 100
-REPORT_MS = 10_000  # USB に状態を出す間隔
+REPORT_MS = 10_000  # USB に状態を出す間隔(古い ticks_ms の片付け upkeep.sweep も同じ間隔)
 FAIL_WINDOW_MS = 60_000  # 起動からこの時間内の失敗は「続けて失敗」と数える
 RESTART_S = 10  # 試験で短くできるよう、ここで持つ(hw.restart.wait_s に渡す)
 _gate = None  # main() の最後の砦で PTT を切るためのゲート(Station が作る)
@@ -109,7 +113,9 @@ class Station:
         反映する"""
         # 送信波形のバッファは import の時に確保済み(_TX_RAW)。
         # PTT は送信しない側、GP3 はデューティ 0 にしておく
-        global _gate
+        global _gate, _INIT_RESERVE
+        _INIT_RESERVE = None
+        gc.collect()
         self.wdt = wdt if wdt is not None else watchdog.Watchdog(enabled=False)
         self.gate = _gate = txctl.tnc_gate()
         self.tx = AfskTx(config.PIN_AFSK_OUT, self.gate, config.FS, config.PWM_TOP,
@@ -162,6 +168,7 @@ class Station:
         self._tx_ms = None  # 最後にビーコンを作った ticks_ms(dry run を含む)
         self._air_ms = None  # 最後に電波を出し終えた ticks_ms(ビーコン・メッセージ・ack)
         self._fatal = None  # send_now() の送信中の例外(step() が投げ直す)
+        self._ble_retry = None  # upkeep.BleRetry(BLE がエラーで止まってから作る)
         self.status.beacon_mode = config.BEACON_MODE
 
     def start_ble(self):
@@ -288,10 +295,16 @@ class Station:
         if self.ble is not None:
             try:
                 self.ble.poll(now)
-            except Exception as e:  # BLE の不具合で局を止めない: BLE を止めて続ける
+            except Exception as e:  # BLE の不具合で局を止めない: BLE を止めて、あとで起動し直す
                 sys.print_exception(e)
-                print("[ble] stopped after an error")
-                self._stop_ble()
+                import upkeep
+
+                upkeep.ble_failed(self, now)
+        elif self._ble_retry is not None:
+            import upkeep
+
+            if upkeep.restart_due(self, now):
+                upkeep.restart_ble(self)
         if self._fatal is not None:  # beacon.send の送信中の例外(自動の送出と同じく局を止める)
             e, self._fatal = self._fatal, None
             raise e
@@ -309,7 +322,13 @@ class Station:
         self.ui.poll(now)
         if time.ticks_diff(now, self._report_ms) >= REPORT_MS:
             self._report_ms = now
+            self._sweep(now)
             self._report()
+
+    def _sweep(self, now):
+        import upkeep  # 起動の後に読む(マウント中の起動はヒープに余裕がない。upkeep の説明)
+
+        upkeep.sweep(self, now)
 
     # ---- 受信
     def _receive(self, now):

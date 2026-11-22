@@ -58,6 +58,12 @@ def main(pattern="", host=False):
                 passed += 1
                 dt = time.ticks_diff(time.ticks_ms(), t0)
                 print("PASS", modname + "." + name, "(%d ms)" % dt)
+        # 済んだテストのモジュール(と、それが import した別のテストのモジュール)を手放す。
+        # 残すと実機ではヒープが細切れになり、後のテストの大きな確保が MemoryError になる。
+        # src のモジュールは残す(import し直すと、マウント越しのコンパイルで遅くなる)
+        mod = fn = None
+        for m in [m for m in sys.modules if m.startswith("test_")]:
+            del sys.modules[m]
     gc.collect()
     if not host:
         print("mem_free:", gc.mem_free())

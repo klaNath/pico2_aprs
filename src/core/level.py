@@ -13,6 +13,8 @@ APRS は短い送信が時々来るだけで、スケルチが閉じるとほぼ
 import math
 import time
 
+from core import ticks
+
 FULL = 2048  # ADC の満振幅(12 bit、中点から)
 HOLD_MS = 3000
 TAIL_GUARD_MS = 1200  # 復号の後、ピークを更新しない時間
@@ -147,6 +149,13 @@ class Channel:
         t = time.ticks_add(now, self.idle_ms + self.rand(self.slot_ms))
         if self._clear_at is None or time.ticks_diff(t, self._clear_at) > 0:
             self._clear_at = t
+
+    def sweep(self, now):
+        """古い時刻を片付ける(局のループから定期的に。core.ticks)。スケルチが何日も開いたまま、
+        または受信音量を見ない(update が来ない)間に、時刻が古くなって判定が逆にならないように"""
+        self._busy_since = ticks.cap(now, self._busy_since)
+        self._below_since = ticks.cap(now, self._below_since)
+        self._clear_at = ticks.passed(now, self._clear_at)
 
     def stuck(self, now):
         """使用中が busy_max_ms 以上続いている(スケルチが開きっぱなしとみなす)"""

@@ -41,6 +41,9 @@ def install_shims() -> None:
         return ((time.perf_counter_ns() - t0) // 1_000) & (period - 1)
 
     def ticks_add(t: int, d: int) -> int:
+        # 実機(MicroPython)と同じく、半周を超える差は受けない(長い時間を一度に足す誤りを PC でも見つける)
+        if not -period // 2 <= d < period // 2:
+            raise OverflowError("ticks interval overflow")
         return (t + d) & (period - 1)
 
     def ticks_diff(a: int, b: int) -> int:
@@ -54,6 +57,10 @@ def install_shims() -> None:
         ("sleep_ms", lambda ms: time.sleep(ms / 1000)),
     ]:
         setattr(time, name, fn)
+    import gc
+
+    if not hasattr(gc, "mem_free"):  # 局の状態の表示(Station._report)が使う
+        gc.mem_free = lambda: 0  # type: ignore[attr-defined]
     sys.print_exception = lambda e, f=None: traceback.print_exception(e, file=f or sys.stdout)  # type: ignore[attr-defined]
 
 

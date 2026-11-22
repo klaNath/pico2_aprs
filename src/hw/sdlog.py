@@ -6,7 +6,9 @@
 poll() を Core0 のループから呼ぶ。挿入を 0.5 秒続けて検出し、GNSS の時刻が分かったら
 (最大 20 秒待つ)マウントして新しい番号のファイルを開き、抜かれたらファイルを捨てて
 マウントを外す。
-マウントや書き込みに失敗したら RETRY_MS 後にやり直す。
+マウントや書き込みに失敗したら RETRY_MS 後にやり直す。失敗が続くと間隔を倍にしていき(最長
+RETRY_MAX_MS)、やり直しでは同じ番号のファイルに追記する(満杯などで直らないカードで、ファイルを
+作り続けたり USB への表示を出し続けたりしない)。カードを抜くと最初に戻る。
 電源投入後の最初の初期化は失敗するカードがある(この基板の 32 GB で確認)ので、初期化は 3 回まで試す。
 stations(core.stations.Stations)を渡すと、受信した局の表を STATIONS_FILE に保存し、起動後の
 最初のマウントで読み出して表に加える(core.stationfile。GNSS の時刻が分かってから)。
@@ -29,6 +31,7 @@ MESSAGES_FILE = MOUNT + "/messages.txt"
 DEBOUNCE_MS = 500
 TIME_WAIT_MS = 20_000  # 見出しに時刻を書くため、GNSS の時刻を最大これだけ待ってから開く
 RETRY_MS = 5000
+RETRY_MAX_MS = 300_000  # やり直しの間隔の上限。この間マウントが続いたら間隔を RETRY_MS に戻す
 SD_BAUD = 20_000_000
 
 
@@ -50,8 +53,11 @@ class SdLog:
         self.mounted = False
         # 表示用: 'no card' / 'wait'(挿入済みで開く前)/ 'log 0001' / 'error'(やり直し待ち)
         self.state = "no card"
-        self._det_since = None  # 挿入を検出し始めた ticks_ms
+        self._det_since = None  # 挿入を検出し始めた ticks_ms(マウントしていない間だけ)
         self._retry_at = None
+        self._retry_ms = RETRY_MS  # 次に失敗したときの待ち(失敗のたびに倍)
+        self._mounted_ms = time.ticks_ms()  # マウントした ticks_ms
+        self._resume = None  # このカードで書いているログの番号(失敗のあとのやり直しでは追記する)
 
     def inserted(self):
         return self.det.value() == 0
@@ -69,14 +75,18 @@ class SdLog:
         now = time.ticks_ms() if now_ms is None else now_ms
         if not self.inserted():
             self._det_since = None
+            # 別のカードかもしれない: 新しい番号で始め、やり直しの待ちも最初に戻す
+            self._retry_at = None
+            self._retry_ms = RETRY_MS
+            self._resume = None
             if self.mounted:
                 self.log("[sd] card removed")
                 self._unmount(flush=False)
             self.state = "no card"
             return
-        if self._det_since is None:
-            self._det_since = now
         if not self.mounted:
+            if self._det_since is None:
+                self._det_since = now
             if self.state != "error":
                 self.state = "wait"
             if time.ticks_diff(now, self._det_since) < DEBOUNCE_MS:
@@ -87,6 +97,9 @@ class SdLog:
                 return  # 待つ間の行は Logger にたまる
             self._mount(utc_s, now)
             return
+        if (self._retry_ms != RETRY_MS
+                and time.ticks_diff(now, self._mounted_ms) >= RETRY_MAX_MS):
+            self._retry_ms = RETRY_MS  # しばらく失敗しなかった: 待ちを最初に戻す
         try:
             self.logger.poll(now)
         except OSError as e:
@@ -125,19 +138,32 @@ class SdLog:
                     time.sleep_ms(50)
             vfs.mount(vfs.VfsFat(sd), MOUNT)  # pyright: ignore[reportArgumentType]
             self.mounted = True
-            seq = self.logger.start(LOG_DIR, utc_s)
+            seq = self.logger.start(LOG_DIR, utc_s, resume=self._resume)
         except OSError as e:
             self._fail("mount", e, now)
             return
         self._retry_at = None
+        self._resume = seq
+        self._det_since = None  # マウント中は使わない(何日も持つと ticks の一周で逆になる)
+        self._mounted_ms = now
         self.state = "log %04d" % seq
         self.log("[sd] logging to %s/%04d_*.txt" % (LOG_DIR, seq))
 
     def _fail(self, what, e, now):
-        self.log("[sd] %s failed: %r" % (what, e))
+        wait = self._retry_ms
+        self._retry_ms = min(wait * 2, RETRY_MAX_MS)
+        self.log("[sd] %s failed: %r, retry in %d s" % (what, e, wait // 1000))
         self._unmount(flush=False)
         self.state = "error"
-        self._retry_at = time.ticks_add(now, RETRY_MS)
+        self._retry_at = time.ticks_add(now, wait)
+
+    def sweep(self, now):
+        """古い時刻を片付ける(局のループから定期的に。core.ticks)"""
+        self.logger.sweep(now)
+        if self.stfile is not None:
+            self.stfile.sweep(now)
+        if self.msgfile is not None:
+            self.msgfile.sweep(now)
 
     def _unmount(self, flush=True):
         if flush:
