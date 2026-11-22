@@ -443,6 +443,16 @@ def _two(left, right, cols):
     return left + " " * max(1, cols - len(left) - len(right)) + right
 
 
+def _counts(status, width):
+    """受信数・送信数。width に入らなければ空白を詰める(RX が 4 桁になると TX が消えていた)"""
+    rx, tx = status.rx_count, status.tx_count
+    for fmt in ("RX %d TX %d", "RX%d TX%d", "R%d T%d", "%d/%d"):
+        s = fmt % (rx, tx)
+        if len(s) <= width:
+            return s
+    return s
+
+
 def status_lines(status, cols, rows=4):
     """自局の状態 -> [(文字列, 色), ...]
 
@@ -471,8 +481,7 @@ def status_lines(status, cols, rows=4):
         tl = t if status.sd is not None else t + " JST"
         lines.append((_two(tl, grid, cols), WHITE if status.utc_s is not None else GRAY))
         lines.append((pos, pos_color))
-        lines.append((_two(bcn, "RX %d TX %d" % (status.rx_count, status.tx_count), cols),
-                      bcn_color))
+        lines.append((_two(bcn, _counts(status, cols - len(bcn) - 1), cols), bcn_color))
         # 5 行目: 自局のコールサイン-SSID(右にメッセージの印)
         m = msg_tag(status)
         lines.append((_two(status.callsign or "", m, cols) if m else status.callsign or "", CYAN))

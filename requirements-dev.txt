@@ -1,5 +1,6 @@
 # ホスト(PC)側の開発ツール。デバイスには入りません。
-mpremote>=1.28
+# dev.py が非公開の API(SerialTransport、mount の内部)を使うので、確かめた版までに留める
+mpremote>=1.28,<1.30
 # .mpy のバイトコード版はファームウェアに合わせる(dev.py romfs-build / romfs-deploy が使う)
 mpy-cross==1.29.*
 ruff>=0.6

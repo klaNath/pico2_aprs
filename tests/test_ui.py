@@ -95,6 +95,14 @@ def test_status_lines_wide():
     assert [s for s, _ in status_lines(st, 25, 13)][3] == "BCN MAN      RX 123 TX 45"
     st.beacon_on = False
     assert [s for s, _ in status_lines(st, 25, 13)][3].startswith("BCN OFF")
+    # 受信数が 4 桁になっても送信数を消さない(空白を詰める)
+    st = full_status()
+    st.rx_count, st.tx_count = 1234, 56
+    assert [s for s, _ in status_lines(st, 24, 13)][3] == "BCN ON 9:59  RX1234 TX56"
+    st.next_beacon_s = 7199  # 停止中の間隔の上限(2 時間)
+    assert [s for s, _ in status_lines(st, 24, 13)][3] == "BCN ON 119:59  R1234 T56"
+    st.rx_count, st.tx_count = 123456, 789
+    assert [s for s, _ in status_lines(st, 24, 13)][3] == "BCN ON 119:59 123456/789"
 
 
 def test_status_lines_compact():

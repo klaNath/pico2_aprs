@@ -250,3 +250,13 @@ def test_restore_after_sending_keeps_higher_number():
     m.send("Q1BBB", "before mount", 0)  # SD を読む前に送った(700)
     MsgFile("/sd/messages.txt", opener=fs.open, remove=fs.remove, rename=fs.rename).poll(m, 0)
     assert m.next_no == 701 and [x.no for x in m.items] == ["700", "2"]
+
+
+def test_restore_ignores_a_broken_next_number():
+    # messages.txt の next が壊れていても、番号は 1 から NO_MAX に収める
+    for bad in (b"0", b"-5", b"100000", b"x"):
+        fs = FakeFs()
+        fs.files["/sd/messages.txt"] = b"# pico2_aprs messages v1 next " + bad + b"\n"
+        m, _ = make()
+        MsgFile("/sd/messages.txt", opener=fs.open, remove=fs.remove, rename=fs.rename).poll(m, 0)
+        assert m.next_no == 1, bad
