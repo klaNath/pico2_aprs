@@ -586,6 +586,51 @@ def test_disconnect_while_handling_a_line_drops_the_rest():
     assert cfg.SSID == 9
 
 
+
+def _rows(n):  # 架空の局
+    return [{"src": "Q1AA%d" % i, "last_s": i, "count": 1, "lat": 35.0, "lon": 139.0,
+             "lvl_db": None} for i in range(n)]
+
+
+def test_requests_wait_until_a_list_is_sent():
+    # 一覧を返している間に来た要求は、一覧の終わりの後に応答する(docs/ble-protocol.md §6.1)。
+    # 前は 2 つ目の stations.list が 1 つ目の残りを上書きして、1 つ目が途中で消えた
+    b, fb, r, _cfg, _fs, _shown = make()
+    link = Link(fb)
+    r.stations_fn = lambda: _rows(4)
+    connect(b, fb)
+    b.poll(0)
+    link.lines()
+    fb.notify_fail = 3  # 通知が詰まって、一覧が何回かの poll にまたがる
+    fb.write(1, b'{"op":"stations.list","id":1}\n{"op":"stations.list","id":2}\n'
+                b'{"op":"status","id":3}\n')
+    for i in range(20):
+        b.poll(1 + i)
+    ms = [m for m in link.lines() if "id" in m]
+    assert [(m["t"], m["id"]) for m in ms] == (
+        [("station", 1)] * 4 + [("stations.end", 1)]
+        + [("station", 2)] * 4 + [("stations.end", 2)] + [("status", 3)])
+    assert b._todo == []
+
+
+def test_disconnect_drops_requests_waiting_for_a_list():
+    b, fb, r, cfg, _fs, _shown = make()
+    r.stations_fn = lambda: _rows(3)
+    connect(b, fb)
+    b.poll(0)
+    fb.notify_fail = 100  # 一覧が送りきれない
+    fb.write(1, b'{"op":"stations.list","id":1}\n'
+                b'{"op":"settings.set","id":2,"values":{"ssid":9}}\n')
+    b.poll(1)
+    assert len(b._todo) == 1 and not r.idle
+    fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+    assert b._todo == [] and r.idle
+    fb.notify_fail = 0
+    connect(b, fb, conn=2)
+    b.poll(2)
+    assert cfg.SSID != 9  # 前の接続の要求は実行しない
+
+
 def test_disconnect_while_notifying_does_not_raise():
     b, fb, _r, _cfg, _fs, _shown = make()
     connect(b, fb)

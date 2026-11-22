@@ -107,11 +107,12 @@ TX_PATH = ("WIDE1-1", "WIDE2-1")
 TOCALL = "APZPI2"
 SYMBOL = ("/", "[")  # シンボル表, シンボル(/[ = 人)
 
-# ビーコン(Mic-E)。前回の位置から BEACON_MOVE_M 以上動いていれば BEACON_MOVING_S ごと、
-# 動いていなければ BEACON_STILL_S ごと。スイッチを入れて測位が取れたら最初の 1 回はすぐ送る
+# ビーコン(Mic-E)。前回の位置から BEACON_MOVE_M 以上動き、速度が 2 ノット以上なら
+# BEACON_MOVING_S ごと、そうでなければ BEACON_STILL_S ごと(下限は core/settings.py の ITEMS)。
+# スイッチを入れて測位が取れたら最初の 1 回はすぐ送る
 BEACON_MOVING_S = 90
 BEACON_STILL_S = 600
-BEACON_MOVE_M = 10.0
+BEACON_MOVE_M = 25.0
 # 異常で再起動した直後は、最初のビーコンをこの秒数だけ待つ(再起動の繰り返しで送り続けないように)
 BEACON_RESTART_HOLD_S = 90
 # ビーコンの送り方。"auto" = 上の規則で自動に送る、"manual" = 自動では送らず、スマホ(BLE の

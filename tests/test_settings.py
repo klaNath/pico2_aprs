@@ -98,11 +98,17 @@ def test_check_converts_to_config_values():
     assert S.check("path", ["WIDE1-1"]) == ("WIDE1-1",)
     assert S.check("path", ["wide2-2", "Q1TEST-1"]) == ("WIDE2-2", "Q1TEST-1")
     assert S.check("path", []) == ()
+    # WIDEn-N: n は 1-2、N は 1-n、合計 N は 3 まで(docs/ble-protocol.md §9.1)
+    assert S.check("path", ["WIDE1-1", "WIDE2-1"]) == ("WIDE1-1", "WIDE2-1")
+    assert S.check("path", ["WIDE2-2"]) == ("WIDE2-2",)
+    assert S.check("path", ["WIDE1-1", "WIDE2-2"]) == ("WIDE1-1", "WIDE2-2")
+    assert S.check("path", ["TRACE2-2", "Q1TEST-1"]) == ("TRACE2-2", "Q1TEST-1")
+    assert S.check("path", ["WIDE", "RELAY"]) == ("WIDE", "RELAY")  # 数字の付かない別名は数えない
     assert S.check("comment", "hello 73") == b"hello 73"
     assert S.check("beacon_move_m", 25) == 25.0
     assert S.check("tx_enabled", True) is True
     assert S.check("beacon_mode", "auto") == "auto" and S.check("beacon_mode", "manual") == "manual"
-    for key, v in (("ssid", 0), ("ssid", 15), ("beacon_moving_s", 30), ("beacon_still_s", 7200)):
+    for key, v in (("ssid", 0), ("ssid", 15), ("beacon_moving_s", 60), ("beacon_still_s", 7200)):
         assert S.check(key, v) == v
 
 
@@ -119,10 +125,14 @@ def test_check_rejects_bad_values():
     assert bad("path", "WIDE1-1")  # list でない
     assert bad("path", ["WIDE1-1", "WIDE2-1", "WIDE3-1"])  # 3 個
     assert bad("path", ["WIDE1-16"]) and bad("path", ["WIDE1-1*"]) and bad("path", [""])
+    assert bad("path", ["WIDE7-7"]) and bad("path", ["WIDE3-1"])  # n が 2 より大きい
+    # N が 1-n でない
+    assert bad("path", ["WIDE2-3"]) and bad("path", ["WIDE2"]) and bad("path", ["WIDE1-0"])
+    assert bad("path", ["WIDE2-2", "WIDE2-2"]) and bad("path", ["TRACE2-2", "WIDE2-2"])  # 合計 4
     assert bad("comment", "x" * 41) and bad("comment", "tab\there") and bad("comment", "é")
     assert bad("mice_message", 7)  # Emergency はスマホから選ばせない
-    assert bad("beacon_moving_s", 29) and bad("beacon_still_s", 7201)
-    assert bad("beacon_move_m", 0.5) and bad("beacon_move_m", "10")
+    assert bad("beacon_moving_s", 59) and bad("beacon_still_s", 7201)
+    assert bad("beacon_move_m", 24.9) and bad("beacon_move_m", "30")
     assert bad("tx_enabled", 1) and bad("fx25_tx", None)
     assert bad("beacon_mode", "Manual") and bad("beacon_mode", "") and bad("beacon_mode", None)
     assert bad("beacon_mode", 1) and bad("beacon_mode", ["manual"])
@@ -226,13 +236,25 @@ def test_load_applies_file_over_defaults():
     fs = FakeFs()
     cfg = Cfg()
     cfg.SSID = 5  # config_local.py で変えた値に相当
-    put(fs, {"callsign": "Q1TEST", "symbol": "/>", "path": ["WIDE2-1"], "beacon_move_m": 20})
+    put(fs, {"callsign": "Q1TEST", "symbol": "/>", "path": ["WIDE2-1"], "beacon_move_m": 40})
     st, _fs, _cfg = make(fs, cfg)
     assert sorted(st.load()) == ["beacon_move_m", "callsign", "path", "symbol"]
     assert cfg.CALLSIGN == "Q1TEST" and cfg.SYMBOL == ("/", ">") and cfg.TX_PATH == ("WIDE2-1",)
-    assert cfg.BEACON_MOVE_M == 20.0 and cfg.SSID == 5  # ファイルに無い項目はそのまま
+    assert cfg.BEACON_MOVE_M == 40.0 and cfg.SSID == 5  # ファイルに無い項目はそのまま
     assert st.defaults["ssid"] == 5 and st.defaults["callsign"] is None
     assert st.warnings == []
+
+
+def test_load_drops_values_below_the_new_limits():
+    # 0.9 より前の下限(30 秒、1 m、WIDE7-7)で保存した値: 読み飛ばして既定値のまま、警告に残す
+    fs = FakeFs()
+    cfg = Cfg()
+    put(fs, {"beacon_moving_s": 30, "beacon_move_m": 5, "path": ["WIDE7-7"], "comment": "ok"})
+    st, _fs, _cfg = make(fs, cfg)
+    assert st.load() == ["comment"]
+    assert cfg.BEACON_MOVING_S == 90 and cfg.BEACON_MOVE_M == 10.0
+    assert cfg.TX_PATH == ("WIDE1-1", "WIDE2-1")
+    assert len(st.warnings) == 3
 
 
 def test_load_ignores_unknown_and_bad_items():
@@ -278,7 +300,7 @@ def test_reset_restores_defaults_and_removes_file():
 
 def test_roundtrip_through_file():
     st, fs, _cfg = make()
-    st.set({"callsign": "Q1TEST", "symbol": "\\>", "comment": "a b", "beacon_move_m": 12.5,
+    st.set({"callsign": "Q1TEST", "symbol": "\\>", "comment": "a b", "beacon_move_m": 32.5,
             "fx25_tx": True, "beacon_mode": "manual"})
     st2, _fs, cfg2 = make(fs)
     st2.load()

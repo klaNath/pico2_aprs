@@ -20,6 +20,8 @@ PENDING_MAX = 4
 KEEP = 16  # 覚えておく件数(受信と送信を合わせて。pending は消さない)
 ACK_WAIT_MS = 60_000  # 送れない ack はこれだけたったら捨てる
 SEEN_MAX = 32  # 重複の判定に覚えておく受信の数
+# 重複と見なす期間。相手が番号を 1 からやり直しても、これより後なら新しいメッセージ
+SEEN_MS = 30 * 60_000
 NO_MAX = 99999
 
 PENDING = "pending"
@@ -75,7 +77,7 @@ class Messages:
         self.unread = 0  # 自局宛を受けた数(mark_read() まで)
         self.version = 0  # 項目が変わるたびに増える(SD の保存の判定)
         self._acks = []  # 送る ack: [宛先, 番号, 捨てる ticks_ms]
-        self._seen = []  # 受けたメッセージの (送信局, 番号 または 本文)
+        self._seen = []  # 受けたメッセージ: [送信局, 番号 / None, 本文, 受けた ticks_ms](古い順)
 
     def set_call(self, own_call):
         self.own = own_call.upper()
@@ -135,12 +137,10 @@ class Messages:
                 no = None  # 番号の形が不正: ack を作れない
             if no is not None and not any(a[0] == src and a[1] == no for a in self._acks):
                 self._acks.append([src, no, time.ticks_add(now, self.ack_wait_ms)])
-        key = (src, p.msgno if p.msgno else p.text)
-        if key in self._seen:  # 相手の再送(こちらの ack が届かなかった)。ack は上で積んだ
-            return
-        self._seen.append(key)
-        if len(self._seen) > SEEN_MAX:
-            self._seen.pop(0)
+        text = p.text or ""
+        if self._is_seen(src, p.msgno or None, text, now):
+            return  # 相手の再送(こちらの ack が届かなかった)。ack は上で積んだ
+        self._remember(src, p.msgno or None, text, now)
         m = Msg(False, p.msgno or None, src, p.text or "", utc_s)
         self.unread += 1
         self._add(m)
@@ -157,6 +157,9 @@ class Messages:
     # ---- 送るものの取り出し
     def poll(self, now):
         """送れなかった ack を捨て、最後の回のあと待っても ack が来なければ failed にする"""
+        seen = self._seen
+        while seen and time.ticks_diff(now, seen[0][3]) >= SEEN_MS:  # 古い順。確保しない
+            seen.pop(0)
         self._acks = [a for a in self._acks if time.ticks_diff(now, a[2]) < 0]
         for m in self.items:
             if not (m.out and m.state == PENDING) or time.ticks_diff(now, m.next_ms) < 0:
@@ -188,22 +191,34 @@ class Messages:
             self._acks.remove(key)
 
     # ---- 保存からの復元(core.msgfile)
-    def restore(self, olds, next_no):
+    def restore(self, olds, next_no, now=None):
         """前回の起動の項目(新しい順)を今の項目の後ろに足す。pending だったものは stopped。
         番号は、この起動でまだ送っていなければ前回の続きから"""
+        if now is None:
+            now = time.ticks_ms()
         if not any(m.out for m in self.items) or next_no > self.next_no:
             self.next_no = next_no
         for m in olds:
             if m.out and m.state == PENDING:
                 m.state = "stopped"
             self.items.append(m)
-            if not m.out:
-                self._seen.append((m.peer, m.no if m.no else m.text))
-        self._seen = self._seen[-SEEN_MAX:]
+            if not m.out:  # 再起動をまたいだ再送も、復元から SEEN_MS の間は重複と見なす
+                self._remember(m.peer, m.no, m.text, now)
         self._trim()
         self.version += 1
 
     # ---- 内部
+    def _is_seen(self, src, no, text, now):
+        for e in self._seen:
+            if e[0] == src and e[1] == no and e[2] == text and time.ticks_diff(now, e[3]) < SEEN_MS:
+                return True
+        return False
+
+    def _remember(self, src, no, text, now):
+        self._seen.append([src, no, text, now])
+        if len(self._seen) > SEEN_MAX:
+            self._seen.pop(0)
+
     def _add(self, m):
         self.items.insert(0, m)
         self._trim()

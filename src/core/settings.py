@@ -27,6 +27,10 @@ PATH = "/settings.json"
 VERSION = 1
 MAX_COMMENT = 40
 MAX_PATH = 2
+# WIDEn-N / TRACEn-N: n は 1..2、N は 1..n、全部の N の合計は HOPS_MAX まで(広域に撒きすぎない)
+WIDE_N_MAX = 2
+HOPS_MAX = 3
+_PATH_RULE = "WIDE1-1 style hops; WIDEn-N with n 1-2, N 1-n, total N up to 3"
 MAX_MESSAGE = 6  # aprs.mice.MESSAGES の番号。7(Emergency)はスマホからは選ばせない
 BEACON_MODES = ("auto", "manual")
 
@@ -47,9 +51,9 @@ ITEMS: tuple = (
     ("path", "TX_PATH", "path", MAX_PATH),
     ("comment", "BEACON_COMMENT", "comment", MAX_COMMENT),
     ("mice_message", "BEACON_MESSAGE", "int", (0, MAX_MESSAGE)),
-    ("beacon_moving_s", "BEACON_MOVING_S", "int", (30, 3600)),
+    ("beacon_moving_s", "BEACON_MOVING_S", "int", (60, 3600)),
     ("beacon_still_s", "BEACON_STILL_S", "int", (60, 7200)),
-    ("beacon_move_m", "BEACON_MOVE_M", "float", (1.0, 1000.0)),
+    ("beacon_move_m", "BEACON_MOVE_M", "float", (25.0, 1000.0)),
     ("beacon_mode", "BEACON_MODE", "choice", BEACON_MODES),
     ("tx_enabled", "TX_ENABLED", "bool", None),
     ("fx25_tx", "FX25_TX", "bool", None),
@@ -110,14 +114,22 @@ def check(key, v):
         if not isinstance(v, list) or len(v) > arg:
             raise SettingsError(key, "list of up to %d hops" % arg)
         out = []
+        hops = 0
         for p in v:
             if not isinstance(p, str) or p.endswith("*"):
-                raise SettingsError(key, "hop like WIDE1-1")
+                raise SettingsError(key, _PATH_RULE)
             try:
                 a = Address.parse(p)
             except ValueError:
-                raise SettingsError(key, "hop like WIDE1-1") from None
+                raise SettingsError(key, _PATH_RULE) from None
+            n = _wide_n(a.call)
+            if n is not None:
+                if not 1 <= n <= WIDE_N_MAX or not 1 <= a.ssid <= n:
+                    raise SettingsError(key, _PATH_RULE)
+                hops += a.ssid
             out.append(str(a))
+        if hops > HOPS_MAX:
+            raise SettingsError(key, _PATH_RULE)
         return tuple(out)
     if kind == "comment":
         if not isinstance(v, str) or len(v) > arg:
@@ -131,6 +143,14 @@ def check(key, v):
             raise SettingsError(key, "one of " + ", ".join(arg))
         return v
     raise SettingsError(key, "bad item kind")  # ITEMS の誤り
+
+
+def _wide_n(call):
+    """WIDEn / TRACEn の n(数字 1 桁)。それ以外(デジピーターのコールサインなど)は None"""
+    for head in ("WIDE", "TRACE"):
+        if call.startswith(head) and len(call) == len(head) + 1 and call[-1].isdigit():
+            return int(call[-1])
+    return None
 
 
 def outward(key, v):
