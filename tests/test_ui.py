@@ -161,14 +161,23 @@ def test_ble_icon_states():
     assert ble_icon("conn", 24, 2) is ble_icons.ADV_24[2]
     assert len(set(adv[:4])) == 4
     assert ble_icon("adv", 20, 3) is ble_icons.ADV_20[0]
+    # 広告を止めている間(ペアリングの失敗が続いた): 動かない、灰色に赤い x
+    assert ble_icon("hold", 24, 0) is ble_icons.HOLD_24
+    assert ble_icon("hold", 24, 3) is ble_icons.HOLD_24
+    assert ble_icon("hold", 20) is ble_icons.HOLD_20
 
 
 def test_ble_icons_data():
     from ui import ble_icons
 
-    for n, frames, conn in ((24, ble_icons.ADV_24, ble_icons.CONN_24),
-                            (20, ble_icons.ADV_20, ble_icons.CONN_20)):
-        assert all(len(d) == 2 * n * n for d in frames + (conn,))
+    for n, frames, conn, hold in ((24, ble_icons.ADV_24, ble_icons.CONN_24, ble_icons.HOLD_24),
+                                  (20, ble_icons.ADV_20, ble_icons.CONN_20, ble_icons.HOLD_20)):
+        assert all(len(d) == 2 * n * n for d in frames + (conn, hold))
+    # HOLD は赤い x を含む(赤が強い画素がある)
+    d = ble_icons.HOLD_24
+    red = sum(1 for i in range(0, len(d), 2)
+              if ((d[i] << 8 | d[i + 1]) >> 11) >= 24 and (d[i + 1] & 31) < 12)
+    assert red > 10
     # framebuf の並び(上位バイトが先)で読むと、広告中のアイコンは青が強い(並びが逆なら崩れる)
     d = ble_icons.ADV_24[3]
     lit = blue = 0

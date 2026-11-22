@@ -43,6 +43,11 @@ from array import array
 
 import config
 
+# BLE のアイコン(約 49 KB のソース)は、何よりも先に読み込む。マウントでは読み込みのたびに
+# ソースをコンパイルするので、大きなソースほど一時的に大きな連続領域が要る。後に回すと
+# ui.controller の読み込みが MemoryError になった(広告の停止のアイコンを足したとき、2026-11-23)
+from ui import ble_icons  # noqa: F401, E402
+
 # 大きなバッファは、ほかのモジュールを読み込む前に確保する。dev.py run/exec(src をマウント)では
 # 読み込みのたびにソースをコンパイルするのでヒープが細切れになり、後からでは数十 KB の連続領域が
 # 取れない(実測: 読み込み後の最大の連続領域は 48 KB)。ROMFS からの起動では問題ないが、同じ作りにする
@@ -594,6 +599,8 @@ class Station:
         b = self.ble
         if b is None:
             return "off"
+        if b.advertising_held:
+            return "hold"  # ペアリングの失敗が続いて、広告を止めている
         return "auth" if b.authenticated else "conn" if b.conn is not None else "adv"
 
     def close(self):

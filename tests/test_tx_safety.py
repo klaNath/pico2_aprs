@@ -1487,6 +1487,7 @@ def test_station_still_transmits_after_a_week_of_listening():
 class _FakeBle:
     authenticated = False
     conn = None
+    advertising_held = False
 
     def __init__(self, fail=False):
         self.fail = fail
@@ -1498,6 +1499,25 @@ class _FakeBle:
 
     def stop(self):
         self.stopped = True
+
+
+
+def test_ble_state_shows_the_advertising_hold():
+    # ペアリングの失敗が続いて広告を止めている間は、LCD のアイコンを "hold" にする
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station(gate_on=False)
+    try:
+        ble = _FakeBle()
+        st.ble = ble
+        assert st._ble_state() == "adv"
+        ble.advertising_held = True
+        st.step(time.ticks_ms())
+        assert st._ble_state() == "hold" and st.status.ble == "hold"
+    finally:
+        st.close()
 
 
 def test_ble_error_stops_ble_and_restarts_it_later():

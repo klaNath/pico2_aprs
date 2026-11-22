@@ -95,7 +95,8 @@ class Status:
         self.message_until: "Any" = 0  # ticks_ms
         self.msg_unread = 0  # 自局宛を受けて、まだスマホで読んでいない数
         self.msg_pending = 0  # 送信中(ack 待ち)のメッセージの数
-        # BLE: "adv" = 広告中、"conn" = 接続済みで認証前、"auth" = 認証済み / None = BLE を使わない
+        # BLE: "adv" = 広告中、"conn" = 接続済みで認証前、"auth" = 認証済み、
+        # "hold" = ペアリングの失敗が続いて広告を止めている / None = BLE を使わない
         self.ble: "str | None" = None
         # 受信音声の音量(core.level.Level)/ None = 表示しない(IF 入力など)
         self.level: "level.Level | None" = None
@@ -378,13 +379,15 @@ _icon_fbs = {}  # アイコンのバイト列の id -> framebuf(作るのは最�
 def ble_icon(ble, n, frame=0):
     """Status.ble -> 一辺 n のアイコン(ui.ble_icons の RGB565 のバイト列)/ None = 出さない。
 
-    認証済みは接続中のアイコン。広告中と認証前(ペアリング中など)は
-    広告のアニメーションの frame コマ目
+    認証済みは接続中のアイコン。広告を止めている間(ペアリングの失敗が続いた)は灰色に赤い x
+    (動かさない)。広告中と認証前(ペアリング中など)は広告のアニメーションの frame コマ目
     """
     if ble is None:
         return None
     if ble == "auth":
         return ble_icons.CONN_24 if n == 24 else ble_icons.CONN_20
+    if ble == "hold":
+        return ble_icons.HOLD_24 if n == 24 else ble_icons.HOLD_20
     frames = ble_icons.ADV_24 if n == 24 else ble_icons.ADV_20
     return frames[frame % len(frames)]
 

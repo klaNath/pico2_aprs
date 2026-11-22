@@ -715,10 +715,12 @@ def test_three_failures_stop_advertising_for_a_while():
     t3: "Any" = 2000  # ticks_ms の値として使う(スタブでは専用の型)
     assert _fail_pairing(b, fb, 3, t3) is None  # 3 回続いた: 切断の前に広告を止める
     assert fb.adv is None
+    assert b.advertising_held  # LCD のアイコンが変わる(station._ble_state が "hold")
     b.poll(time.ticks_add(t3, B.PAIR_HOLD_MS - 1))
     assert fb.adv is None
     b.poll(time.ticks_add(t3, B.PAIR_HOLD_MS))
     assert fb.adv is not None and b.pair_fails == 0
+    assert not b.advertising_held
 
 
 def test_authenticated_link_is_not_dropped_by_pairing_check():

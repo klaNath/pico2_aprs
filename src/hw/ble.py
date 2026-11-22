@@ -478,6 +478,11 @@ class Ble:
                 return
             out.pop(0)
 
+    @property
+    def advertising_held(self):
+        """ペアリングの失敗が続いて、広告を止めている(PAIR_HOLD_MS の間。LCD のアイコン)"""
+        return self._adv_hold_ms is not None and self.conn is None
+
     def _check_pairing(self, now):
         """ペアリングに失敗した接続を切る。続けて失敗したら、しばらく広告しない"""
         if self._pair_failed and self.conn is not None and not self._kicked:
