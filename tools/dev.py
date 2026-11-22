@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -186,9 +187,46 @@ def rel(p: Path) -> str:
 # そこで時間切れになると必ず固まった(2026-11-16 の調査)。
 # そこで mpremote をライブラリとして使い、時間切れのときはシリアルを読み続けたまま(= マウントの要求に
 # 応え続けたまま)Ctrl-C を送り、プログラムが止まってから、アンマウントして閉じる。
-INTERRUPT_TRIES = 20  # 時間切れのあと Ctrl-C を送る回数(1 秒ごと。局の後始末に数秒かかる)
+# 要求を出してから答えを受け取るまで、デバイスは kbd_intr(-1) で Ctrl-C を切り、その間に届いた \x03 は
+# ただのデータとして読み捨てる(mpremote の RemoteCommand.begin)。起動中は要求を出し続けるので、
+# 1 秒に 1 回の \x03 はほぼ必ず読み捨てられ、止まらなかった(2026-11-23 に実機で確認。局は固まった)。
+# 止まったと分かるまでは INTERRUPT_FAST_S ごとに送り、Python が動いている合間に届くようにする。
+# 止まったと分かったら送るのをやめる(局の後始末を Ctrl-C で途中で止めないため)
+INTERRUPT_TRIES = 20  # 時間切れのあと、止まるのを待つ秒数(局の後始末に数秒かかる)
+INTERRUPT_FAST_S = 0.05
+INTERRUPT_SLOW_S = 1.0  # 止まった印のあと、まだ終わらないときに送り直す間隔
+# Ctrl-C が効いた印(出力の中)。KeyboardInterrupt のトレースバックか、局の「stopped」
+STOPPED_MARKS = ("KeyboardInterrupt", "stopped", "Ctrl-C")
+
+
+def _interrupt(t, out, chunks: list[str]) -> bool:
+    """\\x03 を送ってプログラムを止める(マウントの要求には答え続ける)。\\x04 まで来たら True"""
+    start = len(chunks)
+    deadline = time.monotonic() + INTERRUPT_TRIES
+    acked = False
+    next_send = 0.0
+    while time.monotonic() < deadline:
+        if not acked:
+            tail = "".join(chunks[start:])  # 出力は 1 文字ずつ届くので、つないでから探す
+            acked = any(m in tail for m in STOPPED_MARKS)
+            if acked:
+                next_send = time.monotonic() + INTERRUPT_SLOW_S * 5  # 後始末を待つ
+        now = time.monotonic()
+        if now >= next_send:
+            t.serial.write(b"\x03")
+            next_send = now + (INTERRUPT_SLOW_S if acked else INTERRUPT_FAST_S)
+        wait = max(0.01, min(INTERRUPT_FAST_S, next_send - now))
+        data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=wait)
+        if data.endswith(b"\x04"):
+            return True
+    return False
 EXIT_TIMEOUT = 124  # 時間切れで止めた(従来と同じ終了コード)
 EXIT_STUCK = 125  # 時間切れのあと止められなかった
+EXIT_INTERRUPTED = 130  # 端末の Ctrl-C で止めた(シェルの慣例 128 + SIGINT)
+# 端末の Ctrl-C は KeyboardInterrupt にしない。mpremote がマウントの要求に答えている途中で例外が
+# 出ると、答えが途切れてデバイスが固まる(例外を後で捕まえても戻らない。2026-11-23 に実機で確認)。
+# 印を付けるだけにして、READ_SLICE_S ごとに区切った読み出しの間で見て、時間切れと同じく止める
+READ_SLICE_S = 0.2
 
 
 def mounted_exec(code: str | bytes, mount: Path, timeout: float | None) -> tuple[int, str]:
@@ -216,6 +254,16 @@ def mounted_exec(code: str | bytes, mount: Path, timeout: float | None) -> tuple
         log(f"{port} を開けません: {e}")
         return 1, ""
     rc = 0
+    interrupted = []  # 端末の Ctrl-C を受けた回数(印だけ)
+
+    def on_sigint(_signum, _frame) -> None:
+        if interrupted:
+            log("止めています。終わるまで待ってください(Ctrl-C は受け付けません)")
+        else:
+            log("Ctrl-C を受けました。デバイス上のプログラムを止めます(数秒かかります)")
+        interrupted.append(1)
+
+    prev_sigint = signal.signal(signal.SIGINT, on_sigint)
     try:
         try:
             t.enter_raw_repl(soft_reset=True)
@@ -225,19 +273,25 @@ def mounted_exec(code: str | bytes, mount: Path, timeout: float | None) -> tuple
         except TransportError as e:
             log(f"実行を始められません: {e}")
             return 1, "could not enter raw repl"
-        # 標準出力(\x04 まで)、続いてエラー出力(\x04 まで)
-        data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=timeout)
+        # 標準出力(\x04 まで)、続いてエラー出力(\x04 まで)。短く区切って読み、間で Ctrl-C を見る
+        deadline = None if timeout is None else time.monotonic() + timeout
+        data = b""
+        while not interrupted:
+            left = READ_SLICE_S if deadline is None else min(READ_SLICE_S, deadline - time.monotonic())
+            if left <= 0:
+                break
+            data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=left)
+            if data.endswith(b"\x04"):
+                break
         if not data.endswith(b"\x04"):
-            log(f"タイムアウト({timeout:g} 秒)。Ctrl-C を送って止めます")
-            rc = EXIT_TIMEOUT
-            for _ in range(INTERRUPT_TRIES):
-                t.serial.write(b"\x03")
-                data = t.read_until(1, b"\x04", timeout=None, data_consumer=out, timeout_overall=1.0)
-                if data.endswith(b"\x04"):
-                    break
+            if interrupted:
+                rc = EXIT_INTERRUPTED
             else:
+                log(f"タイムアウト({timeout:g} 秒)。Ctrl-C を送って止めます")
+                rc = EXIT_TIMEOUT
+            if not _interrupt(t, out, chunks):
                 log(
-                    f"Ctrl-C を {INTERRUPT_TRIES} 回送っても止まりませんでした。デバイスが応答しなければ、"
+                    f"{INTERRUPT_TRIES} 秒たっても止まりませんでした。デバイスが応答しなければ、"
                     "USB の抜き差しが必要です"
                 )
                 return EXIT_STUCK, "".join(chunks)
@@ -254,13 +308,14 @@ def mounted_exec(code: str | bytes, mount: Path, timeout: float | None) -> tuple
             t.exit_raw_repl()
         except (OSError, TransportError) as e:
             log(f"アンマウントに失敗しました(無視): {e}")
-        if rc == EXIT_TIMEOUT:
+        if rc in (EXIT_TIMEOUT, EXIT_INTERRUPTED):
             log(
                 "止めました。デバイス上のプログラムは終わっています"
                 "(フラッシュの局を動かし直すには `dev.py monitor --reset -s 20`)"
             )
         return rc, "".join(chunks)
     finally:
+        signal.signal(signal.SIGINT, prev_sigint)
         t.close()
 
 
