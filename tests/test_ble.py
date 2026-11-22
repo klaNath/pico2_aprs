@@ -645,3 +645,48 @@ def test_disconnect_while_notifying_does_not_raise():
     fb.gatts_notify = notify
     assert b.write(b"z" * 100 + b"\n") is True  # MTU 23 なので何個かに分かれる
     assert len(sent) == 1 and b._out == []
+
+
+def _fail_pairing(b, fb, conn, now):
+    """conn でつなぎ、パスキーを出し、入力違いで失敗させ、poll で切断させる"""
+    connect(b, fb, conn=conn, auth=False)
+    fb.ev(B.IRQ_PASSKEY_ACTION, conn, B.PASSKEY_ACTION_DISPLAY, 123456)
+    fb.ev(B.IRQ_ENCRYPTION_UPDATE, conn, False, False, False, 0)
+    fb.ev(B.IRQ_PASSKEY_ACTION, conn, B.PASSKEY_ACTION_NONE, 0)  # 同じ失敗で両方来る(1 回と数える)
+    b.poll(now)
+    b.poll(time.ticks_add(now, 10))  # 切断のイベントを待つ間は、もう一度は要求しない
+    assert fb.disconnected[-1] == conn and fb.disconnected.count(conn) == 1
+    adv = fb.adv  # 切断の前の広告の設定(BTstack は切断のあと、この設定のまま広告を再開する)
+    fb.ev(B.IRQ_CENTRAL_DISCONNECT, conn, 0, b"\x00" * 6)
+    return adv
+
+
+def test_failed_pairing_disconnects():
+    # 1 つの接続の中でペアリングをやり直させない(docs/ble-protocol.md §4)
+    b, fb, _r, _cfg, _fs, _shown = make()
+    _fail_pairing(b, fb, 1, 0)
+    assert b.pair_fails == 1 and fb.adv is not None  # 1 回目: すぐ広告に戻る
+    connect(b, fb, conn=2)  # 認証できたら数え直す
+    assert b.pair_fails == 0
+
+
+def test_three_failures_stop_advertising_for_a_while():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    _fail_pairing(b, fb, 1, 0)
+    _fail_pairing(b, fb, 2, 1000)
+    assert fb.adv is not None
+    t3: "Any" = 2000  # ticks_ms の値として使う(スタブでは専用の型)
+    assert _fail_pairing(b, fb, 3, t3) is None  # 3 回続いた: 切断の前に広告を止める
+    assert fb.adv is None
+    b.poll(time.ticks_add(t3, B.PAIR_HOLD_MS - 1))
+    assert fb.adv is None
+    b.poll(time.ticks_add(t3, B.PAIR_HOLD_MS))
+    assert fb.adv is not None and b.pair_fails == 0
+
+
+def test_authenticated_link_is_not_dropped_by_pairing_check():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    connect(b, fb)
+    fb.ev(B.IRQ_PASSKEY_ACTION, 1, B.PASSKEY_ACTION_NONE, 0)  # 認証の後の取り消しの通知
+    b.poll(0)
+    assert fb.disconnected == [] and b.pair_fails == 0

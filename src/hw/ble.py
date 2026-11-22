@@ -80,6 +80,11 @@ BONDS_PATH = "/ble_bonds.json"
 SAVE_DELAY_MS = const(2000)  # 鍵が変わってから書くまで(続けて変わるのをまとめる)
 PASSKEY_MAX = const(1_000_000)
 AUTH_TIMEOUT_MS = const(60_000)  # つながってから認証されるまでの上限(パスキーを打つ時間を含む)
+# ペアリングに失敗したら切断する。続けて PAIR_FAIL_MAX 回失敗したら PAIR_HOLD_MS は広告しない
+# (1 つの接続でペアリングを何度もやり直させると、そのたびにパスキーの全画面表示と P-256 の計算で
+# 局が止まる。docs/ble-protocol.md §4)
+PAIR_FAIL_MAX = const(3)
+PAIR_HOLD_MS = const(60_000)
 SECRET_TYPE_TLV = const(0x10)  # パッチ済み BTstack の TLV(key はタグ 4 バイト)
 KEEP_TAGS = (b"SMER", b"SMIR")  # forget_all で残す(本機の ER/IR。ボンドではない)
 
@@ -160,6 +165,9 @@ class Ble:
         self.conn = None  # 接続中のハンドル
         self.connected_ms: "Any" = 0  # 接続した時刻(ticks_ms。スタブでは専用の型)
         self._kicked = False  # 認証の時間切れで切断を要求した(切断のイベントを待っている)
+        self._pair_failed = False  # この接続でペアリングに失敗した(IRQ が印を付け、poll が切断する)
+        self.pair_fails = 0  # 続けて失敗した回数(認証できたら 0)
+        self._adv_hold_ms = None  # この ticks_ms まで広告しない / None
         self.authenticated = False
         self.mtu = DEFAULT_MTU
         self.passkey = None
@@ -194,6 +202,8 @@ class Ble:
         self.name = "PicoAPRS-%02X%02X" % (mac[4], mac[5])
         self.remote.write = self.write
         self.running = True
+        self._adv_hold_ms = None
+        self.pair_fails = 0
         self._advertise()
         self.log("[ble] advertising as %s" % self.name)
 
@@ -235,7 +245,7 @@ class Ble:
             self._set_connected(data[0])
         elif event == IRQ_CENTRAL_DISCONNECT:
             self._set_connected(None)
-            if self.running:
+            if self.running and self._adv_hold_ms is None:
                 self._advertise()
         elif event == IRQ_GATTS_WRITE:
             conn, handle = data[0], data[1]
@@ -255,13 +265,16 @@ class Ble:
                 self._set_authenticated(ok)
                 if not ok:
                     self._clear_passkey()  # パスキーの入力違いなどで失敗した
+                    self._pair_failed = True
         elif event == IRQ_PASSKEY_ACTION:
             conn, action = data[0], data[1]
             if action == PASSKEY_ACTION_DISPLAY and conn == self.conn:
                 self.passkey = data[2] % PASSKEY_MAX  # BTstack が作った値(パッチ済みファームウェア)
                 self._call_on_passkey(self.passkey)
             elif action == PASSKEY_ACTION_NONE:
-                self._clear_passkey()  # ペアリングが取り消された
+                self._clear_passkey()  # ペアリングが取り消された・失敗した
+                if conn == self.conn and not self.authenticated:
+                    self._pair_failed = True
         elif event == IRQ_GET_SECRET:
             return self._get_secret(data[0], data[1], data[2])
         elif event == IRQ_SET_SECRET:
@@ -273,6 +286,7 @@ class Ble:
         self.conn = conn
         self.connected_ms = time.ticks_ms()
         self._kicked = False
+        self._pair_failed = False
         self.mtu = DEFAULT_MTU
         self.lines.clear()
         self._todo = []
@@ -290,6 +304,7 @@ class Ble:
             return
         self.authenticated = ok
         if ok:
+            self.pair_fails = 0
             self._clear_passkey()
             self.lines.clear()
             self.remote.attach()
@@ -445,6 +460,33 @@ class Ble:
                 return
             out.pop(0)
 
+    def _check_pairing(self, now):
+        """ペアリングに失敗した接続を切る。続けて失敗したら、しばらく広告しない"""
+        if self._pair_failed and self.conn is not None and not self._kicked:
+            self._pair_failed = False
+            self._kicked = True  # 切断のイベントが来るまで、もう一度は要求しない
+            self.pair_fails += 1
+            if self.pair_fails >= PAIR_FAIL_MAX:
+                self._adv_hold_ms = time.ticks_add(now, PAIR_HOLD_MS)
+                # BTstack は広告を有効にしたままなら、切断のあと自分で広告を再開する(hci.c の
+                # hci_update_advertisements_enabled_for_current_roles)。明示的に止める(2026-11-23 に
+                # 実機で、止めている間に Android からつながった)
+                self._ble.gap_advertise(None)
+                self.log("[ble] pairing failed %d times, not advertising for %d s"
+                         % (self.pair_fails, PAIR_HOLD_MS // 1000))
+            else:
+                self.log("[ble] pairing failed, disconnecting")
+            try:
+                self._ble.gap_disconnect(self.conn)
+            except OSError:
+                pass
+        hold = self._adv_hold_ms
+        if hold is not None and self.conn is None and time.ticks_diff(now, hold) >= 0:
+            self._adv_hold_ms = None
+            self.pair_fails = 0
+            self._advertise()
+            self.log("[ble] advertising again")
+
     def _check_auth_timeout(self, now):
         conn = self.conn
         if conn is None or self._kicked:
@@ -463,6 +505,7 @@ class Ble:
         if not self.running:
             return
         self._save_secrets(now=now)
+        self._check_pairing(now)
         if not self.authenticated:
             self._check_auth_timeout(now)
             return
