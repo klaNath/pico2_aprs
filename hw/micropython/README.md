@@ -27,6 +27,7 @@ MicroPython v1.29.0 の BTstack 版(rp2 の Pico W 系)は、ペアリングの�
 | `_IRQ_GET_SECRET` の戻り値 | バッファでなければ「無い」扱い(例外を出さない。BTstack の中から呼ばれるため。`modbluetooth.c`) |
 | LE Secure Connections | `ENABLE_LE_SECURE_CONNECTIONS` と micro-ecc(`ENABLE_MICRO_ECC_P256`)を有効にする |
 | BLE の停止 | `btstack_crypto_deinit()` も呼ぶ。呼ばないと、ソフトリセットや `active(False)` のあとの起動で暗号処理の状態が初期化されず、ボンドした相手(Android のプライベートアドレス)の解決が終わらないので、再接続の暗号化が失敗する(電源投入後の最初の起動では成功するので気づきにくい) |
+| 通知が送れないとき | ACL のバッファが満杯なら、`gatts_notify` は ENOMEM(`OSError`)を返し、複製を取っておかない。上流は複製して後で送り、成功を返していた。その場合、アプリは満杯に気づかない。相手が受け取らなくなると、通知のたびに複製がヒープに積まれ続ける(2026-11-23 のレビューの #6)。`src/hw/ble.py` は OSError で送り残しを持ち、次の poll で送り直す。indicate は上流のまま |
 | その他 | 暗号化の更新で接続が見つからないときの NULL 参照を防ぐ |
 
 未対応: Make でビルドするポート(unix、stm32 の `btstack.mk`)には同じ変更を入れていない(リンクに失敗する)。
