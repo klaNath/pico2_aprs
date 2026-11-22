@@ -906,12 +906,12 @@ def test_settings_change_applies_to_running_station_and_switch_still_rules():
     s.listeners.append(st.apply_settings)
     try:
         s.set({"callsign": CALL, "ssid": 9, "tx_enabled": True, "fx25_tx": True,
-               "beacon_moving_s": 45, "beacon_still_s": 900, "beacon_move_m": 30})
+               "beacon_moving_s": 75, "beacon_still_s": 900, "beacon_move_m": 30})
         assert st.gate.callsign == CALL and st.gate.allowed is True
         assert st.call == CALL + "-9" and st.status.callsign == st.call
         assert st.stations.own_call == st.call
         assert st.tx.fx is not None
-        assert (st.beacon.moving_s, st.beacon.still_s, st.beacon.move_m) == (45, 900, 30.0)
+        assert (st.beacon.moving_s, st.beacon.still_s, st.beacon.move_m) == (75, 900, 30.0)
         # 設定で送信を許可しても、ビーコンスイッチがオフなら送らない
         _fake_hw.Pin.state[config.PIN_BEACON_SW] = 1 - config.BEACON_SW_ON
         st._beacon(0)

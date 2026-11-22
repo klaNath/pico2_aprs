@@ -2,7 +2,8 @@
 """サブモジュールのコードを src/ に生成する(生成物は手で編集しない)
 
     python tools/vendor.py            下の SOURCES のとおり third_party/ から src/ へ写す
-    python tools/vendor.py --check    src/ の生成物が最新か確認(lint から呼ばれる)
+    python tools/vendor.py --check    src/ の生成物が最新か確認(lint から呼ばれる)。サブモジュールに
+                                      未コミットの変更があるか、出典のコミットが違えば失敗
     python tools/vendor.py --dirty    サブモジュールの未コミット変更も取り込む(試行錯誤用)
 
 改変はそれぞれのリポジトリのブランチにコミットとして積み、出典を追跡できるようにする。
@@ -97,14 +98,22 @@ def main() -> int:
 
     rc = 0
     for src in SOURCES:
+        if a.check:
+            # --dirty で作った生成物をそのままコミットすると、出典(コミット)から中身を追えない。
+            # 未コミットの変更があれば失敗にし、比べるのは出典の行も含めた全文
+            status = git(src, "status", "--porcelain", "--", src.src_dir or ".")
+            if status:
+                print(f"[vendor] {src.sub_name} に未コミットの変更があります。サブモジュール側で"
+                      "コミットしてから python tools/vendor.py を実行してください\n" + status)
+                rc = 1
+                continue
         want = render(src, a.dirty or a.check)
         have = existing(src)
         if a.check:
             bad = []
             for name, text in want.items():
                 p = src.dest / name
-                # 出典行(コミット)以外が一致すれば OK(サブモジュールでコミットしただけでは古くならない)
-                if not p.exists() or _body(p.read_text(encoding="utf-8")) != _body(text):
+                if not p.exists() or p.read_text(encoding="utf-8") != text:
                     bad.append(name)
             bad += [n for n in have if n not in want]
             if bad:
@@ -139,13 +148,6 @@ def _source_url(p: Path) -> str | None:
         if line.startswith("# Source: "):
             return line[len("# Source: "):].split("/blob/")[0]
     return None
-
-
-def _body(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines() if not line.startswith(("# Source: ", "# Revision: "))
-    )
-
 
 if __name__ == "__main__":
     sys.exit(main())

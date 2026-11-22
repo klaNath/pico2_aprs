@@ -390,7 +390,7 @@ class Station:
         if not on or config.BEACON_MODE == "manual" or not self._position_ok():
             st.next_beacon_s = None
             return
-        st.next_beacon_s = self.beacon.next_s(st.lat, st.lon, now)
+        st.next_beacon_s = self.beacon.next_s(st.lat, st.lon, now, self.gnss.gps.speed)
         if st.next_beacon_s:
             return
         # 電波を出すときは、チャネルが空くまで待つ(next_beacon_s は 0 のまま)。dry run は待たない

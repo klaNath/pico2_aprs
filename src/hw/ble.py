@@ -164,6 +164,7 @@ class Ble:
         self.mtu = DEFAULT_MTU
         self.passkey = None
         self.lines = LineBuffer()
+        self._todo = []  # 取り出したがまだ渡していない行(一覧の応答の途中は待たせる)
         self.dropped_writes = 0  # 認証前に書かれて捨てたバイト数
         self.secrets = []  # [(種類, key, value)]
         self._secrets_dirty_ms = None
@@ -274,6 +275,7 @@ class Ble:
         self._kicked = False
         self.mtu = DEFAULT_MTU
         self.lines.clear()
+        self._todo = []
         self._out = []
         self._set_authenticated(False)
         self._clear_passkey()  # ペアリングの途中で切れたときも、LCD のパスキーを消す
@@ -467,14 +469,16 @@ class Ble:
         self._flush_out()
         ln = self.lines
         # handle()(送信や設定の保存で時間がかかる)の途中で切断の IRQ が来ると、ln.lines は
-        # 新しい空のリストに替わる(_set_connected -> clear)。先に取り出してから回し、
-        # 認証が外れたら(切れたら)残りは捨てる(前の接続の要求を、次の接続で実行しない)
-        if ln.lines:  # 行が無いときは何も確保しない(毎回のループ)
-            todo, ln.lines = ln.lines, []
-            for line in todo:
-                if not self.authenticated:
-                    return
-                self.remote.handle(line)
+        # 新しい空のリストに替わる(_set_connected -> clear)。先に _todo へ取り出してから回し、
+        # 認証が外れたら(切れたら)残りは捨てる(前の接続の要求を、次の接続で実行しない)。
+        # 一覧を返している間は次の行を渡さず、_todo に残して次の poll で続ける(応答の順を保つ)
+        if not self._todo and ln.lines:  # 行が無いときは何も確保しない(毎回のループ)
+            self._todo, ln.lines = ln.lines, []
+        todo = self._todo
+        while todo and self.remote.idle:
+            if not self.authenticated or todo is not self._todo:
+                return
+            self.remote.handle(todo.pop(0))
         if ln.too_long:
             ln.too_long = 0
             self.remote.too_long()

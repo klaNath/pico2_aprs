@@ -109,6 +109,12 @@ class Remote:
         self._events = []
         self._iter = None
 
+    @property
+    def idle(self):
+        """一覧(stations.list / msg.list)を返し終えた。返している間は次の行を渡さない
+        (応答は要求の順。docs/ble-protocol.md §6.1)"""
+        return self._iter is None
+
     # ---- 受信
     def handle(self, line):
         """受けた 1 行を処理する(応答は送り待ちに積む。送るのは poll)"""

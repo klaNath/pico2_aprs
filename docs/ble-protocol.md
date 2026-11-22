@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.8 (2026-11-20) / protocol version `proto`: 1
+- Document version: 0.9 (2026-11-22) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -522,18 +522,18 @@ Acknowledgements sent by the device:
 | `callsign` | str / null | Uppercase letters and digits, 3–6 characters, at least one digit. No SSID. **Lowercase letters, surrounding whitespace, or an SSID are rejected** with `invalid`. The device does not convert or trim, so the stored value is exactly the value sent | Own callsign. null means unset, and the device never transmits |
 | `ssid` | int | 0–15 | SSID |
 | `symbol` | str | 2 characters. The 1st is the symbol table (`/`, `\`, `0`–`9`, `A`–`Z`); the 2nd is `!`–`~` | Symbol |
-| `path` | list[str] | 0–2 entries. Each is of the form `WIDE1-1` (1–6 letters/digits with an optional `-0`–`-15`). Lowercase is converted to uppercase. No trailing `*` | Digipeater path |
+| `path` | list[str] | 0–2 entries. Each is of the form `WIDE1-1` (1–6 letters/digits with an optional `-0`–`-15`). Lowercase is converted to uppercase. No trailing `*`. For `WIDEn-N` and `TRACEn-N` entries: n is 1–2 and N is 1–n, and the N of all such entries add up to 3 or less (`WIDE1-1,WIDE2-1`, `WIDE2-2` and `WIDE1-1,WIDE2-2` are accepted; `WIDE7-7`, `WIDE2-3` and `WIDE2-2,WIDE2-2` are not). Other entries (a digipeater's callsign) are not counted | Digipeater path |
 | `comment` | str | Printable ASCII (0x20–0x7E), 0–40 characters | Beacon comment |
 | `mice_message` | int | 0–6 | Mic-E message: 0 Off Duty, 1 En Route, 2 In Service, 3 Returning, 4 Committed, 5 Special, 6 Priority. 7 (Emergency) cannot be set from the app |
-| `beacon_moving_s` | int | 30–3600 | Beacon interval **while moving** (seconds) |
+| `beacon_moving_s` | int | 60–3600 | Beacon interval **while moving** (seconds) |
 | `beacon_still_s` | int | 60–7200 | Beacon interval **while not moving** (seconds) |
-| `beacon_move_m` | float | 1–1000 | Counted as "moving" when farther than this from the position of the previous beacon (m) |
+| `beacon_move_m` | float | 25–1000 | Counted as "moving" when farther than this from the position of the previous beacon (m) **and** the GNSS speed is 2 knots (3.7 km/h) or more |
 | `beacon_mode` | str | `"auto"` or `"manual"` | `"auto"`: the device sends beacons by itself by the rule below. `"manual"`: it sends only on `beacon.send` (§7.5). In both modes the switch must be on |
 | `tx_enabled` | bool | | Transmit permission. Even when true, the device does not transmit while the unit's switch is off |
 | `fx25_tx` | bool | | Transmit with FX.25 (with forward error correction) |
 
 - Types are strict: `1.0` or `true` is not accepted for an int item. An integer is accepted for a float item
-- Beacon rule (`beacon_mode` `"auto"`): with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving. Turning the switch off and on starts over (the next beacon is immediate). When `beacon_mode` changes from `"manual"` to `"auto"`, the rule continues from the last beacon; if there was none since startup or since the switch was last turned on, a beacon is sent immediately. A due beacon waits for a clear channel (§7.9), so it can come a little later than the interval; `next_beacon_s` stays 0 while it waits
+- Beacon rule (`beacon_mode` `"auto"`): with the switch on and a fix, the first beacon is sent immediately. After that, every `beacon_moving_s` while moving, or every `beacon_still_s` while not moving. "Moving" needs both the distance (`beacon_move_m`) and a speed of 2 knots or more, so that GNSS jitter while parked does not count as moving. Turning the switch off and on starts over (the next beacon is immediate). When `beacon_mode` changes from `"manual"` to `"auto"`, the rule continues from the last beacon; if there was none since startup or since the switch was last turned on, a beacon is sent immediately. A due beacon waits for a clear channel (§7.9), so it can come a little later than the interval; `next_beacon_s` stays 0 while it waits
 - Items may be added later. Build the screen from the result of `settings.schema`, and either hide unknown items or handle them with a generic input
 
 ### 9.2 Shape of `settings.schema` [Fixed]
@@ -605,6 +605,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.9 | 2026-11-22 | §9.1: tighter limits for transmissions. `path` limits `WIDEn-N`/`TRACEn-N` (n ≤ 2, N ≤ n, total N ≤ 3). `beacon_moving_s` minimum 30 → 60, `beacon_move_m` minimum 1 → 25 (default 10 → 25). "Moving" also needs a speed of 2 knots or more. A stored value outside the new limits is dropped at startup and the default is used |
 | 0.8 | 2026-11-20 | APRS messaging (provisional, being implemented): `msg.send`, `msg.list`, `msg.cancel` (§7.6–§7.8), the `msg` response and event (§8.8), error codes `tx_not_ready`, `queue_full`, `unknown_msg`, and `status.msg_unread`, `msg_pending`, `ch_busy`. The device acknowledges messages addressed to it by itself. Channel check from the received audio level (§7.9), used for automatic beacons, messages and acknowledgements (not `beacon.send`). §8.3: a `tx` event may be a message or an acknowledgement. §1 updated. `proto` stays 1 (additions only) |
 | 0.7 | 2026-11-20 | §4: results of the first Chrome test (issue #5). On Android the passkey dialog may appear only as a notification the user has to tap; the app's hint text should say so and point to the LCD. Added the Chrome row to the verification table. U3 narrowed to the failure cases and Chrome on Windows |
 | 0.6 | 2026-11-19 | Answers to issues #7 and #8. §7.5: measured time until the reply (at most about 2 s, recommended timeout 5 s, no carrier sense); `frame_too_long` cannot happen with the current setting limits. Added §8.7 for the `beacon` response (`dry` is always a boolean) |

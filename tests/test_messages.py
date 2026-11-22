@@ -5,7 +5,7 @@ from test_stationfile import FakeFs
 
 from aprs.message import MessageError
 from aprs.packet import parse
-from core.messages import Messages, QueueFull
+from core.messages import SEEN_MS, Messages, QueueFull
 from core.msgfile import MsgFile, format_line, parse_line
 
 OWN = "Q1TEST-7"
@@ -104,6 +104,21 @@ def test_incoming_message_is_acked_and_deduplicated():
     assert _send_all(m, 400) == [b":Q1AAA-9  :ack42"] and m.unread == 1
     m.mark_read()
     assert m.unread == 0
+
+
+
+def test_duplicates_expire_and_need_the_same_text():
+    # 相手が番号を 1 からやり直したとき、新しいメッセージを黙って捨てない
+    m, _ = make()
+    m.on_packet(P("Q1AAA-9", b":Q1TEST-7 :first{1"), 0)
+    m.on_packet(P("Q1AAA-9", b":Q1TEST-7 :other text{1"), 1000)  # 番号が同じでも本文が違う
+    assert len(m.items) == 2
+    m.on_packet(P("Q1AAA-9", b":Q1TEST-7 :first{1"), SEEN_MS - 1)  # 期間内の再送: 重複
+    assert len(m.items) == 2
+    m.poll(SEEN_MS)  # 古いものを忘れる
+    assert len(m._seen) == 1
+    m.on_packet(P("Q1AAA-9", b":Q1TEST-7 :first{1"), SEEN_MS + 1)  # 期間の後: 新しいメッセージ
+    assert len(m.items) == 3 and m.unread == 3
 
 
 def test_message_without_number_is_not_acked():
@@ -223,6 +238,9 @@ def test_file_save_and_restore():
     m2.on_packet(P("Q1CCC", b":Q1TEST-7 :hello{3"), 0)  # 前回受けたもの: 重複(ack は返す)
     item = m2.next_tx(0)
     assert m2.unread == 0 and item is not None and item[0] == b":Q1CCC    :ack3"
+    m2.poll(SEEN_MS)  # 復元から SEEN_MS の後は覚えていない
+    m2.on_packet(P("Q1CCC", b":Q1TEST-7 :hello{3"), SEEN_MS)
+    assert m2.unread == 1
 
 
 def test_restore_after_sending_keeps_higher_number():

@@ -2,7 +2,8 @@
 
 送出の規則(SmartBeaconing はしない):
     スイッチがオンで 2D 以上の測位があれば、最初の 1 回はすぐ送る
-    前回送った位置から MOVE_M 以上離れていれば、前回から MOVING_S たったら送る
+    前回送った位置から MOVE_M 以上離れ、かつ速度が MOVE_KN 以上なら、前回から MOVING_S たったら送る
+    (止まっていても GNSS の位置はふらつくので、距離だけでは「動いている」としない)
     離れていなければ STILL_S ごとに送る
 スイッチをオフにすると前回の記録を消す(次にオンにしたらすぐ送る)。
 異常で再起動した直後は hold() で最初の 1 回を遅らせる(スイッチの操作でも解除しない)。
@@ -20,7 +21,8 @@ from tnc.ax25 import Address, Frame
 
 MOVING_S = 90
 STILL_S = 600
-MOVE_M = 10.0
+MOVE_M = 25.0
+MOVE_KN = 2.0  # 「動いている」とする速度(ノット。約 3.7 km/h)
 
 
 class Beacon:
@@ -39,13 +41,16 @@ class Beacon:
     def hold(self, now_ms, seconds):
         self.hold_ms = time.ticks_add(now_ms, seconds * 1000)
 
-    def moved(self, lat, lon):
+    def moved(self, lat, lon, speed_kn=None):
+        """前回の位置から move_m 以上離れ、速度が MOVE_KN 以上か(speed_kn が None なら距離だけ)"""
         if self.last_pos is None:
             return True
+        if speed_kn is not None and speed_kn < MOVE_KN:
+            return False
         return geo.distance_km(self.last_pos[0], self.last_pos[1], lat, lon) * 1000 >= self.move_m
 
-    def next_s(self, lat, lon, now_ms=None):
-        """次に送るまでの秒(0 = 今送る)。位置が分からなければ None"""
+    def next_s(self, lat, lon, now_ms=None, speed_kn=None):
+        """次に送るまでの秒(0 = 今送る)。位置が分からなければ None。speed_kn: GNSS の速度(ノット)"""
         if lat is None:
             return None
         now = time.ticks_ms() if now_ms is None else now_ms
@@ -56,7 +61,7 @@ class Beacon:
             self.hold_ms = None
         if self.last_ms is None:
             return 0
-        wait = self.moving_s if self.moved(lat, lon) else self.still_s
+        wait = self.moving_s if self.moved(lat, lon, speed_kn) else self.still_s
         return max(0, wait - time.ticks_diff(now, self.last_ms) // 1000)
 
     def due(self, lat, lon, now_ms=None):

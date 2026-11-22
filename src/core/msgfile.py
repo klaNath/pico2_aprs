@@ -63,7 +63,7 @@ class MsgFile:
     def poll(self, msgs, now_ms):
         """SD をマウントしている間に呼ぶ。読み出し(1 回)と、変わったときの保存。失敗は OSError"""
         if not self.loaded:
-            self.load(msgs)
+            self.load(msgs, now_ms)
             return
         if msgs.version == self._saved_version:
             return
@@ -76,7 +76,7 @@ class MsgFile:
         ticks の一周で「保存したばかり」に見えて、次の変化が何日も保存されない"""
         self._saved_ms = ticks.cap(now_ms, self._saved_ms)
 
-    def load(self, msgs):
+    def load(self, msgs, now_ms=None):
         f = None
         for path in (self.path, self.tmp):
             try:
@@ -110,7 +110,7 @@ class MsgFile:
                         bad += 1
             finally:
                 f.close()
-        msgs.restore(olds, next_no)
+        msgs.restore(olds, next_no, now_ms)
         self.loaded = True
         self._saved_version = None  # stopped にしたものを書き直す
         self._saved_ms = None

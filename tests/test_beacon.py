@@ -30,6 +30,18 @@ def test_still_and_moving_intervals():
     assert b.due(LAT, LON, 1000)
 
 
+
+def test_moving_needs_speed():
+    # 止まっていても GNSS の位置はふらつく: 距離だけ離れても、速度が 2 ノット未満なら still_s
+    b = Beacon(90, 600, 10.0)
+    b.sent(LAT, LON, 0)
+    assert not b.moved(FAR[0], FAR[1], 0.0) and not b.moved(FAR[0], FAR[1], 1.9)
+    assert b.next_s(FAR[0], FAR[1], 60_000, 0.5) == 540
+    assert b.moved(FAR[0], FAR[1], 2.0) and b.next_s(FAR[0], FAR[1], 60_000, 2.0) == 30
+    assert not b.moved(NEAR[0], NEAR[1], 30.0)  # 速度があっても距離が足りなければ止まっている
+    assert b.moved(FAR[0], FAR[1], None)  # 速度が分からなければ距離だけ
+
+
 def test_hold_after_restart():
     b = Beacon(90, 600, 10.0)
     b.hold(1000, 90)
