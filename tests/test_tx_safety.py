@@ -1262,6 +1262,49 @@ def _feed(st, *tnc2):
     st.rx.get = lambda now_ms=None: q.pop() if q else None
 
 
+def test_receive_table_error_still_answers_messages():
+    # 局の表の更新で例外が出ても、自局宛のメッセージは受けて ack を返す(別の try)
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station()
+    try:
+        def broken(*a, **kw):
+            raise ValueError("table bug")
+
+        st.stations.update = broken
+        _feed(st, "Q1AAA>APRS::%-9s:hi{5" % st.msgs.own)
+        st._receive(time.ticks_ms())
+        assert st.status.rx_count == 1 and st.msgs.unread == 1
+        assert [a[:2] for a in st.msgs._acks] == [["Q1AAA", "5"]]
+    finally:
+        st.close()
+
+
+def test_remote_error_stops_only_ble():
+    # スマホへのイベントで例外が出たら、BLE だけを止めて後で起動し直す。受信は続ける
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station()
+    try:
+        class BrokenRemote:
+            def rx(self, d):
+                raise RuntimeError("remote bug")
+
+        ble = _FakeBle()
+        st.ble, st.remote = ble, BrokenRemote()
+        _feed(st, "Q1AAA>APRS:>one", "Q1AAA>APRS:>two")
+        st._receive(time.ticks_ms())
+        assert st.status.rx_count == 2  # 2 つ目も受けた
+        assert st.ble is None and st.remote is None and ble.stopped
+        assert st._ble_retry is not None and st._ble_retry.at is not None
+    finally:
+        st.close()
+
+
 def _no(st, to, text):
     """msg_send() が断ったときの (code, msg, extra)"""
     r = st.msg_send(to, text)

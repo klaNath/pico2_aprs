@@ -76,3 +76,22 @@ def test_encode_rejects_out_of_range():
         except ValueError:
             continue
         raise AssertionError(args)
+
+
+def _digit_like(c, d):
+    """Mic-E の宛先の 1 文字 c と同じ種類(フラグ)のまま、数字を d にする"""
+    for base in ("0", "A", "P"):
+        if ord(base) <= ord(c) <= ord(base) + 9:
+            return chr(ord(base) + d)
+    raise ValueError(c)
+
+
+def test_decode_rejects_latitude_over_90():
+    # 90 度に分が付いた緯度(90 度 30 分)は範囲の外
+    dst, info = mice.encode(10.5, 139.767, 0.0, 0, "/", ">", 2)
+    bad = _digit_like(dst[0], 9) + _digit_like(dst[1], 0) + dst[2:]
+    assert mice.decode(bad, info) is None
+    ok = _digit_like(dst[0], 9) + _digit_like(dst[1], 0) + _digit_like(dst[2], 0) \
+        + _digit_like(dst[3], 0) + _digit_like(dst[4], 0) + _digit_like(dst[5], 0)
+    r = mice.decode(ok, info)
+    assert r is not None and abs(r["lat"] - 90.0) < 1e-6  # ちょうど 90 度は受ける

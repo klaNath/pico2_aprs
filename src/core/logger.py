@@ -25,6 +25,19 @@ SEQ_MAX = 9999
 _REBASE_MS = 86_400_000  # 1 日(sweep)
 
 
+def escape(b):
+    """bytes -> 1 行に書ける bytes(制御文字と '\\' を '\\xHH' に)。core.stationfile も使う"""
+    if not any(c < 0x20 or c == 0x7F or c == 0x5C for c in b):
+        return bytes(b)
+    out = bytearray()
+    for c in b:
+        if c < 0x20 or c == 0x7F or c == 0x5C:
+            out.extend(b"\\x%02x" % c)
+        else:
+            out.append(c)
+    return bytes(out)
+
+
 def iso_utc(utc_s):
     """UTC の秒 -> '2026-10-25T01:37:37Z'"""
     t = time.gmtime(utc_s)
@@ -81,7 +94,8 @@ class Logger:
         if isinstance(text, str):
             text = text.encode()
         tag = (b"TX(dry) " if dry else b"TX ") if tx else b""
-        self._add(0, b"%s %s%s\n" % (stamp.encode(), tag, text.rstrip(b"\r\n")))
+        # 受信の文字列の改行や制御文字で、ログに偽の行を差し込ませない(stationfile と同じ規則)
+        self._add(0, b"%s %s%s\n" % (stamp.encode(), tag, escape(text.rstrip(b"\r\n"))))
 
     def note(self, text):
         """受信ログに '#' で始まる注記の行を足す(例外の記録など)"""

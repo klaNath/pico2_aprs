@@ -79,6 +79,8 @@ def decode(dst, info):
     if lat_deg > 90 or lat_min >= 60:
         return None
     lat = lat_deg + (lat_min * 100 + dg[4] * 10 + dg[5] + AMBIGUITY_CENTER[amb]) / 6000
+    if lat > 90:  # 90 度に分が付いたもの(90 度 59.99 分など)
+        return None
     if not flags[3]:
         lat = -lat
 

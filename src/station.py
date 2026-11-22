@@ -188,6 +188,17 @@ class Station:
             print("[ble] not available")
             self._stop_ble()
 
+    def _to_app(self, fn, d):
+        """スマホへのイベント(core.remote の rx/tx/msg)。例外は BLE だけを止め、時間を置いて
+        起動し直す(upkeep)。受信や送信の処理は止めない"""
+        try:
+            fn(d)
+        except Exception as e:
+            sys.print_exception(e)
+            import upkeep
+
+            upkeep.ble_failed(self, time.ticks_ms())
+
     def _stop_ble(self):
         ble, self.ble, self.remote = self.ble, None, None
         if ble is None:
@@ -353,9 +364,13 @@ class Station:
             try:
                 p = parse_frame(f)
                 self.stations.update(p, now, lvl, clip)
-                self.msgs.on_packet(p, now, self.utc())
             except Exception as e:  # 解析できない情報フィールドでも記録と受信数は残す
                 sys.print_exception(e)
+            if p is not None:
+                try:  # 局の表で失敗しても、自局宛のメッセージには ack を返す(別の try)
+                    self.msgs.on_packet(p, now, self.utc())
+                except Exception as e:
+                    sys.print_exception(e)
             if self.remote is not None:
                 d = {"tnc2": text, "lvl_db": lvl, "clip": clip or None, "utc_s": self.utc()}
                 if p is not None:
@@ -364,7 +379,7 @@ class Station:
                         d["obj"] = p.name  # src は送信局のまま(§8.2)
                     if p.table is not None and p.code is not None:
                         d["sym"] = p.table + p.code
-                self.remote.rx(d)
+                self._to_app(self.remote.rx, d)
             self.status.rx_count += 1
             self.status.rx_recent = True
             self._rx_ms = now
@@ -475,7 +490,8 @@ class Station:
                 self._air_ms = time.ticks_ms()
         st.tx_count += 1
         if self.remote is not None:
-            self.remote.tx({"tnc2": text, "dry": why is not None, "utc_s": self.utc()})
+            self._to_app(self.remote.tx, {"tnc2": text, "dry": why is not None,
+                                          "utc_s": self.utc()})
         print("[tx%s%s%s] %d ms" % (" " + label if label else "", "" if why is None else " dry",
                                     " fx25" if self.tx.fx_used else "", n * 1000 // config.FS),
               text)
@@ -524,7 +540,7 @@ class Station:
             if why == "state":
                 self.sd.logger.note("MSG %s to %s %s" % (m.no, m.peer, m.state))
         if why != "new" and self.remote is not None:
-            self.remote.msg(m.to_dict())
+            self._to_app(self.remote.msg, m.to_dict())
 
     # BLE の msg.*(core.remote が step() の中から呼ぶ。docs/ble-protocol.md §7.6-§7.8)
     def msg_send(self, to, text):

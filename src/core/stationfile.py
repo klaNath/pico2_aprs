@@ -21,25 +21,12 @@ import time
 
 from aprs.packet import parse_frame
 from core import ticks
-from core.logger import iso_utc
+from core.logger import escape, iso_utc
 from tnc.ax25 import Frame
 
 SAVE_MS = 60_000  # 表が変わったら、前回の保存からこれだけたってから書く
 VERSION = b"v1"
 _ENOENT = 2
-
-
-def escape(b):
-    """bytes -> 1 行に書ける bytes(制御文字と '\\' を '\\xHH' に)"""
-    if not any(c < 0x20 or c == 0x7F or c == 0x5C for c in b):
-        return bytes(b)
-    out = bytearray()
-    for c in b:
-        if c < 0x20 or c == 0x7F or c == 0x5C:
-            out.extend(b"\\x%02x" % c)
-        else:
-            out.append(c)
-    return bytes(out)
 
 
 def unescape(b):

@@ -59,6 +59,13 @@ def test_compressed_course_speed():
     assert p.course == 88 and near(p.speed, 67.1017, 0.01)
 
 
+
+def test_compressed_out_of_range_is_not_a_position():
+    # 4 文字の base91 は緯度 -90.9 度まで表せてしまう: 範囲の外は位置にしない
+    p = P("N0CALL>APRS:=/{{{{<*e7>7P[")
+    assert p.lat is None and p.lon is None
+
+
 def test_compressed_altitude():
     p = P("N0CALL>APRS:!/5L!!<*e7OS]S")
     assert near(p.alt, 3049.378, 0.5)
@@ -102,6 +109,21 @@ def test_third_party():
     p = P("JA1IG>APRS,WIDE1-1:}JA1XYZ-9>APRS,TCPIP,JA1IG*:!3540.12N/13945.67E>")
     assert p.kind == "position" and p.src == "JA1XYZ-9"
     assert p.third_party == "JA1IG>APRS,WIDE1-1"
+
+
+def test_third_party_from_aprs_is():
+    # APRS-IS から来た中身: 7 文字以上の発信元と qAC のパス(AX.25 のアドレスにならない)。架空の局
+    p = P("Q1GATE>APRS,WIDE1-1:}Q1LONGCAL>APRS,TCPIP,qAC,Q1SRV:!3540.12N/13945.67E>")
+    assert p.kind == "position" and p.src == "Q1LONGCAL" and near(p.lat, 35.668667)
+    assert p.path == ["TCPIP", "qAC", "Q1SRV"] and p.third_party == "Q1GATE>APRS,WIDE1-1"
+
+
+def test_third_party_nests_one_level_only():
+    p = P("Q1GATE>APRS:}Q1AAA>APRS:}Q1BBB>APRS:!3540.12N/13945.67E>")
+    assert p.src == "Q1AAA" and p.kind == "other" and p.lat is None  # 2 段目は解析しない
+    for bad in ("}no header", "}Q1AAA APRS:!x", "}>APRS:!x", "}Q1AAA>APRS,TOOLONGPATH1:!x"):
+        q = P("Q1GATE>APRS:" + bad)
+        assert q.src == "Q1GATE", bad  # 中を読めなければ外のパケットのまま
 
 
 def test_invalid_does_not_raise():
