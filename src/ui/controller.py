@@ -45,7 +45,7 @@ class Ui:
         self._frame = 0  # 広告中のアニメーションのコマ
         self._map_kind = None  # 小さな地図に最後に描いたもの
         self._dirty_all = True
-        self._cleared = False  # 起動後に画面全体を一度黒で塗ったか
+        self._cleared = False  # 画面全体を黒で塗ったか(起動後と、全画面の表示から戻るとき False)
         self._pk_drawn = None  # 全画面で出しているパスキー(None = 通常の画面)
         self._msg_drawn = None  # 全画面で出している自局宛のメッセージ(None = 通常の画面)
         self._detail_drawn = None  # 詳細欄に最後に描いた行(views.detail_body)
@@ -77,7 +77,7 @@ class Ui:
             self._pk_drawn = pk
             self._msg_drawn = None  # パスキーのあとにメッセージを出し直す
             if pk is None:
-                self._dirty_all = True  # 通常の画面に戻す
+                self._back_to_normal()  # 通常の画面に戻す
             else:
                 self._draw_passkey(pk)
         if pk is not None:
@@ -89,7 +89,7 @@ class Ui:
         if msg is not self._msg_drawn:
             self._msg_drawn = msg
             if msg is None:
-                self._dirty_all = True
+                self._back_to_normal()
             else:
                 self._draw_message(msg)
         if msg is not None:
@@ -101,6 +101,7 @@ class Ui:
                 self._move(1)
             elif k == "X":
                 self.map_mode = not self.map_mode
+                self._cleared = False  # 全画面の地図と欄の画面を切り替える
             elif k == "Y":
                 self.selected = None
             self._dirty_all = True
@@ -134,12 +135,18 @@ class Ui:
         self._last_sec = sec
         self._dirty_all = False
 
+    def _back_to_normal(self):
+        """全画面の表示(パスキー・メッセージ)から通常の画面に戻す。欄の間の隙間に
+        前の画面の文字が残らないよう、全体を塗ってから描く"""
+        self._dirty_all = True
+        self._cleared = False
+
     # ---- 描画
     def draw_all(self, now_ms):
         lay = self.lay
         if not self._cleared:
             # 欄の間の 1px の隙間(枠線の脇)はどの欄も描かないので、LCD のメモリに残る
-            # 電源投入直後のゴミが見える。最初に一度だけ全体を黒で塗る
+            # 電源投入直後のゴミや、全画面の表示(パスキーなど)の文字が見える。全体を黒で塗る
             self.scr.fill(0)
             self._cleared = True
         if self.map_mode and not lay.wide:
