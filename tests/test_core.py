@@ -98,12 +98,25 @@ def test_own_echo_flagged_and_not_on_map():
     s.update(P("JA1AAA>APRS:!3540.12N/13945.67E>a"), 0)
     s.update(P("JA1ME-7>APZPI2,JA1DG-1*,WIDE2-1:!3540.00N/13945.00E>my beacon"), 10)
     s.update(P("JA1ME>APRS:!3541.00N/13945.00E>other ssid"), 20)  # SSID 違いは別局
+    s.update(P("JA1ME-9>APRS:!3542.00N/13945.00E>other ssid"), 30)
+    s.update(P("JA1MEX>APRS:!3543.00N/13945.00E>longer call"), 40)  # 頭が同じだけの別の局
     me = s.by_call["JA1ME-7"]
     assert me.own and not s.by_call["JA1ME"].own and not s.by_call["JA1AAA"].own
     assert s.latest() is not me  # 一覧・詳細には出る(最新ではないだけ)
-    assert me in s.order
+    assert me in s.order and s.by_call["JA1ME-9"] in s.order  # 一覧には SSID 違いも出る
     assert me not in s.for_map()
-    assert [st.call for st in s.for_map()] == ["JA1ME", "JA1AAA"]
+    # 地図には自局と同じコールサインの局を SSID を問わず出さない
+    assert [st.call for st in s.for_map()] == ["JA1MEX", "JA1AAA"]
+    s.own_call = "JA1ME"  # SSID 0 の自局でも同じ
+    assert [st.call for st in s.for_map()] == ["JA1MEX", "JA1AAA"]
+
+
+def test_same_call_ignores_only_the_ssid():
+    from core.stations import same_call
+
+    assert same_call("Q1TEST", "Q1TEST") and same_call("Q1TEST-15", "Q1TEST")
+    assert not same_call("Q1TESTA", "Q1TEST") and not same_call("Q1TES", "Q1TEST")
+    assert not same_call("XQ1TEST-1", "Q1TEST")
 
 
 def test_object_is_tracked_by_name():

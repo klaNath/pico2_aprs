@@ -1520,12 +1520,20 @@ def test_station_still_transmits_after_a_week_of_listening():
 
 class _FakeBle:
     authenticated = False
-    conn = None
+    conn: "int | None" = None
     advertising_held = False
+    adv_closed = False
 
     def __init__(self, fail=False):
         self.fail = fail
         self.stopped = False
+
+    @property
+    def advertising_closed(self):
+        return self.adv_closed and self.conn is None
+
+    def close_advertising(self):
+        self.adv_closed = True
 
     def poll(self, now):
         if self.fail:
@@ -1550,6 +1558,40 @@ def test_ble_state_shows_the_advertising_hold():
         ble.advertising_held = True
         st.step(time.ticks_ms())
         assert st._ble_state() == "hold" and st.status.ble == "hold"
+    finally:
+        st.close()
+
+
+def test_ble_advertising_window_from_start():
+    # 起動から BLE_ADV_WINDOW_S で広告をやめ、灰色のアイコン("stop")にする。期限は局が持つので、
+    # BLE を作り直しても数え直さない。ticks が一周しても(6 日余り)再開しない
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station(gate_on=False)
+    try:
+        ble = _FakeBle()
+        st.ble = ble
+        t0 = st._ble_adv_until
+        assert t0 is not None and config.BLE_ADV_WINDOW_S == 600
+        st._check_adv_window(time.ticks_add(t0, -1))
+        assert not ble.adv_closed and st._ble_state() == "adv"
+        ble.conn = 1  # 期限のときに接続中: そのまま使える
+        ble.authenticated = True
+        st.step(t0)
+        assert ble.adv_closed and st._ble_adv_closed and st._ble_adv_until is None
+        assert st._ble_state() == "auth"
+        ble.conn, ble.authenticated = None, False  # 切れたら灰色
+        st.step(time.ticks_add(t0, 1000))
+        assert st._ble_state() == "stop" and st.status.ble == "stop"
+        # 作り直した BLE にも、閉じたことを伝える
+        ble2 = _FakeBle()
+        st.ble = ble2
+        st._check_adv_window(time.ticks_add(t0, 2000))
+        assert ble2.adv_closed
     finally:
         st.close()
 

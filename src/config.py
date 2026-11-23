@@ -96,6 +96,9 @@ FX25_TX = False
 # BLE(スマホからの設定変更と受信情報の読み取り。docs/ble-protocol.md)。外付け TNC モードだけで動く。
 # 認証(LCD に出る 6 桁のパスキー)が済んだ接続だけが操作できる。BLE が起動できなくても局は動く
 BLE_ENABLED = True
+# BLE の広告は起動からこの秒数だけ(0 で制限なし)。過ぎたら広告をやめ、灰色のアイコンにする。
+# そのとき接続中ならそのまま使え、切れたら電源を入れ直すまで見つからない
+BLE_ADV_WINDOW_S = const(600)
 PTT_ACTIVE_HIGH = True  # True: GP2 = 1 で送信(NPN/N-MOS で PTT 線を GND へ落とす回路)
 
 # Own callsign. Never write it in the source (keeps it out of the public repository and

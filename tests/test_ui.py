@@ -165,6 +165,10 @@ def test_ble_icon_states():
     assert ble_icon("hold", 24, 0) is ble_icons.HOLD_24
     assert ble_icon("hold", 24, 3) is ble_icons.HOLD_24
     assert ble_icon("hold", 20) is ble_icons.HOLD_20
+    # 広告の期限が過ぎた: 動かない、広告のアイコンを灰色にしたもの
+    assert ble_icon("stop", 24, 0) is ble_icons.OFF_24
+    assert ble_icon("stop", 24, 2) is ble_icons.OFF_24
+    assert ble_icon("stop", 20) is ble_icons.OFF_20
 
 
 def test_ble_icons_data():
@@ -173,6 +177,19 @@ def test_ble_icons_data():
     for n, frames, conn, hold in ((24, ble_icons.ADV_24, ble_icons.CONN_24, ble_icons.HOLD_24),
                                   (20, ble_icons.ADV_20, ble_icons.CONN_20, ble_icons.HOLD_20)):
         assert all(len(d) == 2 * n * n for d in frames + (conn, hold))
+    # OFF は灰色だけ(R/G/B がほぼ同じ)で、広告のアイコンと同じ形(点いている画素が同じ)
+    for n, off, adv in ((24, ble_icons.OFF_24, ble_icons.ADV_24[-1]),
+                        (20, ble_icons.OFF_20, ble_icons.ADV_20[-1])):
+        assert len(off) == 2 * n * n
+        lit = 0
+        for i in range(0, len(off), 2):
+            v = (off[i] << 8) | off[i + 1]
+            a = (adv[i] << 8) | adv[i + 1]
+            assert (v == 0) == (a == 0) or v < 0x0841  # 暗い縁は黒に丸まってよい
+            r, g, b = v >> 11, (v >> 5) & 63, v & 31
+            assert abs(2 * r - g) <= 2 and abs(r - b) <= 1
+            lit += v != 0
+        assert lit > 30
     # HOLD は赤い x を含む(赤が強い画素がある)
     d = ble_icons.HOLD_24
     red = sum(1 for i in range(0, len(d), 2)

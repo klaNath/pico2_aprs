@@ -4,7 +4,7 @@ The agreement for operating pico2_aprs (an APRS station built on a Raspberry Pi 
 
 - Audience: developers of the Web app (separate repository)
 - Design background on the device side: [ble-control.md](ble-control.md) (written in Japanese; it covers the device's internals. This document is meant to be sufficient on its own for building the Web app)
-- Document version: 0.10 (2026-11-23) / protocol version `proto`: 1
+- Document version: 0.11 (2026-11-23) / protocol version `proto`: 1
 
 ## 0. Status markers
 
@@ -46,8 +46,11 @@ What the app cannot do: send arbitrary packets, bulletins or other non-message t
 | Address | Public (the same on every start) |
 | Concurrent connections | 1. The device stops advertising while connected, so while another phone or PC is connected it cannot be found |
 | Advertising interval | 100 ms |
+| Advertising window | **Only for the first 10 minutes after power-on** (`BLE_ADV_WINDOW_S` in the device's config, 600 s). After that the device stops advertising and shows a grey BLE icon on the LCD. A connection open at that moment keeps working; once it drops, the device cannot be found or reconnected to, bonded or not, until it is powered on again |
 
 With Web Bluetooth, filter by service UUID. Show the name to the user to tell units apart, but do not filter by it.
+
+If the scan finds nothing, the app should say that the device advertises only for 10 minutes after power-on and suggest turning it off and on.
 
 ```js
 const NUS = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -605,6 +608,7 @@ When an item is decided, remove it from this table, write it into the body, and 
 
 | Version | Date | Change |
 |---|---|---|
+| 0.11 | 2026-11-23 | §2: the device advertises only for the first 10 minutes after power-on. A connection open at that time stays; after it drops, the device is not found until it is powered on again (grey icon on the LCD) |
 | 0.10 | 2026-11-23 | §4: the device disconnects after a failed pairing, and after 3 failures in a row stops advertising for 60 s. Before, a central could repeat pairing on one connection, and each attempt showed a passkey and ran the P-256 computation on the device |
 | 0.9 | 2026-11-22 | §9.1: tighter limits for transmissions. `path` limits `WIDEn-N`/`TRACEn-N` (n ≤ 2, N ≤ n, total N ≤ 3). `beacon_moving_s` minimum 30 → 60, `beacon_move_m` minimum 1 → 25 (default 10 → 25). "Moving" also needs a speed of 2 knots or more. A stored value outside the new limits is dropped at startup and the default is used |
 | 0.8 | 2026-11-20 | APRS messaging (provisional, being implemented): `msg.send`, `msg.list`, `msg.cancel` (§7.6–§7.8), the `msg` response and event (§8.8), error codes `tx_not_ready`, `queue_full`, `unknown_msg`, and `status.msg_unread`, `msg_pending`, `ch_busy`. The device acknowledges messages addressed to it by itself. Channel check from the received audio level (§7.9), used for automatic beacons, messages and acknowledgements (not `beacon.send`). §8.3: a `tx` event may be a message or an acknowledgement. §1 updated. `proto` stays 1 (additions only) |

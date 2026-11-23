@@ -132,7 +132,7 @@ class Link:
         return out
 
 
-def make(fs=None, shown=None):
+def make(fs=None, shown=None, adv_closed=False):
     fs = fs if fs is not None else FakeFs()
     cfg = Cfg()
     st = Settings(cfg, "/settings.json", opener=fs.open, remove=fs.remove, rename=fs.rename)
@@ -141,7 +141,7 @@ def make(fs=None, shown=None):
     fb = FakeBle()
     shown = shown if shown is not None else []
     b = B.Ble(r, on_passkey=shown.append, bonds_path="/ble_bonds.json", ble=fb, opener=fs.open,
-              remove=fs.remove, rename=fs.rename)
+              remove=fs.remove, rename=fs.rename, adv_closed=adv_closed)
     b.start()
     return b, fb, r, cfg, fs, shown
 
@@ -721,6 +721,37 @@ def test_three_failures_stop_advertising_for_a_while():
     b.poll(time.ticks_add(t3, B.PAIR_HOLD_MS))
     assert fb.adv is not None and b.pair_fails == 0
     assert not b.advertising_held
+
+
+def test_advertising_window_closes_for_good():
+    # 起動から BLE_ADV_WINDOW_S を過ぎたら(局が close_advertising を呼ぶ)、どこからも
+    # 広告を再開しない
+    b, fb, _r, _cfg, _fs, _shown = make()
+    assert fb.adv is not None and not b.advertising_closed
+    connect(b, fb)  # 接続中に期限が来ても、接続はそのまま
+    b.close_advertising()
+    assert fb.adv is None and b.authenticated and not b.advertising_closed
+    fb.ev(B.IRQ_CENTRAL_DISCONNECT, 1, 0, b"\x00" * 6)
+    assert fb.adv is None and b.advertising_closed  # 切れても広告しない(LCD は灰色)
+    b.poll(0)
+    assert fb.adv is None
+
+
+def test_advertising_window_also_stops_the_pairing_hold_restart():
+    b, fb, _r, _cfg, _fs, _shown = make()
+    for i in range(3):
+        _fail_pairing(b, fb, i + 1, i * 1000)
+    assert b.advertising_held and fb.adv is None
+    b.close_advertising()
+    t: "Any" = 2000  # ticks_ms の値として使う(スタブでは専用の型)
+    b.poll(time.ticks_add(t, B.PAIR_HOLD_MS))  # 休止が明けても広告しない
+    assert fb.adv is None and b.advertising_closed
+
+
+def test_ble_made_again_after_the_window_does_not_advertise():
+    # エラーのあと作り直すとき(adv_closed=True)は、起動しても広告しない
+    b, fb, _r, _cfg, _fs, _shown = make(adv_closed=True)
+    assert fb.adv is None and b.advertising_closed and b.running
 
 
 def test_authenticated_link_is_not_dropped_by_pairing_check():

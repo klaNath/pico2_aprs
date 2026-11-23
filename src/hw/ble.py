@@ -153,9 +153,11 @@ class LineBuffer:
 
 class Ble:
     def __init__(self, remote, on_passkey=None, bonds_path=BONDS_PATH, ble=None, opener=open,
-                 remove=os.remove, rename=os.rename, log=None):
+                 remove=os.remove, rename=os.rename, log=None, adv_closed=False):
         """remote: core.remote.Remote(write は start() で結ぶ)。on_passkey(passkey または None):
-        LCD にパスキーを出す/消す。ble: bluetooth.BLE のようなもの(試験用)"""
+        LCD にパスキーを出す/消す。ble: bluetooth.BLE のようなもの(試験用)。
+        adv_closed: 広告の期限(起動から config.BLE_ADV_WINDOW_S)が過ぎている(エラーのあとに
+        作り直すとき。局が期限を数え、close_advertising() で知らせる)"""
         self.remote = remote
         self.on_passkey = on_passkey
         self.bonds_path = bonds_path
@@ -170,6 +172,7 @@ class Ble:
         self._pair_failed = False  # この接続でペアリングに失敗した(IRQ が印を付け、poll が切断する)
         self.pair_fails = 0  # 続けて失敗した回数(認証できたら 0)
         self._adv_hold_ms = None  # この ticks_ms まで広告しない / None
+        self.adv_closed = adv_closed  # 広告の期限が過ぎた: 以後は広告しない(接続中はそのまま)
         self.authenticated = False
         self.mtu = DEFAULT_MTU
         self.key_size = 0  # 最後の暗号化の更新の鍵長(バイト)
@@ -208,7 +211,10 @@ class Ble:
         self._adv_hold_ms = None
         self.pair_fails = 0
         self._advertise()
-        self.log("[ble] advertising as %s" % self.name)
+        if self.adv_closed:
+            self.log("[ble] started as %s, not advertising (window over)" % self.name)
+        else:
+            self.log("[ble] advertising as %s" % self.name)
 
     def stop(self):
         was_running = self.running
@@ -224,7 +230,21 @@ class Ble:
             self._ble.active(False)
         self._save_secrets(force=True)
 
+    def close_advertising(self):
+        """広告の期限が過ぎた(局が呼ぶ)。広告を止め、以後は再開しない。接続中ならそのまま使え、
+        切れたら広告しない。BTstack は広告が有効のままなら切断のあと自分で再開するので、
+        接続中でも gap_advertise(None) で無効にしておく"""
+        if self.adv_closed:
+            return
+        self.adv_closed = True
+        if self.running:
+            self._ble.gap_advertise(None)
+        self.log("[ble] advertising window over, not advertising until restart"
+                 + (" (still connected)" if self.conn is not None else ""))
+
     def _advertise(self):
+        if self.adv_closed:  # 起動・切断・ペアリングの休止明けのどれからも再開しない
+            return
         self._ble.gap_advertise(
             ADV_INTERVAL_US, adv_data=adv_payload(None, uuid_le(NUS)),
             resp_data=adv_payload(self.name))
@@ -479,6 +499,11 @@ class Ble:
             out.pop(0)
 
     @property
+    def advertising_closed(self):
+        """広告の期限が過ぎて、つながっていない(電源を入れ直すまで見つからない。LCD のアイコン)"""
+        return self.adv_closed and self.conn is None
+
+    @property
     def advertising_held(self):
         """ペアリングの失敗が続いて、広告を止めている(PAIR_HOLD_MS の間。LCD のアイコン)"""
         return self._adv_hold_ms is not None and self.conn is None
@@ -507,8 +532,9 @@ class Ble:
         if hold is not None and self.conn is None and time.ticks_diff(now, hold) >= 0:
             self._adv_hold_ms = None
             self.pair_fails = 0
-            self._advertise()
-            self.log("[ble] advertising again")
+            if not self.adv_closed:
+                self._advertise()
+                self.log("[ble] advertising again")
 
     def _check_auth_timeout(self, now):
         conn = self.conn

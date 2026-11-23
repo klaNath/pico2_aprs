@@ -138,7 +138,7 @@ It stops when the time is up (exit code 124 is normal). Lines like these appear 
 [station] rx level rms -38 dBFS, peak -8 dBFS (ok), ch clear (busy >= -30)
 ```
 
-`TX ...` on the `started` line is the reason the station cannot transmit (`callsign not set`, `TX not enabled`). When it can, it shows `TX enabled`. On the 10-second line, `bcn` is the beacon switch (`next None` while it is `off`), `sd` the SD state (`no card` / `wait` / `log <number>`) and `ble` the BLE state (`adv` advertising / `conn` connected / `auth` authenticated).
+`TX ...` on the `started` line is the reason the station cannot transmit (`callsign not set`, `TX not enabled`). When it can, it shows `TX enabled`. On the 10-second line, `bcn` is the beacon switch (`next None` while it is `off`), `sd` the SD state (`no card` / `wait` / `log <number>`) and `ble` the BLE state (`adv` advertising / `conn` connected / `auth` authenticated / `hold` advertising paused after repeated pairing failures / `stop` the 10-minute advertising window is over).
 
 ### Make it start at power-on
 
@@ -188,7 +188,7 @@ Adjust the radio's volume with the receive-level meter on the screen (and the `r
 
 | Layout | Contents |
 |--------|----------|
-| 320x240 (default, `LCD_PANEL = "st7789_320x240"`) | Top: station list and details of the latest station (callsign, type, distance and bearing, position, comment). Bottom: own status (fix, satellites, time, position, next beacon, RX/TX counts), satellite signal strength and a small map (switches between the station map and the satellite sky plot) |
+| 320x240 (default, `LCD_PANEL = "st7789_320x240"`) | Top: station list and details of the latest station (callsign, type, distance and bearing, position, comment). Bottom: own status (fix, satellites, time, position, next beacon, RX/TX counts), satellite signal strength and a small map (switches between the station map and the satellite sky plot; stations with your own callsign, any SSID, are left off the map) |
 | 240x135 (`LCD_PANEL = "pico_display"`) | List on the left, details top right, own status bottom right. The X button switches to a full-screen map |
 
 - The top right shows the fix indicator and a BLE status icon. The own-status area shows the SD state (`SD:LOG` / `SD:WAIT` / `SD:ERR` / `SD:---`), `[TX]` while transmitting and `[RX]` just after receiving
@@ -218,6 +218,7 @@ On a Pico 2 W, a smartphone Web app (Chrome on Android, developed in a separate 
 - **What it can do**: show the status, show received packets, get the station list, change settings (callsign, SSID, symbol, path, comment, beacon intervals and mode, `tx_enabled`, FX.25), send a beacon now, and send and receive APRS messages (it resends until the other station acknowledges, and acknowledges messages to itself automatically)
 - Transmitting needs the beacon switch on, even when BLE asks for it. The phone cannot bypass the switch
 - Only one device can connect at a time, and the station stops advertising while connected
+- The station advertises **only for the first 10 minutes after power-on** (`config.BLE_ADV_WINDOW_S`). After that the BLE icon on the LCD turns grey and the phone cannot find it. A connection open at that moment keeps working, but once it drops you need to power the station off and on to connect again
 - The specification is [docs/ble-protocol.md](docs/ble-protocol.md) (for Web app developers). Some parts are provisional
 - From a PC, try `python tools/ble_cli.py pair` (first time; type the passkey on stdin), `get`, `stations`, `listen -s 30`, `send` and so on. On Windows there is a known issue where notifications stop arriving partway ([docs/ble-protocol.md §10.1](docs/ble-protocol.md#101-known-issue-windows-stops-receiving-notifications)). Android (nRF Connect) is the reliable way to check BLE
 
