@@ -111,6 +111,71 @@ def test_deframer_overrun():
     assert d.overruns == 2
 
 
+def _bits(frames, pre=2, post=1):
+    """フレームの列 -> データビット(NRZI を解いたもの)と、その数"""
+    lv = bytearray(sum(levels_size(len(f), pre, post) for f in frames))
+    n = 0
+    last = 0
+    for f in frames:
+        k, last = encode_levels(f, memoryview(lv)[n:], pre, post, last)
+        n += k
+    bits = bytearray(n)
+    prev = 0
+    for i in range(n):
+        bits[i] = 1 if lv[i] == prev else 0
+        prev = lv[i]
+    return bits, n
+
+
+def test_deframer_ring_wraps_and_keeps_each_frame():
+    # 受信中のフレームはリングの空きスロットに直接組み立てる。取り出しながら何周しても正しいこと
+    frames = _frames()
+    d = Deframer(3)
+    for r in range(4):
+        for f in frames:
+            bits, n = _bits([f])
+            assert d.feed(bits, n) == 1
+            m = d.get()
+            assert m is not None and bytes(m) == f, (r, f)
+            d.done()
+            assert d.get() is None
+    assert d.frames == 4 * len(frames) and d.overruns == 0
+
+
+def test_deframer_overrun_keeps_the_queued_frames():
+    # 満杯の間に来たフレームは head のスロットに書かれて捨てられる。取り出し待ちは壊れない
+    frames = _frames()
+    bits, n = _bits(frames)
+    d = Deframer(2)  # 同時に保持できるのは 1 フレーム
+    assert d.feed(bits, n) == 1
+    assert d.overruns == len(frames) - 1
+    m = d.get()
+    assert m is not None and bytes(m) == frames[0]
+    d.done()
+    bits, n = _bits([frames[1]])  # 空いたら、また受ける
+    assert d.feed(bits, n) == 1
+    m = d.get()
+    assert m is not None and bytes(m) == frames[1]
+
+
+def test_hw_deframer_feed_does_not_allocate():
+    # Core1 で動くので、フレームを組み立てて渡す間にメモリを確保しない(GC が Core1 で走らない)
+    frames = _frames()
+    bits, n = _bits(frames * 2)
+    d = Deframer(4)
+    d.feed(bits, n)  # 一度通して、属性の初回の確保などを済ませる
+    while d.get() is not None:
+        d.done()
+    over = d.overruns
+    gc.collect()
+    a0 = gc.mem_alloc()
+    got = d.feed(bits, n)
+    alloc = gc.mem_alloc() - a0
+    print("deframer %d frames, alloc %d bytes" % (got, alloc))
+    assert got == 3 and d.overruns - over == 3  # 4 スロット = 3 フレームまで。残りは捨てる
+    assert alloc == 0
+
+
 def test_noise_does_not_overflow():
     # 擬似乱数の雑音(LCG)。PLL が速く回ってもビットバッファを溢れさせないこと
     fs = 19200
