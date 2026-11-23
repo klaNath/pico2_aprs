@@ -408,7 +408,9 @@ def test_hw_ui_switches_to_passkey_and_back():
     assert len(scr.regions) == n + 1  # 出している間は描き直さない
     st.passkey = None
     ui.poll(4100)
-    assert len(scr.regions) > n + 1  # 通常の画面に戻る(全体を描き直す)
+    assert len(scr.regions) > n + 2  # 通常の画面に戻る(全体を描き直す)
+    # 欄の間の隙間にパスキーの文字が残らないよう、まず全体を塗る
+    assert scr.regions[n + 1] == "fill"
 
 
 def test_hw_draw_badge_frame_and_icon():
@@ -559,3 +561,4 @@ def test_hw_ui_shows_message_then_returns_and_passkey_wins():
     k = len(scr.regions)
     ui.poll(31_000)  # 時間切れ: 通常の画面
     assert st.message is None and len(scr.regions) > k + 1
+    assert scr.regions[k] == "fill"  # メッセージの文字を消してから描く
