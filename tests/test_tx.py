@@ -133,6 +133,20 @@ def test_hw_tx_timing_and_ptt():
         tx.close()
 
 
+def test_hw_tx_start_checks_the_sample_count():
+    # 既定の n はサンプル数(バイト数の半分)。バッファより多い n は PTT に触る前に断る
+    tx, pin = _tx(max_ms=1000)
+    try:
+        try:
+            tx.start(n=tx.nmax + 1)
+            raise AssertionError("ValueError expected")
+        except ValueError:
+            pass
+        assert pin.v != 1 and not tx.gate.keyed
+    finally:
+        tx.close()
+
+
 def test_hw_tx_buffer_reused():
     import gc
 

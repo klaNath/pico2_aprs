@@ -108,6 +108,8 @@ def decode_compressed(b, i):
         return None
     lat = 90 - y / 380926
     lon = -180 + x / 190463
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):  # 4 文字の base91 は範囲の外まで表せる
+        return None
     course = speed = alt = None
     c = b[i + 10]
     s = b[i + 11]

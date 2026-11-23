@@ -2,7 +2,7 @@
 
 .h の値は普通の RGB565(上位バイトが先)。framebuf の RGB565 にそのまま blit できるよう、
 1 画素を上位・下位の順の 2 バイトに並べる(hw.rgb565.rgb と同じ並び)。
-使うものだけ出す: 24px(320x240 用)と 20px(240x135 用)の adv_*・connected。
+使うものだけ出す: 24px(320x240 用)と 20px(240x135 用)の adv_*・connected・disconnected。
 
     python tools/icons/h2py.py
 """
@@ -50,7 +50,8 @@ def main():
         "",
         "生成物。手で編集しない。tools/icons/ble_icons.h(make_icons.py が作る)から",
         "python tools/icons/h2py.py で作る。",
-        "ADV_n: 広告中のアニメーションのコマ(弧が増えていく)、CONN_n: 認証済みで接続中。n は一辺の画素数",
+        "ADV_n: 広告中のアニメーションのコマ(弧が増えていく)、CONN_n: 認証済みで接続中、",
+        "HOLD_n: ペアリングの失敗が続いて広告を止めている(灰色に赤い x)。n は一辺の画素数",
         '"""',
         "",
     ]
@@ -67,6 +68,8 @@ def main():
         out.append(")")
         size, vals = icons["ble_connected_%d" % n]
         out.append("CONN_%d = %s" % (n, literal(to_bytes(vals))))
+        size, vals = icons["ble_disconnected_%d" % n]
+        out.append("HOLD_%d = %s" % (n, literal(to_bytes(vals))))
         out.append("")
     OUT.write_text("\n".join(out), encoding="utf-8", newline="\n")
     print("wrote", OUT.relative_to(HERE.parent.parent))

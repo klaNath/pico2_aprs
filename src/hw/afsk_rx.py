@@ -212,10 +212,16 @@ class Receiver:
         rd = ring.position()
         was_muted = False
         skip = 0
+        # 書き込み位置を読む間隔の上限(µs)。これより長く止まると、リングを 1 周以上書かれて
+        # avail(差の剰余)が小さく見え、上書きされた中身を読んでしまう(GC やフラッシュの書き込みで
+        # Core1 が止まったとき)。リング 1 周からブロック 1 つ分を引いた時間
+        stall_us = (n - _BLOCK) * 1_000_000 // self.fs
+        t_pos = time.ticks_us()
         try:
             while self.running:
                 if self.muted:  # 送信中: 読み捨てて追従だけする
                     wr = ring.position()
+                    t_pos = time.ticks_us()
                     self.muted_samples = (self.muted_samples + (wr - rd) % n) & 0x3FFFFFFF
                     rd = wr
                     was_muted = True
@@ -227,6 +233,15 @@ class Receiver:
                     for _dem, dfr in chains:
                         dfr.reset()
                 wr = ring.position()
+                t = time.ticks_us()
+                stalled = time.ticks_diff(t, t_pos) > stall_us
+                t_pos = t
+                if stalled:  # 止まっていた: 中身は上書きされている。現在位置から再開
+                    self.overruns += 1
+                    rd = wr
+                    for _dem, dfr in chains:
+                        dfr.reset()
+                    continue
                 avail = (wr - rd) % n
                 if skip > 0:
                     k = avail if avail < skip else skip

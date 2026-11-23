@@ -65,10 +65,12 @@ FLAG_NOTIFY = const(0x0010)
 FLAG_WRITE_AUTHENTICATED = const(0x2000)  # 暗号化 + MITM のペアリングが済んだ接続だけ書ける
 
 LINE_MAX = _remote.LINE_MAX  # 受ける 1 行の上限(バイト)
-RX_BUF = const(512)  # RX 特性のバッファ(1 回の書き込みの上限は MTU - 3)
 ATT_OVERHEAD = const(3)
 DEFAULT_MTU = const(23)
 MTU_WANTED = const(517)
+RX_BUF = const(514)  # RX 特性のバッファ = 1 回の書き込みの上限(MTU_WANTED - ATT_OVERHEAD)
+KEY_SIZE_MIN = const(16)  # 暗号化の鍵長(バイト)。LE Secure Connections は 16。短い鍵は認証しない
+SAVE_RETRY_MS = const(30_000)  # 鍵をフラッシュに書けなかったときに、やり直すまで
 # 1 回の通知の上限。リンク層の 1 パケット(データ長拡張 251 - L2CAP 4 - ATT 3)。
 # MTU 517 で 514 バイトの通知を続けて送ると、Windows の GATT が止まった(2026-11-17。
 # 応答が来なくなり、Bluetooth を入れ直すまで、つなぎ直しても通知の購読が Unreachable になる)
@@ -170,6 +172,7 @@ class Ble:
         self._adv_hold_ms = None  # この ticks_ms まで広告しない / None
         self.authenticated = False
         self.mtu = DEFAULT_MTU
+        self.key_size = 0  # 最後の暗号化の更新の鍵長(バイト)
         self.passkey = None
         self.lines = LineBuffer()
         self._todo = []  # 取り出したがまだ渡していない行(一覧の応答の途中は待たせる)
@@ -259,9 +262,10 @@ class Ble:
             if data[0] == self.conn:
                 self.mtu = data[1]
         elif event == IRQ_ENCRYPTION_UPDATE:
-            conn, encrypted, authenticated = data[0], data[1], data[2]
+            conn, encrypted, authenticated, key_size = data[0], data[1], data[2], data[4]
             if conn == self.conn:
-                ok = bool(encrypted and authenticated)
+                self.key_size = key_size
+                ok = bool(encrypted and authenticated) and key_size >= KEY_SIZE_MIN
                 self._set_authenticated(ok)
                 if not ok:
                     self._clear_passkey()  # パスキーの入力違いなどで失敗した
@@ -308,7 +312,7 @@ class Ble:
             self._clear_passkey()
             self.lines.clear()
             self.remote.attach()
-            self.log("[ble] authenticated")
+            self.log("[ble] authenticated (key %d)" % self.key_size)
         else:
             self.remote.detach()
 
@@ -396,7 +400,7 @@ class Ble:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
 
-    def _save_secrets(self, force=False, now=None):
+    def _save_secrets(self, force=False, now=None, raise_errors=False):
         if self._secrets_dirty_ms is None:
             return
         if not force:
@@ -407,9 +411,26 @@ class Ble:
         doc = {"version": 1, "secrets": [
             (t, binascii.hexlify(k).decode(), binascii.hexlify(v).decode())
             for t, k, v in list(self.secrets)]}
+        try:
+            self._write_bonds(json.dumps(doc).encode())
+        except OSError as e:
+            if raise_errors:  # forget_all(USB から): 消せなかったことを知らせる
+                raise
+            # フラッシュに書けない(満杯など): BLE は止めず、SAVE_RETRY_MS あとにやり直す。
+            # 書けるまでは、電源を切るとこの間にできたボンドが消える
+            self.log("[ble] bonds not saved (%r), retry in %d s" % (e, SAVE_RETRY_MS // 1000))
+            if not force:
+                t = time.ticks_ms() if now is None else now
+                self._secrets_dirty_ms = time.ticks_add(t, SAVE_RETRY_MS - SAVE_DELAY_MS)
+            return
+        if self._secrets_gen == gen:
+            self._secrets_dirty_ms = None
+        self.log("[ble] bonds saved (%d)" % len(doc["secrets"]))
+
+    def _write_bonds(self, data):
         f = self._open(self.tmp, "wb")
         try:
-            f.write(json.dumps(doc).encode())
+            f.write(data)
         finally:
             f.close()
         try:
@@ -417,9 +438,6 @@ class Ble:
         except OSError:
             pass
         self._rename(self.tmp, self.bonds_path)
-        if self._secrets_gen == gen:
-            self._secrets_dirty_ms = None
-        self.log("[ble] bonds saved (%d)" % len(doc["secrets"]))
 
     def forget_all(self):
         """ボンドをすべて消す。BTstack は起動時に読んだ表を持っているので、BLE を止めている
@@ -428,7 +446,7 @@ class Ble:
             return False
         self.secrets = [s for s in self.secrets if s[0] == SECRET_TYPE_TLV and s[1] in KEEP_TAGS]
         self._mark_dirty()
-        self._save_secrets(force=True)
+        self._save_secrets(force=True, raise_errors=True)
         try:
             self._remove(self.tmp)
         except OSError:
@@ -459,6 +477,11 @@ class Ble:
             except OSError:  # BTstack のキューが満杯。次の poll で送り直す
                 return
             out.pop(0)
+
+    @property
+    def advertising_held(self):
+        """ペアリングの失敗が続いて、広告を止めている(PAIR_HOLD_MS の間。LCD のアイコン)"""
+        return self._adv_hold_ms is not None and self.conn is None
 
     def _check_pairing(self, now):
         """ペアリングに失敗した接続を切る。続けて失敗したら、しばらく広告しない"""

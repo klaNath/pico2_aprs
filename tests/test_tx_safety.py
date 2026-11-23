@@ -568,6 +568,41 @@ def test_gate_clock_failure_never_keys_ptt():
     assert "ptt_on" not in log and not gate.keyed and log[-1] == "clk_off"
 
 
+def test_gate_tx_off_error_of_any_kind_refuses_later():
+    # tx_off の例外が OSError でなくても後始末を止めず、PTT を切り、以後は送らない
+    from core.txgate import TxGate
+
+    log = []
+    freq = LogFreq(log)
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=freq)
+    gate.key()
+
+    def broken_off():
+        log.append("clk_off")
+        raise ValueError("driver bug")
+
+    freq.tx_off = broken_off
+    gate.unkey()
+    assert log[-2:] == ["ptt_off", "clk_off"] and not gate.keyed
+    assert gate.refuse_reason() == "TX clock off failed"
+
+
+def test_gate_fault_refuses():
+    from core.txgate import TxGate, TxRefused
+
+    log = []
+    gate = TxGate(LogPin(log), callsign=CALL, allowed=True, freq=LogFreq(log))
+    gate.fault = "watchdog reset scope"
+    assert gate.refuse_reason() == "watchdog reset scope"
+    del log[:]
+    try:
+        gate.key()
+        raise AssertionError("TxRefused expected")
+    except TxRefused:
+        pass
+    assert "ptt_on" not in log
+
+
 def test_unset_freq_is_not_ready():
     from core.txgate import UnsetFreq
 
@@ -709,6 +744,25 @@ def _armed_station(gate_on=True):
     st = _station(gate_on)
     st.wdt = wd
     return st, wd, _fake_hw.WDT.instances[-1]
+
+
+def test_watchdog_reads_back_the_reset_scope():
+    if not _fake_hw.install():
+        return
+    import machine
+
+    from hw import watchdog
+
+    wd = watchdog.Watchdog()
+    wd.arm(watchdog.LOOP_MS)
+    assert wd.scope_ok is True  # 実機と同じ値(_fake_hw)
+    keep = machine.mem32[watchdog.PSM_WDSEL]
+    machine.mem32[watchdog.PSM_WDSEL] = 0x01FFFFF3 & ~0x00200000  # SIO が入らない設定
+    try:
+        wd.arm(watchdog.LOOP_MS)
+        assert wd.scope_ok is False
+    finally:
+        machine.mem32[watchdog.PSM_WDSEL] = keep
 
 
 def test_step_feeds_the_watchdog():
@@ -1208,6 +1262,49 @@ def _feed(st, *tnc2):
     st.rx.get = lambda now_ms=None: q.pop() if q else None
 
 
+def test_receive_table_error_still_answers_messages():
+    # 局の表の更新で例外が出ても、自局宛のメッセージは受けて ack を返す(別の try)
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station()
+    try:
+        def broken(*a, **kw):
+            raise ValueError("table bug")
+
+        st.stations.update = broken
+        _feed(st, "Q1AAA>APRS::%-9s:hi{5" % st.msgs.own)
+        st._receive(time.ticks_ms())
+        assert st.status.rx_count == 1 and st.msgs.unread == 1
+        assert [a[:2] for a in st.msgs._acks] == [["Q1AAA", "5"]]
+    finally:
+        st.close()
+
+
+def test_remote_error_stops_only_ble():
+    # スマホへのイベントで例外が出たら、BLE だけを止めて後で起動し直す。受信は続ける
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station()
+    try:
+        class BrokenRemote:
+            def rx(self, d):
+                raise RuntimeError("remote bug")
+
+        ble = _FakeBle()
+        st.ble, st.remote = ble, BrokenRemote()
+        _feed(st, "Q1AAA>APRS:>one", "Q1AAA>APRS:>two")
+        st._receive(time.ticks_ms())
+        assert st.status.rx_count == 2  # 2 つ目も受けた
+        assert st.ble is None and st.remote is None and ble.stopped
+        assert st._ble_retry is not None and st._ble_retry.at is not None
+    finally:
+        st.close()
+
+
 def _no(st, to, text):
     """msg_send() が断ったときの (code, msg, extra)"""
     r = st.msg_send(to, text)
@@ -1390,6 +1487,7 @@ def test_station_still_transmits_after_a_week_of_listening():
 class _FakeBle:
     authenticated = False
     conn = None
+    advertising_held = False
 
     def __init__(self, fail=False):
         self.fail = fail
@@ -1401,6 +1499,25 @@ class _FakeBle:
 
     def stop(self):
         self.stopped = True
+
+
+
+def test_ble_state_shows_the_advertising_hold():
+    # ペアリングの失敗が続いて広告を止めている間は、LCD のアイコンを "hold" にする
+    if not _fake_hw.install():
+        return
+    import time
+
+    st = _station(gate_on=False)
+    try:
+        ble = _FakeBle()
+        st.ble = ble
+        assert st._ble_state() == "adv"
+        ble.advertising_held = True
+        st.step(time.ticks_ms())
+        assert st._ble_state() == "hold" and st.status.ble == "hold"
+    finally:
+        st.close()
 
 
 def test_ble_error_stops_ble_and_restarts_it_later():

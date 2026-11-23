@@ -28,6 +28,33 @@ def test_hw_rx_keeps_up():
         rx.close()
 
 
+def test_hw_rx_detects_a_stall_longer_than_the_ring():
+    # Core1 がリング 1 周(約 213 ms)より長く止まったら、取りこぼしに数えて現在位置から読み直す。
+    # 差の剰余だけでは、1 周以上書かれたことに気づけない(上書きされた中身を読む)
+    from hw.afsk_rx import Receiver
+
+    rx = Receiver(config.PIN_RX_ADC, config.FS)
+    ring = rx.ring
+    real = ring.position
+    calls = [0]
+
+    def slow_once():
+        calls[0] += 1
+        if calls[0] == 20:
+            time.sleep_ms(300)  # Core1 の中で 1 回だけ止まる(GC などの模擬)
+        return real()
+
+    ring.position = slow_once
+    try:
+        rx.start()
+        time.sleep_ms(1000)
+        rx.stop()
+        print("calls %d, overruns %d" % (calls[0], rx.overruns))
+        assert calls[0] > 20 and rx.overruns == 1
+    finally:
+        rx.close()
+
+
 def test_hw_rx_mute_while_sending():
     # 送信中(mute)は復調に回さず読み捨て、解除後は余韻(tail_ms)の分を捨ててから復調に戻る
     from hw.afsk_rx import Receiver

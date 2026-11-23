@@ -197,6 +197,10 @@ def test_set_same_value_is_saved_but_not_changed():
     assert st.set({"ssid": 7}) == []
     assert got == []  # 変わっていなければ知らせない
     assert json.loads(fs.files["/settings.json"])["values"] == {"ssid": 7}
+    n = fs.writes
+    assert st.set({"ssid": 7}) == [] and fs.writes == n  # ファイルの中身も同じ: 書かない
+    st.set({"ssid": 8})
+    assert fs.writes == n + 1
 
 
 def test_set_is_all_or_nothing():

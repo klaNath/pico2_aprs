@@ -27,7 +27,8 @@ LAT, LON = 35.681236, 139.767125  # 試験用の固定座標(東京駅付近)
 def frames(k):
     # 音声だけのときは架空のコールサインでよい。PTT を入れるときはゲートが未設定を拒否する
     src = Address(config.CALLSIGN or config.TEST_CALL, config.SSID)
-    path = [Address.parse(p) for p in config.TX_PATH]
+    # ベンチの送信は中継させない(ダミーロードでも、漏れた電波をデジピーターが拾わないように)
+    path = []
     if k % 2 == 0:
         dst, info = mice.encode(LAT, LON, speed=4.0 * (k % 10), course=(k * 37) % 360 + 1,
                                 table=config.SYMBOL[0], code=config.SYMBOL[1], message=1,

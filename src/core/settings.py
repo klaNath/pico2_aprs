@@ -280,7 +280,8 @@ class Settings:
     def set(self, values):
         """values: {キー: 外向きの値}。全部を検証し、1 つでも不正なら何も変えず SettingsError。
         ファイルに書けなければ OSError(このときも config は変えない)。
-        変わったキーの list を返す(同じ値でもファイルには残す)"""
+        変わったキーの list を返す(既定値と同じ値でもファイルには残す)。ファイルの中身が
+        変わらないときは書かない(同じ設定を何度送ってもフラッシュを書き換えない)"""
         if not isinstance(values, dict) or not values:
             raise SettingsError("values", "object with at least one item")
         conv = {}
@@ -289,7 +290,8 @@ class Settings:
         saved = dict(self.saved)
         for key, v in conv.items():
             saved[key] = outward(key, v)
-        self._write(saved)
+        if saved != self.saved:
+            self._write(saved)
         self.saved = saved
         changed = []
         for key, v in conv.items():

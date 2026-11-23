@@ -20,7 +20,6 @@ from aprs.position import (
     decode_uncompressed,
     extract_altitude,
 )
-from tnc.ax25 import Frame
 
 
 def to_text(b):
@@ -102,9 +101,10 @@ def parse_frame(frame):
     return parse(str(frame.src), frame.dst.call, [str(d) for d in frame.digis], frame.info)
 
 
-def parse(src, dst, path, info):
+def parse(src, dst, path, info, nested=False):
     """src/dst: str(dst は SSID なしでよい)、path: str のリスト、info: bytes -> Packet
-    解析できない部分があっても例外にはせず、kind="other" や comment に残す。"""
+    解析できない部分があっても例外にはせず、kind="other" や comment に残す。
+    nested: サードパーティ('}')の中身。入れ子は 1 段まで(中の '}' は other)"""
     p = Packet(src, dst, path, info)
     if not info:
         return p
@@ -127,7 +127,7 @@ def parse(src, dst, path, info):
             _message(p, info)
         elif t == 0x3E:  # '>'
             _status(p, info)
-        elif t == 0x7D:  # '}'
+        elif t == 0x7D and not nested:  # '}'
             return _third_party(p, info)
     except (IndexError, ValueError):
         p.kind = "other"
@@ -247,13 +247,35 @@ def _status(p, info):
 
 
 def _third_party(p, info):
-    try:
-        inner = Frame.parse(bytes(info[1:]))
-    except ValueError:
+    # 中のヘッダは AX.25 でなく文字列として分ける。APRS-IS から来たものは、発信元が 7 文字以上
+    # だったり、パスに qAC などが入ったりして、AX.25 のアドレスの規則に合わない
+    body = bytes(info[1:])
+    k = body.find(b":")
+    gt = body.find(b">", 0, k)
+    if k < 0 or gt <= 0:
         return p
-    q = parse_frame(inner)
+    try:
+        head = body[:k].decode()
+    except UnicodeError:
+        return p
+    parts = head[gt + 1 :].split(",")
+    src = head[:gt]
+    if not all(_tp_call_ok(x) for x in [src] + parts):
+        return p
+    q = parse(src, parts[0].split("-")[0], parts[1:], body[k + 1 :], True)
     q.third_party = "%s>%s,%s" % (p.src, p.dst, ",".join(p.path)) if p.path else "%s>%s" % (
         p.src,
         p.dst,
     )
     return q
+
+
+def _tp_call_ok(x):
+    """サードパーティの中のヘッダの 1 項目(発信元・宛先・パス): 1-9 文字の印字できる ASCII
+    (APRS-IS の上限)。区切りの '>' ',' ':' と空白は含まない。パスの末尾の '*' は受ける"""
+    if not 1 <= len(x) <= 10 or (len(x) == 10 and x[-1] != "*"):
+        return False
+    for c in x:
+        if not 0x21 <= ord(c) <= 0x7E or c in ">,:":
+            return False
+    return True

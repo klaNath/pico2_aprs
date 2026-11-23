@@ -94,6 +94,20 @@ def test_files_and_lines():
     assert aprs.closed and nmea.closed and lg.seq is None
 
 
+def test_control_chars_in_a_packet_stay_on_one_line():
+    # 受信の本文の改行で、ログに偽の行(偽の時刻や TX)を差し込ませない。架空の局
+    fs = FakeFs([])
+    lg = make(fs)
+    lg.start("/sd/log", UTC)
+    lg.packet(b"Q1AAA>APRS:>hi\n2026-10-24T23:48:40Z TX Q1TEST-7>APRS:fake\\\x00", utc_s=UTC)
+    lg.poll(now_ms=time.ticks_add(lg._last_flush, 10_000))
+    aprs = fs.files["/sd/log/0001_aprs.txt"]
+    assert aprs.flushed.endswith(
+        b"2026-10-24T23:48:33Z Q1AAA>APRS:>hi\\x0a2026-10-24T23:48:40Z TX Q1TEST-7>APRS:fake"
+        b"\\x5c\\x00\n")
+    assert aprs.flushed.count(b"\n") == 2  # 見出しと、この 1 行
+
+
 def test_makes_directory():
     fs = FakeFs(None)
     assert make(fs).start("/sd/log") == 1

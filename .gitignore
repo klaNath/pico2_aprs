@@ -61,6 +61,12 @@ claude_docs/
 # このマシンだけの設定(コールサインなど)。git に入れない
 src/config_local.py
 
+# デバイスから写したもの(ボンドの鍵 LTK、スマホから保存した設定)。git に入れない
+ble_bonds.json
+ble_bonds.json.tmp
+settings.json
+settings.json.tmp
+
 # --- 参考資料(取扱説明書・データシートなど。配布元から入手する) ---
 # hw/ の回路図 PDF(ft818_if.pdf など)は追跡する
 docs/*.pdf

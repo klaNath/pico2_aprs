@@ -131,3 +131,23 @@ def test_bridge_hold_matches_watchdog_hold():
 
     assert wdt_bridge.HOLD_MS == watchdog.HOLD_MS
     assert wdt_bridge.PERIOD_MS == watchdog.HOLD_PERIOD_MS
+
+
+def test_wdsel_needs_resets_and_sio():
+    # pico-sdk の watchdog_enable が立てる値(ROSC・XOSC 以外)は通る。RESETS か SIO が無ければ断る
+    assert watchdog.wdsel_ok(lambda: 0x01FFFFF3)
+    assert not watchdog.wdsel_ok(lambda: 0)
+    assert not watchdog.wdsel_ok(lambda: 0x01FFFFF3 & ~0x10)  # RESETS が無い
+    assert not watchdog.wdsel_ok(lambda: 0x01FFFFF3 & ~0x00200000)  # SIO が無い
+    w = make()
+    w.arm(watchdog.LOOP_MS)
+    assert w.scope_ok is None  # 偽の WDT では読まない
+
+
+def test_hw_wdsel_after_watchdog():
+    # 実機: ボードの WDT は boot の wdt_bridge か局が入れている。入っていれば RESETS と SIO がそろう
+    import machine
+
+    v = machine.mem32[watchdog.PSM_WDSEL]
+    print("PSM_WDSEL = 0x%08x" % v)
+    assert v == 0 or watchdog.wdsel_ok()

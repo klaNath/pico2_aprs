@@ -14,7 +14,7 @@ import os
 import time
 
 from core import ticks
-from core.messages import Msg
+from core.messages import NO_MAX, Msg
 from core.stationfile import escape, unescape
 
 SAVE_MS = 5000  # 変わったら、前回の保存からこれだけたってから書く
@@ -98,9 +98,11 @@ class MsgFile:
                         k = line.find(b" next ")
                         if k >= 0:
                             try:
-                                next_no = int(line[k + 6 :].strip().decode())
+                                v = int(line[k + 6 :].strip().decode())
                             except ValueError:
-                                pass
+                                v = 0
+                            if 1 <= v <= NO_MAX:  # 壊れた値は使わない(番号は 1 から NO_MAX)
+                                next_no = v
                         continue
                     if not line.strip():
                         continue

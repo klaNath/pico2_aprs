@@ -121,6 +121,8 @@ class TxGate:
         self.max_ms = max_ms
         self.keyed = False
         self._clk_fault = False
+        # 送信を拒否する理由(局が見つけた異常。例: ウォッチドッグの範囲)/ None
+        self.fault: "str | None" = None
         self._t0 = 0
         self._limit = max_ms
         pin.value(1 - self._on)
@@ -130,6 +132,8 @@ class TxGate:
         """送信できない理由の文字列。送信できるなら None"""
         if self._clk_fault:
             return "TX clock off failed"
+        if self.fault is not None:
+            return self.fault
         if not valid_callsign(self.callsign):
             return "callsign not set"
         if not self.allowed:
@@ -176,7 +180,7 @@ class TxGate:
             self.keyed = False
             try:
                 self.freq.tx_off()
-            except OSError:  # 後始末を止めない。PTT は切れているが、以後の送信は拒否する
+            except Exception:  # 後始末を止めない。PTT は切れているが、以後の送信は拒否する
                 self._clk_fault = True
             finally:
                 if self.tr is not None:
