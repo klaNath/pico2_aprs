@@ -138,7 +138,7 @@ class SdLog:
                     time.sleep_ms(50)
             vfs.mount(vfs.VfsFat(sd), MOUNT)  # pyright: ignore[reportArgumentType]
             self.mounted = True
-            seq = self.logger.start(LOG_DIR, utc_s, resume=self._resume)
+            seq = self.logger.start(LOG_DIR, utc_s, resume=self._resume, now_ms=now)
         except OSError as e:
             self._fail("mount", e, now)
             return

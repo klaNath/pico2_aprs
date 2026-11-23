@@ -6,6 +6,8 @@ tests/test_*.py の中の test_* 関数を実行し、最後に
 PC 上(tools/host_test.py、host=True)では test_hw_* を実機専用としてスキップする。
 モジュールに SKIP = "理由" があれば、そのモジュールのテストは PC でも実機でも全部スキップする
 (いまは使わない機能のテストを止めておく。復活させるときは SKIP を消す)。
+excluded: release で ROMFS に入れないモジュールの名前(dev.py test --romfs が渡す)。それを
+import できずに失敗したテストのモジュールはスキップする(ほかの ImportError は失敗のまま)。
 """
 
 import gc
@@ -16,7 +18,15 @@ import time
 TEST_DIR = "/remote/tests"
 
 
-def main(pattern="", host=False):
+def _excluded(e, excluded):
+    msg = str(e)
+    for name in excluded:
+        if name in msg:
+            return name
+    return None
+
+
+def main(pattern="", host=False, excluded=()):
     files = sorted(
         f
         for f in os.listdir(TEST_DIR)
@@ -29,6 +39,16 @@ def main(pattern="", host=False):
         modname = f[:-3]
         try:
             mod = __import__(modname)
+        except ImportError as e:
+            name = _excluded(e, excluded)
+            if name is None:
+                failed += 1
+                print("ERROR import", modname)
+                sys.print_exception(e)  # type: ignore[attr-defined]
+            else:
+                skipped += 1
+                print("SKIP", modname + ":", name, "is not in the release")
+            continue
         except Exception as e:  # noqa: BLE001
             failed += 1
             print("ERROR import", modname)

@@ -124,7 +124,7 @@ class Logger:
             self._t0 = time.ticks_add(self._t0, s * 1000)
 
     # ---- ファイル
-    def start(self, root, utc_s=None, resume=None):
+    def start(self, root, utc_s=None, resume=None, now_ms=None):
         """root にこの起動のファイルを作って開く。通し番号を返す。失敗は OSError。
         resume: 通し番号。そのファイルに追記する(失敗のあとのやり直し。番号は探さない)"""
         if resume is None:
@@ -154,7 +154,7 @@ class Logger:
         self.seq = seq
         self.flush()
         # ファイルが無かった間の古い時刻のままだと、ticks の一周で次の書き込みが何日も遅れる
-        self._last_flush = time.ticks_ms()
+        self._last_flush = time.ticks_ms() if now_ms is None else now_ms
         return seq
 
     def poll(self, now_ms=None):

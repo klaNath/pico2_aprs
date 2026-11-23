@@ -376,14 +376,29 @@ def cmd_test(a) -> int:
     if a.host:
         log("PC(CPython)上で tests/ を実行します(test_hw_* はスキップ)")
         return _test_result(*stream([sys.executable, rel(ROOT / "tools" / "host_test.py"), a.pattern], a.timeout))
-    code = (
-        "import sys\n"
-        "sys.path.insert(0, '/remote/tests')\n"
-        "sys.path.insert(0, '/remote/src')\n"
-        "import _runner\n"
-        f"_runner.main({a.pattern!r})\n"
-    )
+    if getattr(a, "romfs", False):
+        # 書き込んだ ROMFS の .mpy を試す: tests/ だけを sys.path に入れ、src/ は入れない
+        log("書き込んだ ROMFS(/rom の .mpy)で tests/ を実行します")
+        code = (
+            "import sys\n"
+            "sys.path.insert(0, '/remote/tests')\n"
+            "import _runner\n"
+            f"_runner.main({a.pattern!r}, excluded={_excluded_modules()!r})\n"
+        )
+    else:
+        code = (
+            "import sys\n"
+            "sys.path.insert(0, '/remote/tests')\n"
+            "sys.path.insert(0, '/remote/src')\n"
+            "import _runner\n"
+            f"_runner.main({a.pattern!r})\n"
+        )
     return _test_result(*mounted_exec(code, ROOT, a.timeout))
+
+
+def _excluded_modules() -> tuple[str, ...]:
+    """RELEASE_EXCLUDE のモジュール名(core/nmea.py -> "core.nmea")。ROMFS には入らない"""
+    return tuple(n[:-3].replace("/", ".") for n in RELEASE_EXCLUDE if n.endswith(".py"))
 
 
 def cmd_lint(a) -> int:
@@ -694,6 +709,11 @@ def cmd_release(a) -> int:
     rc = cmd_romfs_deploy(a)
     if rc != 0:
         return rc
+    # mpy-cross でコンパイルした版でも同じテストが通るか(.py との違い、ROMFS への入れ漏れ)
+    a.romfs, a.host, a.pattern, a.timeout = True, False, "", 240
+    if cmd_test(a) != 0:
+        log("書き込んだ ROMFS 版でテストが失敗しました(書き込みは済んでいます)。上の出力を確認してください")
+        return 1
     log(f"ソフトリセットして、電源投入時と同じ経路(main.py)で起動を {a.boot_seconds:g} 秒確かめます")
     out = _boot_watch(a.boot_seconds)
     ok = any(RELEASE_BOOT_OK in line and RELEASE_BOOT_OK_END in line for line in out.splitlines())
@@ -805,6 +825,8 @@ def main() -> int:
     p = add("test", cmd_test, 180)
     p.add_argument("pattern", nargs="?", default="")
     p.add_argument("--host", action="store_true", help="PC(CPython)上で実行(デバイス不要)")
+    p.add_argument("--romfs", action="store_true",
+                   help="src/ を使わず、書き込んだ ROMFS の .mpy で実行(release の後の確認)")
     add("lint", cmd_lint)
     add("check", cmd_check)
     p = add("deploy", cmd_deploy, 120)
