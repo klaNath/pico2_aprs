@@ -346,6 +346,7 @@ def _station(gate_on=False):
     st.gnss.rtc.last_ms = 0
     st.gnss.gps.speed, st.gnss.gps.course, st.gnss.gps.altitude = 0.0, 0.0, 10.0
     _fake_hw.Pin.state[config.PIN_BEACON_SW] = config.BEACON_SW_ON
+    st._sw_on.on_ms = 0  # テストではスイッチをすぐ効かせる(遅延は test_beacon_switch_needs_100_ms)
     return st
 
 
@@ -436,6 +437,39 @@ def _switch(st, on):
 
     v = config.BEACON_SW_ON if on else 1 - config.BEACON_SW_ON
     _fake_hw.Pin.state[config.PIN_BEACON_SW] = v
+
+
+def test_beacon_switch_needs_100_ms():
+    # 一瞬のオン(RF・静電気)ではビーコンを送らない。オフはすぐ効く
+    if not _fake_hw.install():
+        return
+    import time
+
+    import config
+
+    st = _station(gate_on=True)
+    st._sw_on.on_ms = config.BEACON_SW_ON_MS
+    _switch(st, False)
+    assert not st._sw_on.value(1000)
+    _switch(st, True)
+    assert not st._sw_on.value(1000) and not st._sw_on.value(1099)
+    _switch(st, False)  # 途中で切れたら数え直す
+    assert not st._sw_on.value(1100)
+    _switch(st, True)
+    assert not st._sw_on.value(1150) and not st._sw_on.value(1249)
+    assert st._sw_on.value(1250)
+    # 一度オンと決まれば、6 日を超えて(ticks の差が反転しても)オンのまま
+    t = time.ticks_add(1250, 0)  # pyright: ignore[reportArgumentType]
+    for _ in range(3):  # 3 x 2^28 ms 後(ticks_add は一度に半周を超えて足せない)
+        t = time.ticks_add(t, 1 << 28)
+    assert st._sw_on.value(t)
+    _switch(st, False)
+    assert not st._sw_on.value(1300)
+    # 局のビーコン: オンにした直後は送らない
+    st._sw_on._since = None
+    _switch(st, True)
+    st._beacon(time.ticks_ms())
+    assert st.status.tx_count == 0 and not st.status.beacon_on
 
 
 def test_beacon_switch_open_means_off():

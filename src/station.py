@@ -45,8 +45,10 @@ import config
 
 # BLE のアイコン(約 49 KB のソース)は、何よりも先に読み込む。マウントでは読み込みのたびに
 # ソースをコンパイルするので、大きなソースほど一時的に大きな連続領域が要る。後に回すと
-# ui.controller の読み込みが MemoryError になった(広告の停止のアイコンを足したとき、2026-11-23)
-from ui import ble_icons  # noqa: F401, E402
+# ui.controller の読み込みが MemoryError になった(広告の停止のアイコンを足したとき、2026-11-23)。
+# ui.controller(と ui.views)も大きなソースなので続けて読む(左から順に読み込まれる)。後に回すと
+# 3 KB の確保で MemoryError になった(ビーコンスイッチの遅延を足したとき、2026-11-23)
+from ui import ble_icons, controller  # noqa: F401, E402
 
 # 大きなバッファは、ほかのモジュールを読み込む前に確保する。dev.py run/exec(src をマウント)では
 # 読み込みのたびにソースをコンパイルするのでヒープが細切れになり、後からでは数十 KB の連続領域が
@@ -79,6 +81,7 @@ from machine import SPI, Pin
 from aprs.message import MessageError, check_text, check_to
 from aprs.packet import parse_frame
 from core.beacon import Beacon, mice_frame
+from core.debounce import OnDelay
 from core.level import Channel, Level, db_peak
 from core.messages import Messages, QueueFull
 from core.settings import Settings
@@ -160,6 +163,8 @@ class Station:
         self.gnss.on_nmea = self.sd.nmea
         self.gnss_ok = False
         self.sw = Pin(config.PIN_BEACON_SW, Pin.IN, Pin.PULL_UP)
+        self._sw_on = OnDelay(lambda: self.sw.value() == config.BEACON_SW_ON,
+                              config.BEACON_SW_ON_MS)
         self.led = Pin(config.PIN_STATUS_LED, Pin.OUT, value=0)
         self.beacon = Beacon(config.BEACON_MOVING_S, config.BEACON_STILL_S, config.BEACON_MOVE_M)
         # 異常で再起動した直後(失敗の記録、またはウォッチドッグのリセット): 最初のビーコンを待つ
@@ -393,7 +398,8 @@ class Station:
 
     # ---- ビーコン
     def _switch_on(self):
-        return self.sw.value() == config.BEACON_SW_ON
+        """オンが BEACON_SW_ON_MS 続いているか(オフはすぐ。core/debounce.py)"""
+        return self._sw_on.value()
 
     def _position_ok(self):
         # 時刻も待つ: RMC より先に GLL/GSA を受けると、RTC を合わせる前に測位有効になることがある

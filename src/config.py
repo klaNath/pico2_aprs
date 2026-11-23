@@ -41,6 +41,7 @@ PIN_RX_IF = const(8)
 RX_IF_METHOD = "pll"  # "pll"(DPLL。乱れたエッジに強い)/ "count"(周期の逆数計数)
 PIN_BEACON_SW = const(21)  # 内部プルアップ。Low(GND に落とす)でビーコン送出オン(未接続はオフ)
 BEACON_SW_ON = 0
+BEACON_SW_ON_MS = const(100)  # オンがこの時間続いたら有効(オフはすぐ)。RF・静電気での誤送出を防ぐ
 PIN_STATUS_LED = const(7)
 
 # 表示(ST7789 2.4 インチ 240x320、横長 320x240 で使う)。パネルを替えるときは LCD_PANEL を変える
@@ -51,7 +52,10 @@ PIN_LCD_MOSI = const(19)
 PIN_LCD_CS = const(17)
 PIN_LCD_DC = const(16)
 PIN_LCD_BL = const(20)
-LCD_BAUD = const(62_500_000)
+# SPI のクロックは周辺クロック(clk_peri、MicroPython の既定で 48 MHz)の 1/2 が上限。62.5 MHz を
+# 指定しても実際は 24 MHz だった(2026-11-23 に print(spi) で実測。全画面の転送 61 ms)。
+# 周辺クロックは UART(GNSS)と SD の SPI にも効くので上げない
+LCD_BAUD = const(24_000_000)
 BUTTONS = ()  # 画面操作のボタン(rev1 の基板には無い)。(A, B, X, Y) の GPIO 番号
 
 # microSD(SPI1)

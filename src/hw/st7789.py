@@ -74,6 +74,9 @@ PANELS = {
 }
 
 
+BL_FREQ = const(25_000)  # バックライトの PWM の周波数
+
+
 class ST7789:
     def __init__(self, spi, dc, cs, bl=None, panel="pico_display"):
         """spi: 初期化済みの machine.SPI。dc/cs/bl: GPIO 番号。
@@ -87,7 +90,9 @@ class ST7789:
         self.spi = spi
         self.dc = Pin(dc, Pin.OUT, value=1)
         self.cs = Pin(cs, Pin.OUT, value=1)
-        self.bl = PWM(Pin(bl), freq=1000, duty_u16=0) if bl is not None else None
+        # バックライトの PWM は 25 kHz(音声帯域の外)。1 kHz だと電流の揺れが受信 ADC に 1/2/3 kHz の
+        # 線として回り込んでいた(2026-11-23 の実測で 0.36 カウント。25 kHz では消灯時と同じ)
+        self.bl = PWM(Pin(bl), freq=BL_FREQ, duty_u16=0) if bl is not None else None
         self._buf4 = bytearray(4)
         self._cmd(_SWRESET)
         time.sleep_ms(150)
