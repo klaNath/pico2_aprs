@@ -8,6 +8,7 @@ MicroPython 固有の API(micropython.const, time.ticks_*, sys.print_exception)�
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import traceback
@@ -33,12 +34,20 @@ def install_shims() -> None:
     # Windows の monotonic は分解能が 15.6 ms(GetTickCount64)で、sleep_ms(10) が 0 ms に見えることがある
     t0 = time.perf_counter_ns()
     period = 1 << 30  # MicroPython rp2 の ticks の周期
+    # 起点を周期の終わりの少し前に置き、テストの途中で折り返させる(引き算や大小比較の誤りを PC で
+    # 見つける)。HOST_TICKS_START=<ミリ秒>で変えられる(0 で実機の起動直後と同じ)
+    env = os.environ.get("HOST_TICKS_START")
+    if env:
+        start_ms = int(env) & (period - 1)
+        start_us = (start_ms * 1000) & (period - 1)
+    else:
+        start_ms, start_us = period - 5_000, period - 5_000_000
 
     def ticks_ms() -> int:
-        return ((time.perf_counter_ns() - t0) // 1_000_000) & (period - 1)
+        return ((time.perf_counter_ns() - t0) // 1_000_000 + start_ms) & (period - 1)
 
     def ticks_us() -> int:
-        return ((time.perf_counter_ns() - t0) // 1_000) & (period - 1)
+        return ((time.perf_counter_ns() - t0) // 1_000 + start_us) & (period - 1)
 
     def ticks_add(t: int, d: int) -> int:
         # 実機(MicroPython)と同じく、半周を超える差は受けない(長い時間を一度に足す誤りを PC でも見つける)
