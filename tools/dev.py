@@ -377,10 +377,14 @@ def cmd_test(a) -> int:
         log("PC(CPython)上で tests/ を実行します(test_hw_* はスキップ)")
         return _test_result(*stream([sys.executable, rel(ROOT / "tools" / "host_test.py"), a.pattern], a.timeout))
     if getattr(a, "romfs", False):
-        # 書き込んだ ROMFS の .mpy を試す: tests/ だけを sys.path に入れ、src/ は入れない
+        # 書き込んだ ROMFS の .mpy を試す: tests/ だけを sys.path に入れ、src/ は入れない。
+        # '' も外す: マウント中のカレントは /remote(リポジトリのルート)で、基板の hw/ が
+        # /rom/hw より先に hw パッケージとして見つかってしまう
         log("書き込んだ ROMFS(/rom の .mpy)で tests/ を実行します")
         code = (
             "import sys\n"
+            "if '' in sys.path:\n"
+            "    sys.path.remove('')\n"
             "sys.path.insert(0, '/remote/tests')\n"
             "import _runner\n"
             f"_runner.main({a.pattern!r}, excluded={_excluded_modules()!r})\n"
