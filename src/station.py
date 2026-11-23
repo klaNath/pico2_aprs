@@ -179,6 +179,11 @@ class Station:
         self._air_ms = None  # 最後に電波を出し終えた ticks_ms(ビーコン・メッセージ・ack)
         self._fatal = None  # send_now() の送信中の例外(step() が投げ直す)
         self._ble_retry = None  # upkeep.BleRetry(BLE がエラーで止まってから作る)
+        # BLE の広告の期限(起動から BLE_ADV_WINDOW_S)。BLE を作り直しても数え直さないよう局が持つ。
+        # 過ぎたら _ble_adv_closed を立てて期限は捨てる(ticks の差は 6 日余りで反転する)
+        w = config.BLE_ADV_WINDOW_S
+        self._ble_adv_until = time.ticks_add(time.ticks_ms(), w * 1000) if w > 0 else None
+        self._ble_adv_closed = False
         self.status.beacon_mode = config.BEACON_MODE
 
     def start_ble(self):
@@ -191,7 +196,8 @@ class Station:
 
             self.remote = Remote(self.settings, None, self.remote_status, self.remote_stations,
                                  log=print, send_fn=self.send_now, msgs=self)
-            self.ble = Ble(self.remote, on_passkey=self._on_passkey, log=print)
+            self.ble = Ble(self.remote, on_passkey=self._on_passkey, log=print,
+                           adv_closed=self._ble_adv_closed)
             self.ble.start()
         except Exception as e:
             sys.print_exception(e)
@@ -313,6 +319,7 @@ class Station:
         self._messages(now)
         self.status.msg_unread = self.msgs.unread
         self.status.msg_pending = self.msgs.pending()
+        self._check_adv_window(now)
         if self.ble is not None:
             try:
                 self.ble.poll(now)
@@ -601,10 +608,21 @@ class Station:
                 lv.rms_db, lv.peak_db, lv.grade(), "busy" if self.channel.busy else "clear",
                 config.CH_BUSY_DB))
 
+    def _check_adv_window(self, now):
+        """BLE の広告の期限が過ぎたら、BLE に知らせる(以後は電源を入れ直すまで広告しない)"""
+        until = self._ble_adv_until
+        if until is not None and time.ticks_diff(now, until) >= 0:
+            self._ble_adv_until = None
+            self._ble_adv_closed = True
+        if self._ble_adv_closed and self.ble is not None and not self.ble.adv_closed:
+            self.ble.close_advertising()
+
     def _ble_state(self):
         b = self.ble
         if b is None:
             return "off"
+        if b.advertising_closed:
+            return "stop"  # 広告の期限が過ぎて、つながっていない(灰色のアイコン)
         if b.advertising_held:
             return "hold"  # ペアリングの失敗が続いて、広告を止めている
         return "auth" if b.authenticated else "conn" if b.conn is not None else "adv"

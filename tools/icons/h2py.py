@@ -36,6 +36,18 @@ def to_bytes(vals):
     return bytes(b)
 
 
+def grayed(vals, scale=0.9):
+    """RGB565 の画素を輝度の灰色に(グレーアウト)。黒(背景)は黒のまま"""
+    out = []
+    for v in vals:
+        r = ((v >> 11) & 31) * 255 / 31
+        g = ((v >> 5) & 63) * 255 / 63
+        b = (v & 31) * 255 / 31
+        y = min(255, int((0.299 * r + 0.587 * g + 0.114 * b) * scale + 0.5))
+        out.append(((y >> 3) << 11) | ((y >> 2) << 5) | (y >> 3))
+    return out
+
+
 def literal(data, indent="    "):
     lines = []
     for k in range(0, len(data), LINE_BYTES):
@@ -51,7 +63,8 @@ def main():
         "生成物。手で編集しない。tools/icons/ble_icons.h(make_icons.py が作る)から",
         "python tools/icons/h2py.py で作る。",
         "ADV_n: 広告中のアニメーションのコマ(弧が増えていく)、CONN_n: 認証済みで接続中、",
-        "HOLD_n: ペアリングの失敗が続いて広告を止めている(灰色に赤い x)。n は一辺の画素数",
+        "HOLD_n: ペアリングの失敗が続いて広告を止めている(灰色に赤い x)、",
+        "OFF_n: 広告の期限が過ぎた(広告のアイコンの最後のコマを灰色にしたもの)。n は一辺の画素数",
         '"""',
         "",
     ]
@@ -70,6 +83,8 @@ def main():
         out.append("CONN_%d = %s" % (n, literal(to_bytes(vals))))
         size, vals = icons["ble_disconnected_%d" % n]
         out.append("HOLD_%d = %s" % (n, literal(to_bytes(vals))))
+        size, vals = icons[advs[-1]]
+        out.append("OFF_%d = %s" % (n, literal(to_bytes(grayed(vals)))))
         out.append("")
     OUT.write_text("\n".join(out), encoding="utf-8", newline="\n")
     print("wrote", OUT.relative_to(HERE.parent.parent))

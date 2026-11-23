@@ -8,6 +8,7 @@
 - 位置を持つパケットを受けたら位置を更新する。位置の無いパケットでは前の位置を残す
 - 自局(own_call と SSID まで一致)のパケットは、デジピーターで中継されて戻ってきたもの。
   own フラグを立て、地図には出さない(一覧では色を変えて区別する)
+- 自局と同じコールサインで SSID が違う局(自分の別の局)も地図には出さない(一覧には出す)
 時刻は time.ticks_ms() の値(ラップアラウンドするので差は ticks_diff で取る)。
 microSD から復元した局(core.stationfile)は、復元した時刻を heard_ms に、それまでの経過秒を
 age0_s に持つ(ticks_diff は約 6 日までしか正しくないので、起動前の経過時間は ticks に入れない)。
@@ -24,6 +25,12 @@ STALE_S = 60 * 60
 MAX_STATIONS = 64
 MAP_STATIONS = 6
 REBASE_MS = 86_400_000  # 1 日。これより古い受信時刻は秒に移す(Stations.sweep)
+
+
+def same_call(call, base):
+    """call('Q1TEST-9' など)の SSID を除いた部分が base か(地図の毎秒の描画で使うので確保しない)"""
+    n = len(base)
+    return call.startswith(base) and (len(call) == n or call[n] == "-")
 
 
 def is_object(packet):
@@ -177,10 +184,13 @@ class Stations:
         return self.order[0] if self.order else None
 
     def for_map(self, n=MAP_STATIONS):
-        """位置を持つ局のうち新しい順に n 局(自局のエコーは除く)"""
+        """位置を持つ局のうち新しい順に n 局。自局のエコーと、自局と同じコールサインの局
+        (SSID は問わない)は除く。オブジェクトは名前なので比べない"""
+        base = self.own_call.split("-")[0] if self.own_call else None
         out = []
         for st in self.order:
-            if st.lat is not None and not st.own:
+            if st.lat is not None and not st.own and not (
+                    base is not None and not st.obj and same_call(st.call, base)):
                 out.append(st)
                 if len(out) == n:
                     break
