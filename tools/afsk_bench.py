@@ -75,6 +75,15 @@ CONDITIONS: dict[str, dict] = {
     "de+hum10": {"emph": "de", "hum": 10},
     "de+snr10+hum10": {"emph": "de", "snr": 10, "hum": 10},
     "pre+snr10+baud1%": {"emph": "pre", "snr": 10, "baud_err": 0.01},
+    # 強い局と弱い局が交互に来る(フレームごとの利得 dB を順に繰り返す)。AGC の戻りの速さを見る。
+    # snr は弱い方(最も小さい利得)のフレームに対する値
+    "alt 0/-20dB": {"frame_gain_db": (0, -20)},
+    "alt 0/-20dB snr10": {"frame_gain_db": (0, -20), "snr": 10},
+    "alt +6/-14dB(near clip) snr10": {"frame_gain_db": (6, -14), "snr": 10},
+    # デジピーターの中継のように間が短い(20 ms)うえ、弱い方のプリアンブルが短い(フラグ 8 個)
+    "alt 0/-20dB short gap snr10": {"frame_gain_db": (0, -20), "snr": 10, "gap_s": 0.02, "pre_flags": 8},
+    "alt +6/-14dB short gap snr10": {"frame_gain_db": (6, -14), "snr": 10, "gap_s": 0.02,
+                                     "pre_flags": 8},
 }
 
 
@@ -124,8 +133,11 @@ def synth(frames: list[bytes], fs: int, c: dict, rnd: random.Random) -> array:
 
     gap(0.05)
     spb = fs / baud
-    for f in frames:
-        bits = frame_bits(f, rnd.randint(8, 30), rnd.randint(2, 4))
+    fg = [10 ** (db / 20) for db in c.get("frame_gain_db", (0,))]
+    for j, f in enumerate(frames):
+        g_f = fg[j % len(fg)]
+        pre = rnd.randint(8, 30)
+        bits = frame_bits(f, c.get("pre_flags", pre), rnd.randint(2, 4))
         lv = 0
         ph = rnd.uniform(0, 2 * math.pi)
         t_end = 0.0  # このバーストの先頭からのビット終端時刻(サンプル単位)
@@ -136,10 +148,11 @@ def synth(frames: list[bytes], fs: int, c: dict, rnd: random.Random) -> array:
             dph = 2 * math.pi * (fm if lv else fsp) / fs
             t_end += spb
             while k < int(round(t_end)):
-                out.append(math.sin(ph))
+                out.append(g_f * math.sin(ph))
                 ph += dph
                 k += 1
-        gap(rnd.uniform(0.05, 0.15))
+        g = rnd.uniform(0.05, 0.15)
+        gap(c.get("gap_s", g))
     sig = [v * AMP * gain for v in out]
 
     # 無線機のエンファシス(1 次): de = 300Hz の 1 次 LPF(2200Hz が約 -5dB)、
@@ -178,7 +191,7 @@ def synth(frames: list[bytes], fs: int, c: dict, rnd: random.Random) -> array:
 
     snr = c.get("snr")
     if snr is not None:
-        p_sig = (AMP * gain) ** 2 / 2
+        p_sig = (AMP * gain * min(fg)) ** 2 / 2
         sigma = math.sqrt(p_sig / 10 ** (snr / 10) * (fs / 2) / 3000)
         for i in range(len(sig)):
             sig[i] += rnd.gauss(0, sigma)

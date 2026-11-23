@@ -268,9 +268,12 @@ class Demodulator:
     """samples(array('H')、ADC の 12 bit 値)-> データビット(bytearray、0/1)。
 
     fs はボーレートの整数倍(19200 = 16 x 1200 など)。
-    process() は 1 回あたり最大 max_block サンプル。出力ビットは self.bits[:戻り値]。"""
+    process() は 1 回あたり最大 max_block サンプル。出力ビットは self.bits[:戻り値]。
+    agc_ms: 包絡線の追従の時定数。200 ms(60 ms から変更。2026-11-23 の afsk_bench -n 200、
+    2 系統: ハムの高調波・ディエンファシス+雑音で 8〜40 フレーム増え、強い局の直後の弱い局
+    (間 20 ms、-20 dB)も落とさない)"""
 
-    def __init__(self, fs=19200, max_block=1024, pll_shift=2, agc_ms=60, mag_shift=8,
+    def __init__(self, fs=19200, max_block=1024, pll_shift=2, agc_ms=200, mag_shift=8,
                  hpf_hz=900, hpf2_hz=0, lpf_hz=2700, mid=2048, env_min=64, mark=1200, space=2200,
                  baud=1200):
         if fs % baud:
